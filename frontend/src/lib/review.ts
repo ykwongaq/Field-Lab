@@ -1,5 +1,6 @@
 import type { Clip } from "./clip";
 import type { Tracklet, TrackletReview } from "../types";
+import type { ProjectMode } from "./project";
 
 const STORAGE_PREFIX = "vsr.review.";
 
@@ -12,6 +13,7 @@ export interface ReviewCounts {
 
 export interface ExportRow {
 	clip: string;
+	project_mode: ProjectMode;
 	tracklet_id: number;
 	object_id: number;
 	category_id: number;
@@ -40,6 +42,7 @@ export interface ExportRow {
 
 export interface ExportPayload {
 	clip: string;
+	mode: ProjectMode;
 	exportedAt: string;
 	fps: number;
 	width: number;
@@ -95,6 +98,12 @@ export class ReviewStore {
 		this.save();
 	}
 
+	remove(trackletId: number): void {
+		if (!(trackletId in this.reviews)) return;
+		delete this.reviews[trackletId];
+		this.save();
+	}
+
 	counts(tracklets: Tracklet[]): ReviewCounts {
 		let verified = 0;
 		let partial = 0;
@@ -127,6 +136,7 @@ export class ReviewStore {
 	): ExportPayload {
 		const header = [
 			"clip",
+			"project_mode",
 			"tracklet_id",
 			"object_id",
 			"category_id",
@@ -159,6 +169,7 @@ export class ReviewStore {
 			const final = review.taxonomy ?? tracklet.taxonomy;
 			return {
 				clip: clip.name,
+				project_mode: clip.mode,
 				tracklet_id: tracklet.id,
 				object_id: tracklet.objectId,
 				category_id: tracklet.categoryId,
@@ -196,6 +207,7 @@ export class ReviewStore {
 
 		return {
 			clip: clip.name,
+			mode: clip.mode,
 			exportedAt: new Date().toISOString(),
 			fps: clip.fps,
 			width: clip.width,

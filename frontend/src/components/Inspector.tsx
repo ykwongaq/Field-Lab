@@ -8,6 +8,7 @@ import type {
 	TrackletReview,
 } from "../types";
 import type { Taxonomy as RankedTaxonomy } from "../types/annotations";
+import { MODE_VOCABULARY, type ProjectMode } from "../lib/project";
 import {
 	getTaxonDetailBySuggestion,
 	isAbort,
@@ -36,6 +37,7 @@ const TAXONOMY_FIELDS: {
 ];
 
 interface InspectorProps {
+	mode: ProjectMode;
 	tracklet: Tracklet | null;
 	review: TrackletReview | null;
 	onTaxonomyField: (key: TaxonomyKey, value: string) => void;
@@ -47,12 +49,14 @@ interface InspectorProps {
 
 export function Inspector(props: InspectorProps) {
 	const { tracklet, review } = props;
+	const vocab = MODE_VOCABULARY[props.mode];
+	const unitTitle = vocab.unit.charAt(0).toUpperCase() + vocab.unit.slice(1);
 
 	if (!tracklet) {
 		return (
 			<div className={styles.inspector}>
 				<p className={styles.empty}>
-					Select a tracklet to review its label and mask.
+					Select a {vocab.unit} to review its label and mask.
 				</p>
 			</div>
 		);
@@ -71,10 +75,13 @@ export function Inspector(props: InspectorProps) {
 					style={{ background: tracklet.color }}
 				/>
 				<div>
-					<h2 className={styles.title}>Tracklet #{tracklet.id}</h2>
+					<h2 className={styles.title}>
+						{unitTitle} #{tracklet.id}
+					</h2>
 					<p className={styles.meta}>
-						object {tracklet.objectId} · category {tracklet.categoryId} · frames{" "}
-						{tracklet.maskFrames.first}–{tracklet.maskFrames.last}
+						{vocab.hasObjectIdentity && <>object {tracklet.objectId} · </>}
+						category {tracklet.categoryId} · frames {tracklet.maskFrames.first}–
+						{tracklet.maskFrames.last}
 					</p>
 				</div>
 			</div>

@@ -1,7 +1,20 @@
 import argparse
+import json
 import os
 import zipfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+import cv2
+
+from project_builder import (
+    ANNOTATIONS_DIR,
+    FRAMES_DIR,
+    MODES,
+    VIDEO_DIR,
+    VIDEO_EXTENSIONS,
+    build_annotation_dataset,
+    write_json_entry,
+)
 
 # Compression name -> (zipfile constant, compresslevel).
 # For ZIP_STORED and ZIP_LZMA the compresslevel is ignored by zipfile.
@@ -12,6 +25,24 @@ COMPRESSION_OPTIONS = {
     "lzma": (zipfile.ZIP_LZMA, None),
 }
 
+def find_video_file(video_dataset, clip_name):
+    """Return the video file for `clip_name` inside `video_dataset`, if any."""
+    if not video_dataset:
+        return None
+    for ext in VIDEO_EXTENSIONS:
+        candidate = os.path.join(video_dataset, clip_name + ext)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def read_dataset(annotation_file):
+    """Load the annotation JSON; `None` when it cannot be parsed."""
+    try:
+        with open(annotation_file, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
 
 def create_clip_zip(task):
     """Build a single project zip containing the clip's frames and annotation.
@@ -22,18 +53,37 @@ def create_clip_zip(task):
 
     Returns (clip_name, has_annotation, error_message_or_None).
     """
-    frame_dir, annotation_file, output_zip, compression_name = task
+    frame_dir, annotation_file, video_file, output_zip, compression_name, mode = task
     compression, compresslevel = COMPRESSION_OPTIONS[compression_name]
-
+    clip_name = os.path.basename(frame_dir)
+    
     frames = []
     for name in sorted(os.listdir(frame_dir)):
         path = os.path.join(frame_dir, name)
         if os.path.isfile(path):
-            frames.append((path, os.path.join("frames", name)))
+            frames.append((path, f"{FRAMES_DIR}/{name}"))
 
     has_annotation = annotation_file is not None and os.path.isfile(annotation_file)
+    has_video = video_file is not None and os.path.isfile(video_file)
 
     try:
+        dataset = read_dataset(annotation_file) if has_annotation else None
+        record = (dataset or {}).get("videos") or [{}]
+        record = record[0] if isinstance(record[0], dict) else {}
+        fps = record.get("fps") if isinstance(record.get("fps"), (int, float)) else None
+        width = record.get("width")
+        height = record.get("height")
+        if (not width or not height) and frames:
+            probe = cv2.imread(frames[0][0])
+            if probe is not None:
+                height, width = probe.shape[:2]
+
+        video_entry = None
+        if has_video:
+            video_entry = (
+                f"{VIDEO_DIR}/{clip_name}{os.path.splitext(video_file)[1].lower()}"
+            )
+            
         with zipfile.ZipFile(
             output_zip,
             "w",
@@ -48,26 +98,56 @@ def create_clip_zip(task):
                     compress_type=compression,
                     compresslevel=compresslevel,
                 )
-            if has_annotation:
-                zf.write(
-                    annotation_file,
-                    arcname=os.path.join(
-                        "annotations", os.path.basename(annotation_file)
-                    ),
-                    compress_type=compression,
-                    compresslevel=compresslevel,
+                
+            annotation_entry = f"{ANNOTATIONS_DIR}/{clip_name}.json"
+            if dataset is not None:
+                annotation_entry = (
+                    f"{ANNOTATIONS_DIR}/{os.path.basename(annotation_file)}"
                 )
-    except Exception as exc:  # noqa: BLE001 - report any failure back to the caller
-        return os.path.basename(frame_dir), has_annotation, str(exc)
+                
+                
+                if record.get("segmentation_mode") not in MODES:
+                    record["segmentation_mode"] = mode
+                elif record["segmentation_mode"] != mode:
+                    print(
+                        f"[{clip_name}] keeps its existing mode "
+                        f"{record['segmentation_mode']!r} (ignoring --mode {mode})"
+                    )
+                if video_entry and not record.get("video_file"):
+                    record["video_file"] = video_entry
+                write_json_entry(zf, annotation_entry, dataset)
+            else:
+                write_json_entry(
+                    zf,
+                    annotation_entry,
+                    build_annotation_dataset(
+                        name=clip_name,
+                        mode=mode,
+                        file_names=[arcname.split("/", 1)[1] for _, arcname in frames],
+                        fps=float(fps) if fps else 25.0,
+                        width=int(width or 0),
+                        height=int(height or 0),
+                    ),
+                )
 
-    return os.path.basename(frame_dir), has_annotation, None
+            if has_video:
+                zf.write(video_file, arcname=video_entry, compress_type=zipfile.ZIP_STORED)
+                
+    except Exception as exc:
+        if os.path.exists(output_zip):
+            os.remove(output_zip)
+        return clip_name, has_annotation, str(exc)
+
+    return clip_name, has_annotation, None
 
 
 def main(args):
     frame_dataset = args.frame_dataset
     annotation_dataset = args.annotation_dataset
+    video_dataset = args.video_dataset
     output_dataset = args.output_dataset
     compression = args.compression
+    mode = args.mode
 
     os.makedirs(output_dataset, exist_ok=True)
 
@@ -90,7 +170,8 @@ def main(args):
             skipped += 1
             continue
 
-        tasks.append((frame_dir, annotation_file, output_zip, compression))
+        video_file = find_video_file(video_dataset, name)
+        tasks.append((frame_dir, annotation_file, video_file, output_zip, compression, mode))
 
     if not tasks:
         print(
@@ -153,9 +234,21 @@ if __name__ == "__main__":
         default="/home/davidwong/Downloads/annotations",
     )
     parser.add_argument(
+        "--video_dataset",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
         "--output_dataset",
         type=str,
         default="/home/davidwong/Downloads/output_projects",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        required=True,
+        choices=MODES,
+        help="Segmentation mode written as `segmentation_mode` on the video record ",
     )
     parser.add_argument(
         "--compression",

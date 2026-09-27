@@ -1,12 +1,39 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+	MouseEvent as ReactMouseEvent,
+	PointerEvent as ReactPointerEvent,
+} from "react";
 import type { Clip } from "../lib/clip";
 import type { ZipArchive } from "../lib/zip";
 import { FrameCache } from "../lib/frameCache";
 import { MaskRenderer } from "../lib/mask";
 import { MaskCache, type MaskRequest } from "../lib/maskApi";
 import { formatTimecode } from "../lib/format";
-import type { Tracklet } from "../types";
+import {
+	RasterCanvas,
+	runsArea,
+	runsContain,
+	type FramePoint,
+	type PaintMode,
+} from "../lib/raster";
+import type { DecodedMask, PromptPoint, RawRle, Tracklet } from "../types";
+import type { DrawMethod, Tool } from "./Toolbar";
 import styles from "./VideoPanel.module.css";
+
+interface FrameLayout {
+	x: number;
+	y: number;
+	scale: number;
+	width: number;
+	height: number;
+}
+
+export const PREVIEW_COLOR = "#ffcc33";
+const CANDIDATE_ADD_COLOR = "#ff8c42";
+const CANDIDATE_ERASE_COLOR = "#ff5f5f";
+const POSITIVE_COLOR = "#2ecc71";
+const NEGATIVE_COLOR = "#e74c3c";
+const CLOSE_POLYGON_RADIUS = 9;
 
 interface VideoPanelProps {
 	clip: Clip;
@@ -21,6 +48,22 @@ interface VideoPanelProps {
 	onStep: (delta: number) => void;
 	onShowAllMasksChange: (value: boolean) => void;
 	onMaskOpacityChange: (value: number) => void;
+	tool: Tool;
+	method: DrawMethod;
+	paintMode: PaintMode;
+	brushSize: number;
+	prompt: PromptPoint[];
+	polygon: FramePoint[];
+	draft: DecodedMask | null;
+	candidate: DecodedMask | null;
+
+	editingTrackletId: number | null;
+	onPromptPoint: (point: PromptPoint) => void;
+	onPolygonPoint: (point: FramePoint) => void;
+	onPolygonClose: () => void;
+	onStroke: (stroke: RawRle, mode: PaintMode) => void;
+	onSelectTracklet: (id: number) => void;
+	promptHint?: string;
 }
 
 export function VideoPanel(props: VideoPanelProps) {
@@ -40,9 +83,222 @@ export function VideoPanel(props: VideoPanelProps) {
 		maskCacheRef.current = new MaskCache();
 	}
 
-	// Frame index currently painted on the canvas; used to guard the mask
-	// overlay against compositing stale masks over a newer frame.
 	const paintedFrameRef = useRef(-1);
+	const layoutRef = useRef<FrameLayout | null>(null);
+	const [layout, setLayout] = useState<FrameLayout | null>(null);
+	const rasterRef = useRef<RasterCanvas | null>(null);
+	if (!rasterRef.current) {
+		rasterRef.current = new RasterCanvas(props.clip.width, props.clip.height);
+	}
+	const strokeRef = useRef<{
+		mode: PaintMode;
+		last: FramePoint;
+		pointerId: number;
+	} | null>(null);
+	const [cursor, setCursor] = useState<FramePoint | null>(null);
+
+	const drawing = props.tool !== "review";
+
+	
+	const toFrame = useCallback(
+		(
+			event: { clientX: number; clientY: number },
+			clamp = false,
+		): FramePoint | null => {
+			const layout = layoutRef.current;
+			const canvas = canvasRef.current;
+			if (!layout || !canvas) return null;
+			const rect = canvas.getBoundingClientRect();
+			const x = (event.clientX - rect.left - layout.x) / layout.scale;
+			const y = (event.clientY - rect.top - layout.y) / layout.scale;
+			if (x < 0 || y < 0 || x >= layout.width || y >= layout.height) {
+				if (!clamp) return null;
+				return {
+					x: Math.min(layout.width, Math.max(0, x)),
+					y: Math.min(layout.height, Math.max(0, y)),
+				};
+			}
+			return { x, y };
+		},
+		[],
+	);
+
+	const selectAt = useCallback(
+		async (point: FramePoint) => {
+			const cache = maskCacheRef.current;
+			if (!cache) return;
+			const frameIndex = props.frameIndex;
+			const requests: MaskRequest[] = [];
+			const owners: Tracklet[] = [];
+			for (const tracklet of props.clip.tracklets) {
+				const payload = props.clip.rawMaskAt(tracklet, frameIndex);
+				if (!payload) continue;
+				requests.push({ trackletId: tracklet.id, frameIndex, payload });
+				owners.push(tracklet);
+			}
+			if (requests.length === 0) return;
+			const decoded = await cache.resolveBatch(requests);
+			let bestId: number | null = null;
+			let bestArea = Infinity;
+			decoded.forEach((mask, i) => {
+				if (!mask || !runsContain(mask.runs, point.x, point.y)) return;
+				const area = runsArea(mask.runs);
+				if (area < bestArea) {
+					bestArea = area;
+					bestId = owners[i].id;
+				}
+			});
+			if (bestId !== null) props.onSelectTracklet(bestId);
+		},
+		[props],
+	);
+
+	const handleCanvasClick = useCallback(
+		(event: ReactMouseEvent<HTMLCanvasElement>) => {
+			const point = toFrame(
+				event,
+				props.tool !== "review" && props.method === "polygon",
+			);
+			if (!point) return;
+			if (props.tool === "review") {
+				void selectAt(point);
+				return;
+			}
+			event.preventDefault();
+			if (props.method === "sam") {
+				// Left click includes; Shift-click or right click excludes.
+				const negative = event.shiftKey || event.button === 2;
+				props.onPromptPoint({
+					x: Math.round(point.x * 10) / 10,
+					y: Math.round(point.y * 10) / 10,
+					label: negative ? 0 : 1,
+				});
+			} else if (props.method === "polygon") {
+				if (event.button === 2) {
+					if (props.polygon.length >= 3) props.onPolygonClose();
+					return;
+				}
+				const layout = layoutRef.current;
+				const first = props.polygon[0];
+				if (first && layout && props.polygon.length >= 3) {
+					const distance =
+						Math.hypot(first.x - point.x, first.y - point.y) * layout.scale;
+					if (distance <= CLOSE_POLYGON_RADIUS) {
+						props.onPolygonClose();
+						return;
+					}
+				}
+				props.onPolygonPoint({
+					x: Math.round(point.x * 10) / 10,
+					y: Math.round(point.y * 10) / 10,
+				});
+			}
+			// Brush strokes are handled by the pointer events below.
+		},
+		[props, toFrame, selectAt],
+	);
+
+	const handleDoubleClick = useCallback(
+		(event: ReactMouseEvent<HTMLCanvasElement>) => {
+			if (props.tool === "review" || props.method !== "polygon") return;
+			event.preventDefault();
+			
+			if (props.polygon.length >= 3) props.onPolygonClose();
+		},
+		[props],
+	);
+
+	const paintLiveSegment = useCallback(
+		(from: FramePoint, to: FramePoint, mode: PaintMode) => {
+			const canvas = canvasRef.current;
+			const layout = layoutRef.current;
+			const ctx = canvas?.getContext("2d");
+			if (!canvas || !layout || !ctx) return;
+			ctx.save();
+			ctx.globalAlpha = 0.75;
+			ctx.strokeStyle = mode === "add" ? PREVIEW_COLOR : CANDIDATE_ERASE_COLOR;
+			ctx.lineCap = "round";
+			ctx.lineJoin = "round";
+			ctx.lineWidth = Math.max(1, props.brushSize * layout.scale);
+			ctx.beginPath();
+			ctx.moveTo(
+				layout.x + from.x * layout.scale,
+				layout.y + from.y * layout.scale,
+			);
+			const still = to.x === from.x && to.y === from.y;
+			ctx.lineTo(
+				layout.x + (to.x + (still ? 0.01 : 0)) * layout.scale,
+				layout.y + to.y * layout.scale,
+			);
+			ctx.stroke();
+			ctx.restore();
+		},
+		[props.brushSize],
+	);
+
+	const handlePointerDown = useCallback(
+		(event: ReactPointerEvent<HTMLCanvasElement>) => {
+			if (!drawing || props.method !== "brush") return;
+			if (event.button !== 0 && event.button !== 2) return;
+			const point = toFrame(event);
+			if (!point) return;
+			event.preventDefault();
+			const erase = event.shiftKey || event.button === 2;
+			const mode: PaintMode = erase ? "erase" : props.paintMode;
+			const raster = rasterRef.current!;
+			raster.clear();
+			raster.strokeSegment(point, point, props.brushSize);
+			paintLiveSegment(point, point, mode);
+			strokeRef.current = { mode, last: point, pointerId: event.pointerId };
+			event.currentTarget.setPointerCapture(event.pointerId);
+		},
+		[
+			drawing,
+			props.method,
+			props.paintMode,
+			props.brushSize,
+			toFrame,
+			paintLiveSegment,
+		],
+	);
+
+	const handlePointerMove = useCallback(
+		(event: ReactPointerEvent<HTMLCanvasElement>) => {
+			const layout = layoutRef.current;
+			const canvas = canvasRef.current;
+			if (!layout || !canvas) return;
+			const rect = canvas.getBoundingClientRect();
+			const raw: FramePoint = {
+				x: (event.clientX - rect.left - layout.x) / layout.scale,
+				y: (event.clientY - rect.top - layout.y) / layout.scale,
+			};
+			// Unclamped position for the cursor overlay (may be outside the frame).
+			if (drawing) setCursor(raw);
+			const stroke = strokeRef.current;
+			if (!stroke || stroke.pointerId !== event.pointerId) return;
+			// Clamp to the frame so strokes can run along the border.
+			const point: FramePoint = {
+				x: Math.min(layout.width, Math.max(0, raw.x)),
+				y: Math.min(layout.height, Math.max(0, raw.y)),
+			};
+			rasterRef.current!.strokeSegment(stroke.last, point, props.brushSize);
+			paintLiveSegment(stroke.last, point, stroke.mode);
+			stroke.last = point;
+		},
+		[drawing, props.brushSize, paintLiveSegment],
+	);
+
+	const finishStroke = useCallback(
+		(event: ReactPointerEvent<HTMLCanvasElement>) => {
+			const stroke = strokeRef.current;
+			if (!stroke || stroke.pointerId !== event.pointerId) return;
+			strokeRef.current = null;
+			event.currentTarget.releasePointerCapture(event.pointerId);
+			const rle = rasterRef.current!.toRle();
+			if (rle) props.onStroke(rle, stroke.mode);
+		},
+		[props],
+	);
 
 	const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
@@ -107,9 +363,7 @@ export function VideoPanel(props: VideoPanelProps) {
 		props.showAllMasks,
 	]);
 
-	// Bulk-decode the selected tracklet's masks (in frame order, chunked) so
-	// first-pass playback already has every mask cached and never has to wait
-	// on the network. Cancelled when the selection changes.
+	
 	useEffect(() => {
 		const cache = maskCacheRef.current;
 		if (!cache) return;
@@ -181,6 +435,24 @@ export function VideoPanel(props: VideoPanelProps) {
 			const drawHeight = frameHeight * scale;
 			const drawX = (viewport.w - drawWidth) / 2;
 			const drawY = (viewport.h - drawHeight) / 2;
+			const nextLayout: FrameLayout = {
+				x: drawX,
+				y: drawY,
+				scale,
+				width: frameWidth,
+				height: frameHeight,
+			};
+			layoutRef.current = nextLayout;
+			setLayout((current) =>
+				current &&
+				current.x === nextLayout.x &&
+				current.y === nextLayout.y &&
+				current.scale === nextLayout.scale &&
+				current.width === nextLayout.width &&
+				current.height === nextLayout.height
+					? current
+					: nextLayout,
+			);
 
 			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 			ctx.fillStyle = "#000";
@@ -205,6 +477,12 @@ export function VideoPanel(props: VideoPanelProps) {
 			const requests: MaskRequest[] = [];
 			const requestTracklets: Tracklet[] = [];
 			for (const tracklet of visible) {
+				// While editing, the draft stands in for the stored mask.
+				if (
+					props.tool === "editMask" &&
+					tracklet.id === props.editingTrackletId
+				)
+					continue;
 				const payload = props.clip.rawMaskAt(tracklet, props.frameIndex);
 				if (!payload) continue;
 				requests.push({
@@ -219,9 +497,8 @@ export function VideoPanel(props: VideoPanelProps) {
 				requests.length > 0 ? await cache.resolveBatch(requests) : [];
 
 			// Only composite if the canvas still shows the frame these masks
-			// belong to; a slow decode must not paint stale masks over a newer
-			// frame (that frame's own render handles its overlay).
-			if (paintedFrameRef.current !== props.frameIndex) return;
+			// belong to
+			if (cancelled || paintedFrameRef.current !== props.frameIndex) return;
 
 			maskRenderer.clear();
 			for (let i = 0; i < requestTracklets.length; i++) {
@@ -240,6 +517,58 @@ export function VideoPanel(props: VideoPanelProps) {
 				drawHeight,
 			);
 			ctx.restore();
+
+			if (props.tool === "review") return;
+
+			
+			const overlays: { mask: DecodedMask | null; color: string }[] = [
+				{ mask: props.draft, color: PREVIEW_COLOR },
+				{
+					mask: props.candidate,
+					color:
+						props.paintMode === "add"
+							? CANDIDATE_ADD_COLOR
+							: CANDIDATE_ERASE_COLOR,
+				},
+			];
+			for (const { mask, color } of overlays) {
+				if (!mask) continue;
+				maskRenderer.clear();
+				maskRenderer.drawRuns(mask.runs, color);
+				ctx.save();
+				ctx.globalAlpha = Math.max(0.6, props.maskOpacity);
+				ctx.drawImage(
+					maskRenderer.canvasElement,
+					drawX,
+					drawY,
+					drawWidth,
+					drawHeight,
+				);
+				ctx.restore();
+			}
+
+			if (props.method !== "sam") return;
+
+			// Prompt points in screen space: green = include, red = exclude.
+			for (const point of props.prompt) {
+				const px = drawX + point.x * scale;
+				const py = drawY + point.y * scale;
+				ctx.beginPath();
+				ctx.arc(px, py, 6, 0, Math.PI * 2);
+				ctx.fillStyle = point.label === 1 ? POSITIVE_COLOR : NEGATIVE_COLOR;
+				ctx.fill();
+				ctx.lineWidth = 2;
+				ctx.strokeStyle = "#fff";
+				ctx.stroke();
+				if (point.label === 0) {
+					ctx.beginPath();
+					ctx.moveTo(px - 3, py);
+					ctx.lineTo(px + 3, py);
+					ctx.strokeStyle = "#fff";
+					ctx.lineWidth = 1.5;
+					ctx.stroke();
+				}
+			}
 		};
 
 		void draw();
@@ -253,12 +582,135 @@ export function VideoPanel(props: VideoPanelProps) {
 		props.selectedTrackletId,
 		props.showAllMasks,
 		props.maskOpacity,
+		props.tool,
+		props.method,
+		props.paintMode,
+		props.prompt,
+		props.draft,
+		props.candidate,
+		props.editingTrackletId,
 	]);
+
+	// Hint text over the frame while a mask tool is active.
+	let hint: string | null = null;
+	if (drawing) {
+		if (props.method === "sam") {
+			hint =
+				props.prompt.length === 0
+					? (props.promptHint ??
+						"Click the object to segment it · Shift-click or right-click to exclude a region")
+					: `${props.prompt.length} point${props.prompt.length === 1 ? "" : "s"} · keep clicking to refine`;
+		} else if (props.method === "polygon") {
+			hint =
+				props.polygon.length === 0
+					? "Click to place polygon vertices · double-click, right-click or Enter closes it"
+					: `${props.polygon.length} vert${props.polygon.length === 1 ? "ex" : "ices"} · click the first vertex, double-click or press Enter to close`;
+		} else {
+			hint = `Drag to paint${props.paintMode === "erase" ? " (erasing)" : ""} · Shift-drag or right-drag erases · [ and ] change the brush size`;
+		}
+	}
+
+	const brushCursor =
+		drawing && props.method === "brush" && cursor && layout
+			? {
+					x: layout.x + cursor.x * layout.scale,
+					y: layout.y + cursor.y * layout.scale,
+					size: Math.max(2, props.brushSize * layout.scale),
+				}
+			: null;
+	const toScreen = (p: FramePoint) =>
+		layout
+			? `${layout.x + p.x * layout.scale},${layout.y + p.y * layout.scale}`
+			: "";
 
 	return (
 		<div className={styles.panel}>
-			<div ref={wrapRef} className={styles.canvasWrap}>
-				<canvas ref={canvasRef} className={styles.canvas} />
+			<div
+				ref={wrapRef}
+				className={`${styles.canvasWrap} ${drawing ? styles.prompting : ""} ${
+					drawing && props.method === "brush" ? styles.brushing : ""
+				}`}
+			>
+				<canvas
+					ref={canvasRef}
+					className={styles.canvas}
+					onClick={handleCanvasClick}
+					onDoubleClick={handleDoubleClick}
+					onPointerDown={handlePointerDown}
+					onPointerMove={handlePointerMove}
+					onPointerUp={finishStroke}
+					onPointerCancel={finishStroke}
+					onPointerLeave={() => setCursor(null)}
+					onContextMenu={(event) => {
+						if (!drawing) return;
+						event.preventDefault();
+						if (props.method !== "brush") handleCanvasClick(event);
+					}}
+				/>
+				{drawing && layout && (
+					<svg
+						className={styles.overlay}
+						aria-hidden="true"
+						width={viewport.w}
+						height={viewport.h}
+					>
+						{props.method === "polygon" && props.polygon.length > 0 && (
+							<>
+								<polyline
+									className={styles.polygonLine}
+									points={props.polygon.map(toScreen).join(" ")}
+								/>
+								{cursor && (
+									<line
+										className={styles.rubberBand}
+										x1={
+											toScreen(props.polygon[props.polygon.length - 1]).split(
+												",",
+											)[0]
+										}
+										y1={
+											toScreen(props.polygon[props.polygon.length - 1]).split(
+												",",
+											)[1]
+										}
+										x2={layout.x + cursor.x * layout.scale}
+										y2={layout.y + cursor.y * layout.scale}
+									/>
+								)}
+								{props.polygon.map((p, i) => (
+									<circle
+										key={i}
+										className={
+											i === 0 && props.polygon.length >= 3
+												? styles.vertexFirst
+												: styles.vertex
+										}
+										cx={layout.x + p.x * layout.scale}
+										cy={layout.y + p.y * layout.scale}
+										r={i === 0 && props.polygon.length >= 3 ? 6 : 4}
+									/>
+								))}
+							</>
+						)}
+						{brushCursor && (
+							<circle
+								className={
+									props.paintMode === "add"
+										? styles.brushCursor
+										: styles.brushCursorErase
+								}
+								cx={brushCursor.x}
+								cy={brushCursor.y}
+								r={brushCursor.size / 2}
+							/>
+						)}
+					</svg>
+				)}
+				{hint && (
+					<div className={styles.promptHint} aria-live="polite">
+						{hint}
+					</div>
+				)}
 			</div>
 
 			<div className={styles.controls}>

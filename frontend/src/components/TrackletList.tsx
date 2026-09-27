@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Clip } from "../lib/clip";
 import type { TrackletReview } from "../types";
+import { MODE_VOCABULARY } from "../lib/project";
 import styles from "./TrackletList.module.css";
 
 type Status = "done" | "partial" | "todo";
@@ -36,6 +37,7 @@ export function TrackletList({
 }: TrackletListProps) {
 	const [query, setQuery] = useState("");
 	const [filter, setFilter] = useState<Filter>("all");
+	const vocab = MODE_VOCABULARY[clip.mode];
 
 	const items = useMemo(() => {
 		const needle = query.trim().toLowerCase();
@@ -76,8 +78,16 @@ export function TrackletList({
 			</div>
 
 			<div className={styles.listScroll}>
-				{items.length === 0 && (
-					<p className={styles.empty}>No tracklets match.</p>
+				{clip.tracklets.length === 0 ? (
+					<p className={styles.empty}>
+						This project has no annotations yet. Run the segmentation
+						pipeline on the embedded video, write the results into{" "}
+						<code>annotations/</code>, and re-open the archive.
+					</p>
+				) : (
+					items.length === 0 && (
+						<p className={styles.empty}>No {vocab.units} match.</p>
+					)
 				)}
 				{items.map((tracklet) => {
 					const status = statusOf(reviews[tracklet.id]);
@@ -93,10 +103,18 @@ export function TrackletList({
 								style={{ background: tracklet.color }}
 							/>
 							<span className={styles.itemBody}>
-								<span className={styles.itemLabel}>{tracklet.label}</span>
+								<span className={styles.itemLabel}>
+									{tracklet.label}
+									{tracklet.origin === "created" && (
+										<span className={styles.newTag} title="Added in this session with the Add mask tool; not in the archive yet">
+											new
+										</span>
+									)}
+								</span>
 								<span className={styles.itemMeta}>
-									#{tracklet.id} · obj {tracklet.objectId} ·{" "}
-									{tracklet.maskFrames.count} frames
+									#{tracklet.id}
+									{vocab.hasObjectIdentity && <> · obj {tracklet.objectId}</>}{" "}
+									· {tracklet.maskFrames.count} frames
 								</span>
 							</span>
 							<span

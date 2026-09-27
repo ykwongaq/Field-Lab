@@ -15,9 +15,82 @@
   flex-wrap: wrap;
 }
 
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .title {
   margin: 0;
   font-size: 1.1rem;
+}
+
+/* Segmentation mode: read-only badge, fixed at project creation. */
+.modeBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  cursor: help;
+  user-select: none;
+}
+
+.modeInstance {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: #cddcea;
+}
+
+.modeSemantic {
+  color: var(--good);
+  background: var(--good-soft);
+  border-color: #c6e3d1;
+}
+
+.modeLegacy {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+
+.noticeSuccess {
+  background: var(--good-soft);
+}
+
+.noticeClose {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.noticeClose:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--ink);
 }
 
 .meta {
@@ -66,8 +139,51 @@
 .body {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 400px;
+  grid-template-columns: auto minmax(0, 1fr) 400px;
   min-height: 0;
+}
+
+/* Action bar shown above the video while the Add mask tool is active. */
+.promptBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: #fff8e1;
+  border: 1px solid #f1dc9a;
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.promptTitle {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.promptStatus {
+  color: var(--muted);
+}
+
+.promptError {
+  color: var(--bad);
+}
+
+/* Class-name box in the semantic prompt bar. */
+.promptInput {
+  min-width: 180px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 0.82rem;
+  background: #fff;
+}
+
+.promptInput:focus {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 1px;
 }
 
 .videoCol {
@@ -83,4 +199,60 @@
   min-height: 0;
   border-left: 1px solid var(--line);
   background: var(--panel);
+}
+
+/* Method / paint-mode switches in the mask prompt bar. */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.segment {
+  appearance: none;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.segment:last-child {
+  border-right: 0;
+}
+
+.segment:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.segmentActive {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Brush diameter slider. */
+.brushSize {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.brushSize input[type="range"] {
+  width: 110px;
+}
+
+.brushValue {
+  min-width: 42px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
 }

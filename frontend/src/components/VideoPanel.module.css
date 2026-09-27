@@ -24,6 +24,28 @@
   display: block;
 }
 
+/* "Add mask" tool: the frame is a prompt target. */
+.prompting .canvas {
+  cursor: crosshair;
+}
+
+.prompting {
+  outline: 2px solid #ffcc33;
+  outline-offset: -2px;
+}
+
+.promptHint {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(20, 24, 30, 0.78);
+  color: #fff;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
 .controls {
   display: flex;
   align-items: center;
@@ -65,4 +87,54 @@
   font-size: 0.78rem;
   color: var(--muted);
   white-space: nowrap;
+}
+
+/* Brush tool: the SVG circle below is the cursor. */
+.brushing .canvas {
+  cursor: none;
+}
+
+/* Vector overlay for the polygon in progress and the brush cursor. */
+.overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.polygonLine {
+  fill: rgba(255, 204, 51, 0.18);
+  stroke: #ffcc33;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.rubberBand {
+  stroke: #ffcc33;
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+
+.vertex {
+  fill: #ffcc33;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.vertexFirst {
+  fill: #fff;
+  stroke: #ffcc33;
+  stroke-width: 2.5;
+}
+
+.brushCursor {
+  fill: rgba(255, 204, 51, 0.15);
+  stroke: #ffcc33;
+  stroke-width: 1.5;
+}
+
+.brushCursorErase {
+  fill: rgba(255, 95, 95, 0.15);
+  stroke: #ff5f5f;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
 }

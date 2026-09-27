@@ -1,12 +1,3 @@
-/**
- * Data model for the video-segmentation review tool.
- *
- * The annotation JSON follows the "VideoSegmentation" layout emitted by
- * pycocotools-based pipelines: one `videos` record (with `fps`) and a flat
- * `annotations` array of tracklets whose `segmentations` are per-frame RLE
- * masks encoded by `pycocotools.mask.encode`.
- */
-
 export interface RawVideo {
 	id: number;
 	video_name: string;
@@ -15,7 +6,11 @@ export interface RawVideo {
 	height: number;
 	width: number;
 	fps: number;
-	original_video?: string;
+	original_video?: string | null;
+	segmentation_mode?: string | null;
+	video_file?: string | null;
+	
+	label_maps?: (string | null)[] | null;
 	scene_id?: string;
 	start_frame?: number;
 	end_frame?: number;
@@ -27,14 +22,12 @@ export interface RawRle {
 	counts: string | number[];
 }
 
-/** A single foreground run decoded from an RLE mask. */
 export interface ForegroundRun {
 	x: number;
 	y: number;
 	length: number;
 }
 
-/** An RLE mask decoded by the backend into drawable foreground runs. */
 export interface DecodedMask {
 	height: number;
 	width: number;
@@ -47,7 +40,8 @@ export interface RawAnnotation {
 	object_id: number;
 	category_id: number;
 	noun_phrase: string;
-	segmentations: RawRle[];
+	
+	segmentations?: (RawRle | null)[];
 }
 
 export interface RawCategory {
@@ -69,7 +63,6 @@ export interface RawDataset {
 	categories?: RawCategory[];
 }
 
-/** The taxonomic hierarchy attached to a tracklet's label. */
 export interface Taxonomy {
 	taxonId: number | null;
 	kingdom: string;
@@ -84,7 +77,8 @@ export interface Taxonomy {
 
 export type TaxonomyKey = Exclude<keyof Taxonomy, "taxonId">;
 
-/** An annotation promoted into a first-class tracklet used by the UI. */
+export type TrackletOrigin = "dataset" | "created";
+
 export interface Tracklet {
 	id: number;
 	objectId: number;
@@ -92,12 +86,20 @@ export interface Tracklet {
 	label: string;
 	taxonomy: Taxonomy;
 	color: string;
-	segmentations: RawRle[];
+	segmentations: (RawRle | null)[];
 	maskFrames: {
 		first: number;
 		last: number;
 		count: number;
 	};
+	origin: TrackletOrigin;
+}
+
+export interface PromptPoint {
+	x: number;
+	y: number;
+	/** 1 = include this point in the mask, 0 = exclude it. */
+	label: 0 | 1;
 }
 
 export type MaskVerdict = "good" | "bad" | "unsure";
