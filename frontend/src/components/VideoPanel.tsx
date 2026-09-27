@@ -56,7 +56,6 @@ interface VideoPanelProps {
 	polygon: FramePoint[];
 	draft: DecodedMask | null;
 	candidate: DecodedMask | null;
-
 	editingTrackletId: number | null;
 	onPromptPoint: (point: PromptPoint) => void;
 	onPolygonPoint: (point: FramePoint) => void;
@@ -83,9 +82,12 @@ export function VideoPanel(props: VideoPanelProps) {
 		maskCacheRef.current = new MaskCache();
 	}
 
+	
 	const paintedFrameRef = useRef(-1);
+	
 	const layoutRef = useRef<FrameLayout | null>(null);
 	const [layout, setLayout] = useState<FrameLayout | null>(null);
+	
 	const rasterRef = useRef<RasterCanvas | null>(null);
 	if (!rasterRef.current) {
 		rasterRef.current = new RasterCanvas(props.clip.width, props.clip.height);
@@ -95,9 +97,11 @@ export function VideoPanel(props: VideoPanelProps) {
 		last: FramePoint;
 		pointerId: number;
 	} | null>(null);
+	
 	const [cursor, setCursor] = useState<FramePoint | null>(null);
 
-	const drawing = props.tool !== "review";
+	
+	const drawing = props.tool === "addMask" || props.tool === "editMask";
 
 	
 	const toFrame = useCallback(
@@ -155,18 +159,15 @@ export function VideoPanel(props: VideoPanelProps) {
 
 	const handleCanvasClick = useCallback(
 		(event: ReactMouseEvent<HTMLCanvasElement>) => {
-			const point = toFrame(
-				event,
-				props.tool !== "review" && props.method === "polygon",
-			);
+			const point = toFrame(event, drawing && props.method === "polygon");
 			if (!point) return;
-			if (props.tool === "review") {
-				void selectAt(point);
+			if (!drawing) {
+				
+				if (props.tool === "review") void selectAt(point);
 				return;
 			}
 			event.preventDefault();
 			if (props.method === "sam") {
-				// Left click includes; Shift-click or right click excludes.
 				const negative = event.shiftKey || event.button === 2;
 				props.onPromptPoint({
 					x: Math.round(point.x * 10) / 10,
@@ -193,19 +194,17 @@ export function VideoPanel(props: VideoPanelProps) {
 					y: Math.round(point.y * 10) / 10,
 				});
 			}
-			// Brush strokes are handled by the pointer events below.
 		},
-		[props, toFrame, selectAt],
+		[props, drawing, toFrame, selectAt],
 	);
 
 	const handleDoubleClick = useCallback(
 		(event: ReactMouseEvent<HTMLCanvasElement>) => {
-			if (props.tool === "review" || props.method !== "polygon") return;
+			if (!drawing || props.method !== "polygon") return;
 			event.preventDefault();
-			
 			if (props.polygon.length >= 3) props.onPolygonClose();
 		},
-		[props],
+		[props, drawing],
 	);
 
 	const paintLiveSegment = useCallback(
@@ -272,11 +271,9 @@ export function VideoPanel(props: VideoPanelProps) {
 				x: (event.clientX - rect.left - layout.x) / layout.scale,
 				y: (event.clientY - rect.top - layout.y) / layout.scale,
 			};
-			// Unclamped position for the cursor overlay (may be outside the frame).
 			if (drawing) setCursor(raw);
 			const stroke = strokeRef.current;
 			if (!stroke || stroke.pointerId !== event.pointerId) return;
-			// Clamp to the frame so strokes can run along the border.
 			const point: FramePoint = {
 				x: Math.min(layout.width, Math.max(0, raw.x)),
 				y: Math.min(layout.height, Math.max(0, raw.y)),
@@ -314,7 +311,6 @@ export function VideoPanel(props: VideoPanelProps) {
 		return () => observer.disconnect();
 	}, []);
 
-	// Preload a window of frames around the playhead.
 	useEffect(() => {
 		const cache = cacheRef.current;
 		if (!cache) return;
@@ -327,9 +323,7 @@ export function VideoPanel(props: VideoPanelProps) {
 		cache.preload(wanted);
 	}, [props.frameIndex, props.clip]);
 
-	// Prefetch masks for the frames just ahead of the playhead so that, by the
-	// time a frame is displayed during playback, its mask is already decoded
-	// and cached (and therefore drawn synchronously on the first pass).
+	
 	useEffect(() => {
 		const cache = maskCacheRef.current;
 		if (!cache) return;
@@ -477,12 +471,8 @@ export function VideoPanel(props: VideoPanelProps) {
 			const requests: MaskRequest[] = [];
 			const requestTracklets: Tracklet[] = [];
 			for (const tracklet of visible) {
-				// While editing, the draft stands in for the stored mask.
-				if (
-					props.tool === "editMask" &&
-					tracklet.id === props.editingTrackletId
-				)
-					continue;
+				
+				if (tracklet.id === props.editingTrackletId) continue;
 				const payload = props.clip.rawMaskAt(tracklet, props.frameIndex);
 				if (!payload) continue;
 				requests.push({
@@ -496,8 +486,7 @@ export function VideoPanel(props: VideoPanelProps) {
 			const decodedList =
 				requests.length > 0 ? await cache.resolveBatch(requests) : [];
 
-			// Only composite if the canvas still shows the frame these masks
-			// belong to
+			
 			if (cancelled || paintedFrameRef.current !== props.frameIndex) return;
 
 			maskRenderer.clear();
@@ -547,9 +536,8 @@ export function VideoPanel(props: VideoPanelProps) {
 				ctx.restore();
 			}
 
-			if (props.method !== "sam") return;
+			if (!drawing || props.method !== "sam") return;
 
-			// Prompt points in screen space: green = include, red = exclude.
 			for (const point of props.prompt) {
 				const px = drawX + point.x * scale;
 				const py = drawY + point.y * scale;
@@ -591,9 +579,10 @@ export function VideoPanel(props: VideoPanelProps) {
 		props.editingTrackletId,
 	]);
 
-	// Hint text over the frame while a mask tool is active.
 	let hint: string | null = null;
-	if (drawing) {
+	if (props.tool === "propagate") {
+		hint = props.promptHint ?? null;
+	} else if (drawing) {
 		if (props.method === "sam") {
 			hint =
 				props.prompt.length === 0

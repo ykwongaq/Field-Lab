@@ -27,7 +27,13 @@ from project_builder import (
     build_project_from_video,
     project_name_for,
 )
-
+from propagate_service import (
+    FrameInput,
+    PropagateError,
+    PropagateUnavailable,
+    decode_rle,
+)
+from propagate_service import service as propagate
 from sam2_service import PromptError, Sam2Unavailable, parse_points
 from sam2_service import service as sam2
 from sam3_service import Sam3Service, Sam3Unavailable
@@ -305,16 +311,23 @@ async def sam_segment(
         result = await run_in_threadpool(
             sam2.segment, data, parsed_points, image_key=image_key
         )
+        rle = result.rle()
+        runs = binary_to_runs(result.mask.astype(np.uint8))
     except Sam2Unavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except PromptError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("SAM 2 inference failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"SAM 2 inference failed: {type(exc).__name__}: {exc}",
+        ) from exc
 
-    rle = result.rle()
     bbox = result.bbox()
     return SamSegmentResponse(
         rle=RleMask(size=rle["size"], counts=rle["counts"]),
-        runs=binary_to_runs(result.mask.astype(np.uint8)),
+        runs=runs,
         height=result.height,
         width=result.width,
         score=result.score,
@@ -429,4 +442,134 @@ async def sam3_segment(
         instances=result.instances,
         instance_scores=[round(s, 4) for s in result.instance_scores],
         exemplars=[b.as_list() + [float(b.label)] for b in result.exemplars],
+    )
+
+class PropagateStatus(BaseModel):
+    """Which trackers can propagate masks, and the per-request frame cap."""
+
+    sam2: SamStatus
+    sam3: SamStatus
+    max_frames: int
+
+
+class PropagatedFrame(BaseModel):
+    """The tracker's mask on one frame of the window (empty masks included)."""
+
+    frame_index: int
+    rle: RleMask
+    runs: List[ForegroundRun]
+    area: int
+
+
+class PropagateResponse(BaseModel):
+    backend: str
+    model: str
+    device: str
+    height: int
+    width: int
+    elapsed_ms: float
+    masks: List[PropagatedFrame]
+
+
+@app.get("/api/propagate/status", response_model=PropagateStatus)
+def propagate_status() -> PropagateStatus:
+    status = propagate.status()
+    return PropagateStatus(
+        sam2=SamStatus(**status["sam2"]),
+        sam3=SamStatus(**status["sam3"]),
+        max_frames=status["max_frames"],
+    )
+
+
+@app.post("/api/propagate", response_model=PropagateResponse)
+async def propagate_mask(
+    frames: List[UploadFile] = File(
+        ..., description="The frames of the window (anchor included), any order"
+    ),
+    frame_indices: str = Form(
+        ..., description="JSON list with the clip frame index of each uploaded file"
+    ),
+    anchor: int = Form(..., description="Clip frame index that carries the mask"),
+    mask: str = Form(..., description='JSON RLE {"size": [h, w], "counts": str}'),
+    backward: int = Form(0, description="Frames to track before the anchor"),
+    forward: int = Form(0, description="Frames to track after the anchor"),
+    backend: str = Form("sam2", description='"sam2" (instance) or "sam3" (semantic)'),
+) -> PropagateResponse:
+    """Propagate one mask over `backward` + `forward` neighbouring frames.
+
+    The browser uploads exactly the frames of the window, so the request size
+    is bounded by `PROPAGATE_MAX_FRAMES`; longer stretches take several runs.
+    The anchor's own mask is not returned.
+    """
+    try:
+        indices = json.loads(frame_indices)
+        if not isinstance(indices, list) or not all(
+            isinstance(i, int) for i in indices
+        ):
+            raise PropagateError("`frame_indices` must be a JSON list of integers.")
+        if len(indices) != len(frames):
+            raise PropagateError(
+                f"{len(frames)} files but {len(indices)} frame indices were sent."
+            )
+        anchor_mask = decode_rle(json.loads(mask))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"Form field is not JSON: {exc}")
+    except PropagateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    max_frames = propagate.config.max_frames
+    if len(frames) > max_frames:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{len(frames)} frames exceed PROPAGATE_MAX_FRAMES={max_frames}; propagate in shorter runs.",
+        )
+
+    inputs: List[FrameInput] = []
+    for index, upload in zip(indices, frames):
+        data = await upload.read(MAX_FRAME_BYTES + 1)
+        await upload.close()
+        if len(data) > MAX_FRAME_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Frame {index} exceeds the upload limit of {MAX_FRAME_BYTES} bytes",
+            )
+        inputs.append(FrameInput(index=index, data=data))
+
+    try:
+        result = await run_in_threadpool(
+            propagate.propagate,
+            backend,
+            inputs,
+            anchor,
+            anchor_mask,
+            backward=backward,
+            forward=forward,
+        )
+    except PropagateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except PropagateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # CUDA OOM, version mismatch, ...
+        logger.exception("Mask propagation failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Propagation failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    return PropagateResponse(
+        backend=result.backend,
+        model=result.model,
+        device=result.device,
+        height=result.height,
+        width=result.width,
+        elapsed_ms=round(result.elapsed_ms, 1),
+        masks=[
+            PropagatedFrame(
+                frame_index=item.frame_index,
+                rle=RleMask(**item.rle()),
+                runs=binary_to_runs(item.mask.astype(np.uint8)),
+                area=item.area,
+            )
+            for item in result.masks
+        ],
     )

@@ -22,10 +22,15 @@ import {
 	type PaintMode,
 } from "../lib/raster";
 import {
+	fetchPropagateStatus,
 	fetchSam3Status,
 	fetchSamStatus,
+	propagateMask,
 	segmentConcept,
 	segmentFrame,
+	type PropagateBackend,
+	type PropagateStatus,
+	type PropagatedFrame,
 	type Sam3SegmentResult,
 	type SamSegmentResult,
 	type SamStatus,
@@ -47,8 +52,21 @@ export interface WorkspaceNotice {
 	text: string;
 }
 
+interface PropagateRun {
+	trackletId: number;
+	anchor: number;
+	first: number;
+	last: number;
+	backend: PropagateBackend;
+	model: string;
+	device: string;
+	elapsedMs: number;
+	masks: Map<number, PropagatedFrame>;
+}
+
+const DEFAULT_PROPAGATE_FORWARD = 10;
+
 interface WorkspaceProps {
-	/** The clip as read from the archive; edits live in Workspace state. */
 	clip: Clip;
 	zip: ZipArchive;
 	notice?: WorkspaceNotice | null;
@@ -63,7 +81,6 @@ export function Workspace({
 	onDismissNotice,
 	onReset,
 }: WorkspaceProps) {
-	// The clip is immutable; mask edits replace it (see Clip.addTracklet etc.).
 	const [clip, setClip] = useState(initialClip);
 	const vocab = MODE_VOCABULARY[clip.mode];
 	const [frameIndex, setFrameIndex] = useState(0);
@@ -75,12 +92,7 @@ export function Workspace({
 	const [maskOpacity, setMaskOpacity] = useState(0.55);
 	const [tick, setTick] = useState(0);
 
-	// ----- Add / Edit mask tools -----
-	// A mask is built as a *draft* (RLE) from any mix of operations: SAM
-	// results, closed polygons and brush strokes, each added to or erased
-	// from the draft. "Add mask" starts from an empty draft, "Edit mask" from
-	// the selected tracklet's mask on the current frame. SAM 2 serves
-	// instance projects, SAM 3 semantic ones.
+	
 	const semantic = clip.mode === "semantic";
 	const modelName = semantic ? "SAM 3" : "SAM 2";
 	const [tool, setTool] = useState<Tool>("review");
@@ -90,8 +102,7 @@ export function Workspace({
 	const [draft, setDraft] = useState<RawRle | null>(null);
 	const [history, setHistory] = useState<(RawRle | null)[]>([]);
 	const [polygon, setPolygon] = useState<FramePoint[]>([]);
-	// SAM: clicks placed so far and the live result they produce. The result
-	// is a *candidate* until it is applied to (or committed with) the draft.
+	
 	const [prompt, setPrompt] = useState<PromptPoint[]>([]);
 	const [candidate, setCandidate] = useState<
 		SamSegmentResult | Sam3SegmentResult | null
@@ -100,12 +111,21 @@ export function Workspace({
 	const [promptError, setPromptError] = useState<string | null>(null);
 	const segmentAbortRef = useRef<AbortController | null>(null);
 	const [sam, setSam] = useState<SamStatus | null>(null);
-	// Semantic only: class name typed in the prompt bar, sent to SAM 3 as the
-	// concept and used to pick the class the mask is added to.
+	
 	const [className, setClassName] = useState("");
 	const [exporting, setExporting] = useState(false);
 	const [localNotice, setLocalNotice] = useState<WorkspaceNotice | null>(null);
 	const notice = localNotice ?? externalNotice;
+
+	
+	const [propStatus, setPropStatus] = useState<PropagateStatus | null>(null);
+	const [propBack, setPropBack] = useState(0);
+	const [propForward, setPropForward] = useState(DEFAULT_PROPAGATE_FORWARD);
+	const [propagating, setPropagating] = useState(false);
+	const [propError, setPropError] = useState<string | null>(null);
+	const [propRun, setPropRun] = useState<PropagateRun | null>(null);
+	const [propSkipExisting, setPropSkipExisting] = useState(true);
+	const propAbortRef = useRef<AbortController | null>(null);
 	const dismissNotice = useCallback(() => {
 		if (localNotice) setLocalNotice(null);
 		else onDismissNotice?.();
@@ -114,15 +134,17 @@ export function Workspace({
 	const fetchStatus = semantic ? fetchSam3Status : fetchSamStatus;
 	const refreshSam = useCallback(() => {
 		setSam(null);
+		setPropStatus(null);
 		void fetchStatus().then(setSam);
+		void fetchPropagateStatus().then(setPropStatus);
 	}, [fetchStatus]);
 	useEffect(() => {
 		const controller = new AbortController();
 		void fetchStatus(controller.signal).then(setSam, () => {});
+		void fetchPropagateStatus(controller.signal).then(setPropStatus, () => {});
 		return () => controller.abort();
 	}, [fetchStatus]);
 
-	// Warn before the tab closes with unexported mask edits.
 	useEffect(() => {
 		if (clip.editCount === 0) return;
 		const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -173,7 +195,6 @@ export function Workspace({
 		[clip.tracklets],
 	);
 
-	/** Clicking a mask on the frame selects it without moving the playhead. */
 	const selectOnCanvas = useCallback((id: number) => {
 		setSelectedId(id);
 	}, []);
@@ -246,7 +267,6 @@ export function Workspace({
 		}
 	}, [clip.tracklets, selectedId, store]);
 
-	/** Drop the SAM clicks and their candidate (the draft is kept). */
 	const resetPrompt = useCallback(() => {
 		segmentAbortRef.current?.abort();
 		segmentAbortRef.current = null;
@@ -256,7 +276,6 @@ export function Workspace({
 		setPromptError(null);
 	}, []);
 
-	/** Mask the tool started from: the selected tracklet's mask when editing. */
 	const originalMask = useMemo(
 		() =>
 			tool === "editMask" && selected
@@ -265,7 +284,6 @@ export function Workspace({
 		[tool, selected, clip, frameIndex],
 	);
 
-	/** Start over on the current frame: empty draft (add) or stored mask (edit). */
 	const resetDraft = useCallback(
 		(forTool: Tool = tool) => {
 			resetPrompt();
@@ -280,8 +298,7 @@ export function Workspace({
 		[tool, selected, clip, frameIndex, resetPrompt],
 	);
 
-	// The class the semantic mask will go to: an existing class whose label
-	// matches the typed name (case-insensitive), or a new one.
+	
 	const targetClass = useMemo(
 		() => (semantic ? clip.findTrackletByLabel(className) : null),
 		[semantic, clip, className],
@@ -293,36 +310,67 @@ export function Workspace({
 
 	const samAvailable = sam?.available ?? false;
 
+	const selectedHasMaskHere =
+		selected !== null && clip.rawMaskAt(selected, frameIndex) !== null;
+
+	const propRunRef = useRef(propRun);
+	propRunRef.current = propRun;
+	
+	
+	const discardPropagation = useCallback((restoreFrame = false) => {
+		propAbortRef.current?.abort();
+		propAbortRef.current = null;
+		if (restoreFrame && propRunRef.current)
+			setFrameIndex(propRunRef.current.anchor);
+		setPropagating(false);
+		setPropRun(null);
+		setPropError(null);
+	}, []);
+
 	const changeTool = useCallback(
 		(next: Tool) => {
 			if (next === "editMask" && !selected) return;
+			if (next === "propagate" && !selectedHasMaskHere) return;
 			if (next !== "review") {
 				setPlaying(false);
-				// Without the segmenter the tool still works with polygon/brush.
 				if (!samAvailable && method === "sam") setMethod("polygon");
 			}
+			if (next === "propagate" && !propStatus) {
+				void fetchPropagateStatus().then(setPropStatus);
+			}
+			discardPropagation(true);
 			setTool(next);
 			setPaintMode("add");
 			resetDraft(next);
 		},
-		[selected, samAvailable, method, resetDraft],
+		[
+			selected,
+			selectedHasMaskHere,
+			samAvailable,
+			method,
+			propStatus,
+			discardPropagation,
+			resetDraft,
+		],
 	);
 
-	// A draft belongs to one frame: moving the playhead starts over (for
-	// Edit mask that means loading the selected tracklet's mask there).
-	// `resetDraft` is read through a ref so only the frame change triggers this.
+	
 	const resetDraftRef = useRef(resetDraft);
 	resetDraftRef.current = resetDraft;
 	const toolRef = useRef(tool);
 	toolRef.current = tool;
 	useEffect(() => {
-		if (toolRef.current !== "review") resetDraftRef.current();
+		
+		if (toolRef.current !== "review" && toolRef.current !== "propagate")
+			resetDraftRef.current();
 	}, [frameIndex]);
+	const discardPropagationRef = useRef(discardPropagation);
+	discardPropagationRef.current = discardPropagation;
 	useEffect(() => {
 		if (toolRef.current === "editMask") resetDraftRef.current();
+		if (toolRef.current === "propagate") discardPropagationRef.current();
 	}, [selectedId]);
 
-	/** Replace the draft, remembering the previous one for Undo. */
 	const pushDraft = useCallback(
 		(next: RawRle | null) => {
 			setHistory((stack) => [...stack, draft].slice(-40));
@@ -357,8 +405,7 @@ export function Workspace({
 					points,
 					signal: controller.signal,
 				};
-				// Semantic: SAM 3 segments the whole class (clicks + class name);
-				// instance: SAM 2 segments the one clicked object.
+				
 				const result = semantic
 					? await segmentConcept({ ...request, text })
 					: await segmentFrame(request);
@@ -378,7 +425,6 @@ export function Workspace({
 		[zip, clip, frameIndex, semantic, className],
 	);
 
-	// Semantic: run SAM 3 from the class name alone (Enter in the name box).
 	const runTextPrompt = useCallback(() => {
 		if (!semantic || method !== "sam") return;
 		if (prompt.length === 0 && !className.trim()) return;
@@ -408,7 +454,6 @@ export function Workspace({
 		}
 	}, [prompt, runSegmentation]);
 
-	/** SAM: fold the candidate into the draft and start a fresh prompt. */
 	const applyCandidate = useCallback(() => {
 		if (!candidate || segmenting) return;
 		if (candidate.area > 0)
@@ -420,9 +465,7 @@ export function Workspace({
 		setPolygon((current) => [...current, point]);
 	}, []);
 
-	/** Polygon: rasterise the closed shape into the draft. */
 	const closePolygon = useCallback(() => {
-		// A double click delivers two clicks first; drop a duplicated last vertex.
 		const points = polygon.filter(
 			(p, i) => i === 0 || p.x !== polygon[i - 1].x || p.y !== polygon[i - 1].y,
 		);
@@ -437,7 +480,6 @@ export function Workspace({
 		pushDraft(composeRle(draft, rle, paintMode));
 	}, [polygon, clip.width, clip.height, draft, paintMode, pushDraft]);
 
-	/** Brush: a finished stroke, already rasterised by the video panel. */
 	const applyStroke = useCallback(
 		(stroke: RawRle, mode: PaintMode) => {
 			setPromptError(null);
@@ -446,7 +488,6 @@ export function Workspace({
 		[draft, pushDraft],
 	);
 
-	/** Backspace: last SAM click, last polygon vertex, or last draft change. */
 	const undo = useCallback(() => {
 		if (method === "sam" && prompt.length > 0) {
 			undoPromptPoint();
@@ -466,7 +507,6 @@ export function Workspace({
 		(method === "polygon" && polygon.length > 0) ||
 		history.length > 0;
 
-	// What Commit would store: the draft plus a pending SAM candidate.
 	const finalMask = useMemo(() => {
 		const withCandidate =
 			method === "sam" && candidate && candidate.area > 0
@@ -484,7 +524,7 @@ export function Workspace({
 	const commitMask = useCallback(() => {
 		if (tool === "review" || segmenting) return;
 
-		// ----- Edit mask: replace the selected tracklet's mask on this frame.
+		// ----- Edit mask
 		if (tool === "editMask") {
 			if (selectedId === null || !selected || !draftChanged) return;
 			const next = clip.replaceMask(selectedId, frameIndex, finalMask);
@@ -526,8 +566,7 @@ export function Workspace({
 			return;
 		}
 
-		// Semantic: the mask is the class's mask on this frame. Union it with
-		// the class the name matches, or start a new class.
+		
 		const regions =
 			method === "sam" && candidate && "instances" in candidate
 				? `${candidate.instances} region${candidate.instances === 1 ? "" : "s"}`
@@ -613,10 +652,183 @@ export function Workspace({
 		[selectedId, clip, frameIndex, store, refresh, vocab.unit],
 	);
 
-	const selectedHasMaskHere =
-		selected !== null && clip.rawMaskAt(selected, frameIndex) !== null;
+	
+	
+	const propagateBackend: PropagateBackend =
+		semantic && propStatus?.sam3.available ? "sam3" : "sam2";
+	const propagateModel = propagateBackend === "sam3" ? "SAM 3" : "SAM 2";
+	const propagateAvailable = propStatus
+		? propStatus[propagateBackend].available
+		: false;
+	const propagateFallbackNote =
+		semantic && propStatus && !propStatus.sam3.available
+			? `SAM 3 tracker unavailable (${propStatus.sam3.error ?? "unknown reason"}); using the SAM 2 video predictor instead.`
+			: null;
 
-	// Frame-accurate playback loop driven by the clip's fps.
+	const propAnchor = propRun ? propRun.anchor : frameIndex;
+	const anchorMask = useMemo(
+		() =>
+			tool === "propagate" && selected && !propRun
+				? clip.rawMaskAt(selected, frameIndex)
+				: null,
+		[tool, selected, propRun, clip, frameIndex],
+	);
+	
+	const propRange = useMemo(() => {
+		let back = Math.max(0, Math.min(propBack, propAnchor));
+		let forward = Math.max(
+			0,
+			Math.min(propForward, clip.frameCount - 1 - propAnchor),
+		);
+		const cap = propStatus?.maxFrames ?? 0;
+		if (cap > 0 && back + forward + 1 > cap) {
+			forward = Math.max(0, Math.min(forward, cap - 1 - back));
+			back = Math.max(0, Math.min(back, cap - 1 - forward));
+		}
+		return {
+			back,
+			forward,
+			first: propAnchor - back,
+			last: propAnchor + forward,
+		};
+	}, [propBack, propForward, propAnchor, clip.frameCount, propStatus]);
+	const propCapped =
+		propRange.back < Math.min(propBack, propAnchor) ||
+		propRange.forward < Math.min(propForward, clip.frameCount - 1 - propAnchor);
+
+	const runPropagation = useCallback(async () => {
+		if (!selected || !anchorMask || propagating) return;
+		if (propRange.back === 0 && propRange.forward === 0) return;
+		const controller = new AbortController();
+		propAbortRef.current = controller;
+		setPropagating(true);
+		setPropError(null);
+		setPropRun(null);
+		const anchor = frameIndex;
+		try {
+			const frames = [];
+			for (let index = propRange.first; index <= propRange.last; index++) {
+				frames.push({
+					index,
+					image: await zip.readAsBlob(clip.frameEntry(index)),
+				});
+			}
+			const result = await propagateMask({
+				frames,
+				anchor,
+				mask: anchorMask,
+				backward: propRange.back,
+				forward: propRange.forward,
+				backend: propagateBackend,
+				signal: controller.signal,
+			});
+			if (controller.signal.aborted) return;
+			setPropRun({
+				trackletId: selected.id,
+				anchor,
+				first: propRange.first,
+				last: propRange.last,
+				backend: result.backend,
+				model: result.model,
+				device: result.device,
+				elapsedMs: result.elapsedMs,
+				masks: new Map(result.masks.map((item) => [item.frameIndex, item])),
+			});
+			setFrameIndex(propRange.forward > 0 ? anchor + 1 : anchor - 1);
+		} catch (cause) {
+			if (controller.signal.aborted) return;
+			setPropError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			if (propAbortRef.current === controller) {
+				propAbortRef.current = null;
+				setPropagating(false);
+			}
+		}
+	}, [
+		selected,
+		anchorMask,
+		propagating,
+		propRange,
+		frameIndex,
+		zip,
+		clip,
+		propagateBackend,
+	]);
+
+	const propPreview =
+		tool === "propagate" ? (propRun?.masks.get(frameIndex) ?? null) : null;
+	const propSummary = useMemo(() => {
+		if (!propRun || !selected) return null;
+		const found = [...propRun.masks.values()].filter((m) => m.area > 0);
+		const conflicts = found.filter(
+			(m) => clip.rawMaskAt(selected, m.frameIndex) !== null,
+		);
+		const accepted = propSkipExisting
+			? found.filter((m) => clip.rawMaskAt(selected, m.frameIndex) === null)
+			: found;
+		return {
+			total: propRun.masks.size,
+			found: found.length,
+			empty: propRun.masks.size - found.length,
+			conflicts: conflicts.length,
+			accepted,
+		};
+	}, [propRun, selected, clip, propSkipExisting]);
+
+	const stepPropagated = useCallback(
+		(delta: 1 | -1) => {
+			if (!propRun) return;
+			const span = propRun.last - propRun.first + 1;
+			let next = frameIndex;
+			for (let k = 0; k < span; k++) {
+				next = next + delta;
+				if (next < propRun.first) next = propRun.last;
+				if (next > propRun.last) next = propRun.first;
+				if (propRun.masks.has(next)) break;
+			}
+			setFrameIndex(next);
+		},
+		[propRun, frameIndex],
+	);
+
+	const acceptPropagation = useCallback(() => {
+		if (!propRun || !propSummary || !selected || propagating) return;
+		let next = clip;
+		for (const item of propSummary.accepted) {
+			next = next.replaceMask(propRun.trackletId, item.frameIndex, item.rle);
+		}
+		setClip(next);
+		refresh();
+		const count = propSummary.accepted.length;
+		const skipped = propSummary.found - count;
+		discardPropagation();
+		setTool("review");
+		setLocalNotice({
+			kind: count > 0 ? "success" : "info",
+			text:
+				count > 0
+					? `Propagated ${vocab.unit} "${selected.label}" (#${selected.id}) from frame ${propRun.anchor + 1} to ${count} frame${count === 1 ? "" : "s"} (${propRun.first + 1}–${propRun.last + 1}) with ${propRun.backend === "sam3" ? "SAM 3" : "SAM 2"}${
+							skipped > 0
+								? `; ${skipped} frame${skipped === 1 ? "" : "s"} kept ${skipped === 1 ? "its" : "their"} existing mask`
+								: ""
+						}${
+							propSummary.empty > 0
+								? `; nothing found on ${propSummary.empty}`
+								: ""
+						}. Use Export to save.`
+					: "No mask was stored: every frame in the range already had one or the tracker found nothing.",
+		});
+	}, [
+		propRun,
+		propSummary,
+		selected,
+		propagating,
+		clip,
+		refresh,
+		discardPropagation,
+		vocab.unit,
+	]);
+
 	useEffect(() => {
 		if (!playing) return;
 		let raf = 0;
@@ -647,7 +859,19 @@ export function Workspace({
 			if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
 				return;
 
-			if (tool !== "review") {
+			if (tool === "propagate") {
+				switch (event.key) {
+					case "Escape":
+						event.preventDefault();
+						changeTool("review");
+						return;
+					case "Enter":
+						event.preventDefault();
+						if (propRun) acceptPropagation();
+						else void runPropagation();
+						return;
+				}
+			} else if (tool !== "review") {
 				switch (event.key) {
 					case "Escape":
 						event.preventDefault();
@@ -686,6 +910,10 @@ export function Workspace({
 					break;
 				case "e":
 					if (selected) changeTool(tool === "editMask" ? "review" : "editMask");
+					break;
+				case "t":
+					if (selectedHasMaskHere || tool === "propagate")
+						changeTool(tool === "propagate" ? "review" : "propagate");
 					break;
 				case " ":
 					event.preventDefault();
@@ -728,6 +956,10 @@ export function Workspace({
 		closePolygon,
 		commitMask,
 		undo,
+		selectedHasMaskHere,
+		propRun,
+		acceptPropagation,
+		runPropagation,
 	]);
 
 	const handleExport = useCallback(async () => {
@@ -740,8 +972,7 @@ export function Workspace({
 		downloadText(`${clip.name}.review.csv`, payload.csv, "text/csv");
 		if (clip.editCount === 0) return;
 		if (semantic) {
-			// Semantic masks are per-frame label-map PNGs, so the whole project
-			// archive is rewritten (frames/video copied, JSON + masks/ updated).
+			
 			setExporting(true);
 			try {
 				const blob = await clip.exportProjectZip(zip, store.getRecord());
@@ -760,8 +991,7 @@ export function Workspace({
 			}
 			return;
 		}
-		// Instance: masks added/removed in the app: write the full annotation
-		// JSON so it can replace `annotations/<clip>.json` inside the archive.
+		
 		downloadText(
 			clip.annotationEntry.replace(/^annotations\//, ""),
 			JSON.stringify(clip.toDataset(store.getRecord()), null, 2),
@@ -883,6 +1113,8 @@ export function Workspace({
 					canDeleteFrame={selectedHasMaskHere}
 					canDeleteTracklet={selected !== null}
 					canEdit={selected !== null}
+					canPropagate={selectedHasMaskHere}
+					propagateModel={propagateModel}
 					selectedMaskCount={selected?.maskFrames.count ?? 0}
 					onToolChange={changeTool}
 					onDelete={deleteSelected}
@@ -890,7 +1122,218 @@ export function Workspace({
 				/>
 
 				<section className={styles.videoCol}>
-					{tool !== "review" && (
+					{tool === "propagate" && selected && (
+						<div className={styles.promptBar} role="toolbar">
+							<span className={styles.promptTitle}>
+								Propagate · {selected.label} #{selected.id} · from frame{" "}
+								{propAnchor + 1}
+							</span>
+
+							{!propRun ? (
+								<>
+									<label className={styles.rangeField}>
+										Back
+										<input
+											type="number"
+											className={`${styles.promptInput} ${styles.numberInput}`}
+											min={0}
+											max={propAnchor}
+											value={propBack}
+											disabled={propagating}
+											onChange={(event) =>
+												setPropBack(
+													Math.max(
+														0,
+														Math.floor(Number(event.target.value) || 0),
+													),
+												)
+											}
+											title="Frames before the anchor to track (backward)"
+										/>
+									</label>
+									<label className={styles.rangeField}>
+										Forward
+										<input
+											type="number"
+											className={`${styles.promptInput} ${styles.numberInput}`}
+											min={0}
+											max={clip.frameCount - 1 - propAnchor}
+											value={propForward}
+											disabled={propagating}
+											onChange={(event) =>
+												setPropForward(
+													Math.max(
+														0,
+														Math.floor(Number(event.target.value) || 0),
+													),
+												)
+											}
+											title="Frames after the anchor to track (forward)"
+										/>
+									</label>
+									<span className={styles.promptStatus}>
+										Frames {propRange.first + 1}–{propRange.last + 1} (
+										{propRange.back + propRange.forward} to fill) ·{" "}
+										{propagateModel === "SAM 3"
+											? "SAM 3 tracker"
+											: "SAM 2 video predictor"}
+										{propStatus && propagateAvailable
+											? ` on ${propStatus[propagateBackend].device}`
+											: ""}
+										{propCapped && propStatus
+											? ` · capped at ${propStatus.maxFrames} frames per run`
+											: ""}
+									</span>
+									{propagateFallbackNote && (
+										<span className={styles.promptStatus}>
+											{propagateFallbackNote}
+										</span>
+									)}
+									{!anchorMask && (
+										<span className={styles.promptError}>
+											{vocab.unit.charAt(0).toUpperCase() + vocab.unit.slice(1)}{" "}
+											#{selected.id} has no mask on this frame — move to a frame
+											where it does.
+										</span>
+									)}
+									{propStatus && !propagateAvailable && (
+										<span className={styles.promptError}>
+											{propagateModel} tracker unavailable:{" "}
+											{propStatus[propagateBackend].error ?? "unknown reason"}
+										</span>
+									)}
+									{propError && (
+										<span className={styles.promptError}>{propError}</span>
+									)}
+									{propagating && (
+										<span className={styles.promptStatus}>
+											Propagating {propRange.back + propRange.forward + 1}{" "}
+											frames…
+										</span>
+									)}
+									<span className={styles.spacer} />
+									{propagating ? (
+										<button
+											type="button"
+											className="btn"
+											onClick={() => discardPropagation()}
+											title="Stop the running propagation"
+										>
+											Stop
+										</button>
+									) : (
+										<button
+											type="button"
+											className="btn"
+											onClick={() => changeTool("review")}
+											title="Esc"
+										>
+											Cancel
+										</button>
+									)}
+									<button
+										type="button"
+										className="btn btnPrimary"
+										disabled={
+											propagating ||
+											!anchorMask ||
+											!propagateAvailable ||
+											propRange.back + propRange.forward === 0
+										}
+										onClick={() => void runPropagation()}
+										title="Enter"
+									>
+										{propagating ? "Propagating…" : "Propagate"}
+									</button>
+								</>
+							) : (
+								<>
+									<span className={styles.promptStatus}>
+										{propRun.backend === "sam3" ? "SAM 3" : "SAM 2"} ·{" "}
+										{propSummary?.total ?? 0} frames in{" "}
+										{(propRun.elapsedMs / 1000).toFixed(1)} s ·{" "}
+										{propSummary?.found ?? 0} with a mask
+										{propSummary && propSummary.empty > 0
+											? `, ${propSummary.empty} empty (left unchanged)`
+											: ""}
+									</span>
+									<span className={styles.promptStatus}>
+										{frameIndex === propRun.anchor
+											? "Anchor frame (unchanged)"
+											: propPreview
+												? propPreview.area > 0
+													? `Frame ${frameIndex + 1}: ${propPreview.area.toLocaleString()} px${
+															clip.rawMaskAt(selected, frameIndex)
+																? propSkipExisting
+																	? " · has a mask, will be skipped"
+																	: " · replaces the existing mask"
+																: ""
+														}`
+													: `Frame ${frameIndex + 1}: nothing found`
+												: `Frame ${frameIndex + 1} is outside the range ${propRun.first + 1}–${propRun.last + 1}`}
+									</span>
+									{propSummary && propSummary.conflicts > 0 && (
+										<label className={styles.rangeField}>
+											<input
+												type="checkbox"
+												checked={propSkipExisting}
+												onChange={(event) =>
+													setPropSkipExisting(event.target.checked)
+												}
+											/>
+											Skip {propSummary.conflicts} frame
+											{propSummary.conflicts === 1 ? "" : "s"} that already{" "}
+											{propSummary.conflicts === 1 ? "has" : "have"} a mask
+										</label>
+									)}
+									<span className={styles.spacer} />
+									<button
+										type="button"
+										className="btn"
+										onClick={() => stepPropagated(-1)}
+										title="Previous propagated frame (← also steps frames)"
+									>
+										◀ Prev
+									</button>
+									<button
+										type="button"
+										className="btn"
+										onClick={() => stepPropagated(1)}
+										title="Next propagated frame (→ also steps frames)"
+									>
+										Next ▶
+									</button>
+									<button
+										type="button"
+										className="btn"
+										onClick={() => discardPropagation(true)}
+										title="Forget this result and set up another run"
+									>
+										Discard
+									</button>
+									<button
+										type="button"
+										className="btn"
+										onClick={() => changeTool("review")}
+										title="Esc"
+									>
+										Cancel
+									</button>
+									<button
+										type="button"
+										className="btn btnPrimary"
+										disabled={!propSummary || propSummary.accepted.length === 0}
+										onClick={acceptPropagation}
+										title="Enter"
+									>
+										Accept {propSummary?.accepted.length ?? 0} mask
+										{propSummary?.accepted.length === 1 ? "" : "s"}
+									</button>
+								</>
+							)}
+						</div>
+					)}
+					{(tool === "addMask" || tool === "editMask") && (
 						<div className={styles.promptBar} role="toolbar">
 							<span className={styles.promptTitle}>
 								{tool === "addMask"
@@ -1167,17 +1610,33 @@ export function Workspace({
 						prompt={prompt}
 						polygon={polygon}
 						draft={draftDecoded}
-						candidate={method === "sam" ? (candidate?.mask ?? null) : null}
-						editingTrackletId={tool === "editMask" ? selectedId : null}
+						candidate={
+							tool === "propagate"
+								? (propPreview?.mask ?? null)
+								: method === "sam"
+									? (candidate?.mask ?? null)
+									: null
+						}
+						editingTrackletId={
+							tool === "editMask"
+								? selectedId
+								: tool === "propagate" && propPreview && propPreview.area > 0
+									? (propRun?.trackletId ?? null)
+									: null
+						}
 						onPromptPoint={addPromptPoint}
 						onPolygonPoint={addPolygonPoint}
 						onPolygonClose={closePolygon}
 						onStroke={applyStroke}
 						onSelectTracklet={selectOnCanvas}
 						promptHint={
-							semantic
-								? "Click a region of the class to find all of it · Shift-click or right-click to exclude · or type a class name above"
-								: undefined
+							tool === "propagate"
+								? propRun
+									? "Reviewing the tracker's masks · ← → step frames · Enter accepts · Esc cancels"
+									: "Set the range above and press Propagate · Enter runs · Esc cancels"
+								: semantic
+									? "Click a region of the class to find all of it · Shift-click or right-click to exclude · or type a class name above"
+									: undefined
 						}
 					/>
 				</section>

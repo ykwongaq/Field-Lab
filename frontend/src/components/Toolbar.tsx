@@ -5,7 +5,9 @@ import type { ProjectMode } from "../lib/project";
 import { MODE_VOCABULARY } from "../lib/project";
 import styles from "./Toolbar.module.css";
 
-export type Tool = "review" | "addMask" | "editMask";
+
+export type Tool = "review" | "addMask" | "editMask" | "propagate";
+
 export type DrawMethod = "sam" | "polygon" | "brush";
 
 export type DeleteScope = "frame" | "tracklet";
@@ -14,21 +16,18 @@ interface ToolbarProps {
 	mode: ProjectMode;
 	tool: Tool;
 	sam: SamStatus | null;
-	/** The selected tracklet has a mask on the current frame. */
 	modelName: string;
 	canDeleteFrame: boolean;
 	canEdit: boolean;
 	canDeleteTracklet: boolean;
+	canPropagate: boolean;
+	propagateModel: string;
 	selectedMaskCount: number;
 	onToolChange: (tool: Tool) => void;
 	onDelete: (scope: DeleteScope) => void;
 	onRefreshStatus: () => void;
 }
 
-/**
- * Vertical function bar on the left of the video: Add mask, 
- * Delete mask, Propagate, Run model.
- */
 export function Toolbar(props: ToolbarProps) {
 	const vocab = MODE_VOCABULARY[props.mode];
 	const [deleteOpen, setDeleteOpen] = useState(false);
@@ -65,6 +64,11 @@ export function Toolbar(props: ToolbarProps) {
 	const editHelp = props.canEdit
 		? `Change the selected ${vocab.unit}'s mask on this frame with ${model} clicks, polygon or brush (add or erase).`
 		: `Select a ${vocab.unit} first (click its mask on the frame or pick it in the list).`;
+	const propagateHelp = props.canPropagate
+		? `Carry the selected ${vocab.unit}'s mask from this frame over a bounded range of frames before and after it with the ${props.propagateModel} tracker, then review and accept the result.`
+		: props.canDeleteTracklet
+			? `The selected ${vocab.unit} has no mask on this frame — go to a frame where it does.`
+			: `Select a ${vocab.unit} with a mask on this frame first.`;
 
 	return (
 		<nav className={styles.bar} aria-label="Tools">
@@ -159,9 +163,15 @@ export function Toolbar(props: ToolbarProps) {
 
 			<ToolButton
 				label="Propagate"
-				disabled
-				title="Coming next: extend the selected mask over the following frames with the SAM 2 video predictor (a bounded range, not the whole clip)."
-				onClick={() => {}}
+				shortcut="T"
+				active={props.tool === "propagate"}
+				disabled={!props.canPropagate && props.tool !== "propagate"}
+				title={propagateHelp}
+				onClick={() =>
+					props.onToolChange(
+						props.tool === "propagate" ? "review" : "propagate",
+					)
+				}
 				icon={
 					<svg viewBox="0 0 24 24" aria-hidden="true">
 						<path d="M4 12h12M12 6l6 6-6 6" />

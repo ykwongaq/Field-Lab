@@ -27,7 +27,6 @@
   font-size: 1.1rem;
 }
 
-/* Segmentation mode: read-only badge, fixed at project creation. */
 .modeBadge {
   display: inline-flex;
   align-items: center;
@@ -143,7 +142,6 @@
   min-height: 0;
 }
 
-/* Action bar shown above the video while the Add mask tool is active. */
 .promptBar {
   display: flex;
   align-items: center;
@@ -170,7 +168,6 @@
   color: var(--bad);
 }
 
-/* Class-name box in the semantic prompt bar. */
 .promptInput {
   min-width: 180px;
   padding: 5px 8px;
@@ -201,7 +198,6 @@
   background: var(--panel);
 }
 
-/* Method / paint-mode switches in the mask prompt bar. */
 .segmented {
   display: inline-flex;
   border: 1px solid var(--line);
@@ -237,7 +233,6 @@
   color: #fff;
 }
 
-/* Brush diameter slider. */
 .brushSize {
   display: inline-flex;
   align-items: center;
@@ -255,4 +250,23 @@
   min-width: 42px;
   font-variant-numeric: tabular-nums;
   opacity: 0.8;
+}
+
+.rangeField {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.numberInput {
+  width: 64px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.spacer {
+  flex: 1 1 auto;
 }

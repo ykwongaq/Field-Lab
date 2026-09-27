@@ -46,6 +46,8 @@ const STATUS_ENDPOINT = `${API_BASE}/api/sam/status`;
 const SEGMENT_ENDPOINT = `${API_BASE}/api/sam/segment`;
 const SAM3_STATUS_ENDPOINT = `${API_BASE}/api/sam3/status`;
 const SAM3_SEGMENT_ENDPOINT = `${API_BASE}/api/sam3/segment`;
+const PROPAGATE_STATUS_ENDPOINT = `${API_BASE}/api/propagate/status`;
+const PROPAGATE_ENDPOINT = `${API_BASE}/api/propagate`;
 
 /** SAM 2 availability (instance projects). */
 export function fetchSamStatus(signal?: AbortSignal): Promise<SamStatus> {
@@ -200,6 +202,151 @@ export async function segmentConcept(
 		instances: payload.instances,
 		instanceScores: payload.instance_scores ?? [],
 		exemplars: payload.exemplars ?? [],
+	};
+}
+
+export interface PropagateStatus {
+	sam2: SamStatus;
+	sam3: SamStatus;
+	/** Maximum frames per request, anchor included (PROPAGATE_MAX_FRAMES). */
+	maxFrames: number;
+}
+
+export type PropagateBackend = "sam2" | "sam3";
+
+export async function fetchPropagateStatus(
+	signal?: AbortSignal,
+): Promise<PropagateStatus> {
+	const fallback = (error: string): PropagateStatus => ({
+		sam2: unavailable("SAM 2", error),
+		sam3: unavailable("SAM 3", error),
+		maxFrames: 0,
+	});
+	try {
+		const response = await fetch(PROPAGATE_STATUS_ENDPOINT, { signal });
+		if (!response.ok) {
+			return fallback(
+				`Backend answered ${response.status} for the propagate status.`,
+			);
+		}
+		const payload = (await response.json()) as {
+			sam2?: Partial<SamStatus>;
+			sam3?: Partial<SamStatus>;
+			max_frames?: number;
+		};
+		const read = (part: Partial<SamStatus> | undefined, name: string) => ({
+			available: Boolean(part?.available),
+			loaded: Boolean(part?.loaded),
+			model: part?.model ?? name,
+			device: part?.device ?? "?",
+			error: part?.error ?? null,
+		});
+		return {
+			sam2: read(payload.sam2, "SAM 2"),
+			sam3: read(payload.sam3, "SAM 3"),
+			maxFrames: payload.max_frames ?? 0,
+		};
+	} catch (cause) {
+		if (cause instanceof DOMException && cause.name === "AbortError")
+			throw cause;
+		return fallback(
+			"Backend is not reachable; start it with `uvicorn main:app`.",
+		);
+	}
+}
+
+export interface PropagateFrame {
+	/** Clip frame index. */
+	index: number;
+	/** The frame image straight out of the archive. */
+	image: Blob;
+}
+
+export interface PropagateOptions {
+	/** Every frame of the window, anchor included. */
+	frames: PropagateFrame[];
+	/** Frame index that carries the selected mask. */
+	anchor: number;
+	/** The selected mask on the anchor frame. */
+	mask: RawRle;
+	/** Frames to track before / after the anchor. */
+	backward: number;
+	forward: number;
+	backend: PropagateBackend;
+	signal?: AbortSignal;
+}
+
+export interface PropagatedFrame {
+	frameIndex: number;
+	rle: RawRle;
+	mask: DecodedMask;
+	area: number;
+}
+
+export interface PropagateResult {
+	backend: PropagateBackend;
+	model: string;
+	device: string;
+	elapsedMs: number;
+	masks: PropagatedFrame[];
+}
+
+/**
+ * Propagate one mask over its neighbouring frames. 
+ */
+export async function propagateMask(
+	options: PropagateOptions,
+): Promise<PropagateResult> {
+	if (options.backward <= 0 && options.forward <= 0) {
+		throw new SamApiError(0, "Choose at least one frame to propagate to.");
+	}
+	const form = new FormData();
+	for (const frame of options.frames) {
+		form.append("frames", frame.image, `${frame.index}.jpg`);
+	}
+	form.append(
+		"frame_indices",
+		JSON.stringify(options.frames.map((frame) => frame.index)),
+	);
+	form.append("anchor", String(options.anchor));
+	form.append("mask", JSON.stringify(options.mask));
+	form.append("backward", String(options.backward));
+	form.append("forward", String(options.forward));
+	form.append("backend", options.backend);
+
+	const response = await fetch(PROPAGATE_ENDPOINT, {
+		method: "POST",
+		body: form,
+		signal: options.signal,
+	});
+	if (!response.ok) {
+		throw new SamApiError(response.status, await readDetail(response));
+	}
+	const payload = (await response.json()) as {
+		backend: PropagateBackend;
+		model: string;
+		device: string;
+		height: number;
+		width: number;
+		elapsed_ms: number;
+		masks: {
+			frame_index: number;
+			rle: RawRle;
+			runs: DecodedMask["runs"];
+			area: number;
+		}[];
+	};
+	return {
+		backend: payload.backend,
+		model: payload.model,
+		device: payload.device,
+		elapsedMs: payload.elapsed_ms,
+		masks: payload.masks.map((item) => ({
+			frameIndex: item.frame_index,
+			rle: item.rle,
+			mask: { height: payload.height, width: payload.width, runs: item.runs },
+			area: item.area,
+		})),
 	};
 }
 
