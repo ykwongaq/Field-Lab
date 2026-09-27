@@ -74,14 +74,9 @@ def build_annotation_dataset(
     fps: float,
     width: int,
     height: int,
+    source_video: Optional[str] = None,
+    video_entry: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Return a `VideoSegmentation` dataset with one video record and no masks.
-
-    This is what a freshly created project ships with; the upstream
-    segmentation pipeline fills `annotations` / `categories` later. The
-    `segmentation_mode` field on the video record is the project's locked
-    mode.
-    """
     mode = validate_mode(mode)
     video: Dict[str, Any] = {
         "id": 1,
@@ -156,24 +151,11 @@ def build_project_from_video(
     name: Optional[str] = None,
     frame_step: int = 1,
     jpeg_quality: int = DEFAULT_JPEG_QUALITY,
+    max_frames: Optional[int] = None,
     source_filename: Optional[str] = None,
     progress: Optional[ProgressCallback] = None,
 ) -> ProjectBuildResult:
-    """Create `<output_zip>` from `<video_path>`.
-
-    Parameters
-    ----------
-    mode
-        "instance" or "semantic". Recorded as `segmentation_mode` on the
-        video record in the annotation JSON and never changed afterwards.
-    frame_step
-        Keep every N-th decoded frame (1 = every frame). The recorded fps is
-        divided accordingly so playback timing in the reviewer stays right.
-    jpeg_quality
-        OpenCV JPEG quality (1-100).
-    progress
-        Optional callback `(frames_written, estimated_total_or_None)`.
-    """
+    
     mode = validate_mode(mode)
     if frame_step < 1:
         raise ValueError("frame_step must be >= 1")
@@ -224,7 +206,7 @@ def build_project_from_video(
                     zf.writestr(
                         f"{FRAMES_DIR}/{arc}",
                         buffer.tobytes(),
-                        compress_type=zipfile.ZIP_STORED,  # JPEG is already compressed
+                        compress_type=zipfile.ZIP_STORED,
                     )
                     file_names.append(arc)
                     if progress:
