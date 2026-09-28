@@ -1,3 +1,14 @@
+"""Build a reviewer project archive from a video file.
+
+The archive layout produced here is a contract with the browser reader
+(`frontend/src/lib/zip.ts`):
+
+    video/<name><ext>          the source video (stored, not re-compressed)
+    frames/000000.jpg ...      every kept frame, STORED so the browser can
+                               inflate it without an LZMA-capable reader
+    annotations/<name>.json    pycocotools VideoSegmentation skeleton
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +19,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 import cv2
+
+from src.core.errors import InvalidRequest
 
 VIDEO_DIR = "video"
 FRAMES_DIR = "frames"
@@ -28,7 +41,16 @@ MODE_DESCRIPTIONS: Dict[str, str] = {
 }
 DEFAULT_MODE: ProjectMode = "instance"  # what archives without the field mean
 
-VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg")
+VIDEO_EXTENSIONS = (
+    ".mp4",
+    ".mov",
+    ".m4v",
+    ".avi",
+    ".mkv",
+    ".webm",
+    ".mpg",
+    ".mpeg",
+)
 
 DEFAULT_JPEG_QUALITY = 100
 DEFAULT_FPS_FALLBACK = 25.0
@@ -40,7 +62,7 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 def validate_mode(mode: str) -> ProjectMode:
     if mode not in MODES:
-        raise ValueError(
+        raise InvalidRequest(
             f"Unknown project mode {mode!r}; expected one of {', '.join(MODES)}."
         )
     return mode
@@ -106,7 +128,8 @@ def write_json_entry(zf: zipfile.ZipFile, arcname: str, payload: Any) -> None:
         compresslevel=9,
     )
 
-class VideoOpenError(RuntimeError):
+
+class VideoOpenError(InvalidRequest):
     """Raised when OpenCV cannot open or decode the source video."""
 
 
@@ -123,7 +146,9 @@ class ProjectBuildResult:
     annotation_entry: str
 
 
-def probe_video(video_path: str, label: Optional[str] = None) -> tuple[float, int, int, int]:
+def probe_video(
+    video_path: str, label: Optional[str] = None
+) -> tuple[float, int, int, int]:
     """Return (fps, width, height, estimated_frame_count) for a video."""
     label = label or os.path.basename(video_path)
     capture = cv2.VideoCapture(video_path)
@@ -138,7 +163,7 @@ def probe_video(video_path: str, label: Optional[str] = None) -> tuple[float, in
         estimate = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     finally:
         capture.release()
-    if fps <= 0 or fps != fps:
+    if fps <= 0 or fps != fps:  # 0 or NaN
         fps = DEFAULT_FPS_FALLBACK
     return fps, width, height, estimate
 
@@ -155,12 +180,17 @@ def build_project_from_video(
     source_filename: Optional[str] = None,
     progress: Optional[ProgressCallback] = None,
 ) -> ProjectBuildResult:
-    
+    """Encode every kept frame as JPEG and write the project archive.
+
+    Frames are STORED (JPEG is already compressed) while the annotation JSON is
+    DEFLATED. The archive is written to `<output_zip>.part` and moved into place
+    only on success, so a crashed run never leaves a half-written project.
+    """
     mode = validate_mode(mode)
     if frame_step < 1:
-        raise ValueError("frame_step must be >= 1")
+        raise InvalidRequest("frame_step must be >= 1")
     if not 1 <= jpeg_quality <= 100:
-        raise ValueError("jpeg_quality must be within 1..100")
+        raise InvalidRequest("jpeg_quality must be within 1..100")
 
     source_filename = source_filename or os.path.basename(video_path)
     project_name = project_name_for(name, source_filename)
@@ -220,10 +250,10 @@ def build_project_from_video(
                     "(unsupported codec or empty file)."
                 )
 
-            # 2. Source video
+            # 2. Source video.
             zf.write(video_path, arcname=video_entry, compress_type=zipfile.ZIP_STORED)
 
-            # 3. Annotation
+            # 3. Annotation.
             dataset = build_annotation_dataset(
                 name=project_name,
                 mode=mode,

@@ -1,15 +1,8 @@
-"""SAM 3
+"""SAM 3 image segmentation: one frame in, a concept mask out.
 
-Configuration
--------------------------------------
-SAM3_MODEL          Hugging Face model id or local directory, default
-                    "facebook/sam3".
-SAM3_DEVICE         "cuda", "cuda:1", "cpu" or "auto" (default).
-SAM3_DTYPE          "auto" (bfloat16 on CUDA, float32 on CPU), "float32",
-                    "bfloat16" or "float16".
-SAM3_THRESHOLD      Detection score threshold, default 0.5. Lower it to find
-                    more (and noisier) regions.
-SAM3_MASK_THRESHOLD Mask binarisation threshold, default 0.5.
+Prompts are either a class name ("coral"), click points turned into exemplar
+boxes, or both. The returned mask is the union of every detected region, so the
+reviewer paints a whole class in one shot rather than one object at a time.
 """
 
 from __future__ import annotations
@@ -18,119 +11,64 @@ import hashlib
 import os
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
-from sam2_service import NEGATIVE, POSITIVE, PromptError, PromptPoint, SegmentResult
+from src.core.config import DEFAULT_SAM3_MODEL, Settings
+from src.core.errors import Unavailable
+from src.domain.images import decode_image_pil
+from src.domain.segmentation import (
+    ConceptResult,
+    ExemplarBox,
+    PromptError,
+    PromptPoint,
+    exemplar_boxes_from_points,
+)
 
-DEFAULT_HF_MODEL = "facebook/sam3"
-
-BoxRefiner = Callable[[PromptPoint], Optional[Tuple[int, int, int, int]]]
-
-
-class Sam3Unavailable(RuntimeError):
-    """SAM 3 cannot be used (not installed, no access to the weights, ...)."""
-
-
-@dataclass(frozen=True)
-class ExemplarBox:
-    """One exemplar box in frame pixels, `label` 1 = example, 0 = counter-example."""
-
-    x0: float
-    y0: float
-    x1: float
-    y1: float
-    label: int
-
-    def validate(self, width: int, height: int) -> None:
-        if self.label not in (POSITIVE, NEGATIVE):
-            raise PromptError(f"box label must be 0 or 1, got {self.label!r}")
-        if not (0 <= self.x0 < self.x1 <= width and 0 <= self.y0 < self.y1 <= height):
-            raise PromptError(
-                f"box ({self.x0:.0f}, {self.y0:.0f})-({self.x1:.0f}, {self.y1:.0f}) "
-                f"is not inside the {width}x{height} frame"
-            )
-
-    def as_list(self) -> List[float]:
-        return [float(self.x0), float(self.y0), float(self.x1), float(self.y1)]
+ModelLoader = Callable[["Sam3Config", str], Tuple[Any, Any]]
 
 
-@dataclass
-class ConceptResult(SegmentResult):
-    """Union of every detected instance of the concept, plus per-instance scores."""
-
-    instances: int = 0
-    instance_scores: List[float] = field(default_factory=list)
-    exemplars: List[ExemplarBox] = field(default_factory=list)
+class Sam3Unavailable(Unavailable):
+    """SAM 3 cannot be used (not installed, gated weights, load failure)."""
 
 
 @dataclass
 class Sam3Config:
-    hf_model: str = field(
-        default_factory=lambda: os.environ.get("SAM3_MODEL", DEFAULT_HF_MODEL)
-    )
-    device: str = field(default_factory=lambda: os.environ.get("SAM3_DEVICE", "auto"))
-    dtype: str = field(default_factory=lambda: os.environ.get("SAM3_DTYPE", "auto"))
-    threshold: float = field(
-        default_factory=lambda: float(os.environ.get("SAM3_THRESHOLD", "0.5"))
-    )
-    mask_threshold: float = field(
-        default_factory=lambda: float(os.environ.get("SAM3_MASK_THRESHOLD", "0.5"))
-    )
-    exemplar_fraction: float = field(
-        default_factory=lambda: float(os.environ.get("SAM3_EXEMPLAR_BOX", "0.06"))
-    )
-    eager: bool = field(default_factory=lambda: os.environ.get("SAM3_EAGER") == "1")
+    """Everything the service needs to load and run the model."""
+
+    hf_model: str = DEFAULT_SAM3_MODEL
+    device: str = "auto"
+    dtype: str = "auto"
+    threshold: float = 0.5
+    mask_threshold: float = 0.5
+    exemplar_fraction: float = 0.06
+    eager: bool = False
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "Sam3Config":
+        return cls(
+            hf_model=settings.sam3_model,
+            device=settings.sam3_device,
+            dtype=settings.sam3_dtype,
+            threshold=settings.sam3_threshold,
+            mask_threshold=settings.sam3_mask_threshold,
+            exemplar_fraction=settings.sam3_exemplar_fraction,
+            eager=settings.sam3_eager,
+        )
 
     def describe_model(self) -> str:
-        return os.path.basename(self.hf_model.rstrip("/")) if os.path.isdir(
-            self.hf_model
-        ) else self.hf_model
-
-
-
-ModelLoader = Callable[[Sam3Config, str], Tuple[Any, Any]]
-
-
-def exemplar_boxes_from_points(
-    points: Sequence[PromptPoint],
-    width: int,
-    height: int,
-    *,
-    refine: Optional[BoxRefiner] = None,
-    fraction: float = 0.06,
-) -> List[ExemplarBox]:
-    """Turn click prompts into exemplar boxes.
-    """
-    boxes: List[ExemplarBox] = []
-    side = max(8.0, fraction * min(width, height))
-    for point in points:
-        point.validate(width, height)
-        box: Optional[Tuple[int, int, int, int]] = None
-        if refine is not None:
-            try:
-                box = refine(PromptPoint(point.x, point.y, POSITIVE))
-            except Exception:
-                box = None
-        if box is not None and box[2] > 0 and box[3] > 0:
-            x, y, w, h = box
-            x0, y0, x1, y1 = float(x), float(y), float(x + w), float(y + h)
-        else:
-            half = side / 2
-            x0, y0 = point.x - half, point.y - half
-            x1, y1 = point.x + half, point.y + half
-        x0, y0 = max(0.0, x0), max(0.0, y0)
-        x1, y1 = min(float(width), x1), min(float(height), y1)
-        if x1 - x0 < 1 or y1 - y0 < 1:
-            continue
-        boxes.append(ExemplarBox(x0, y0, x1, y1, point.label))
-    return boxes
+        """Short model name for status responses."""
+        return (
+            os.path.basename(self.hf_model.rstrip("/"))
+            if os.path.isdir(self.hf_model)
+            else self.hf_model
+        )
 
 
 def _default_loader(config: Sam3Config, device: str) -> Tuple[Any, Any]:
-    """Load `Sam3Model` + `Sam3Processor`."""
+    """Load `Sam3Model` + `Sam3Processor` (weights are cached by the Hub)."""
     import torch
     from transformers import Sam3Model, Sam3Processor
 
@@ -145,6 +83,12 @@ def _default_loader(config: Sam3Config, device: str) -> Tuple[Any, Any]:
 
 
 class Sam3Service:
+    """Lazy, lock-protected SAM 3 wrapper with a one-frame embedding cache.
+
+    The cache is what makes click-by-click refinement cheap: re-prompting the
+    same frame reuses the vision embeddings and only re-runs the decoder, which
+    is reported back as `embedding_reused` plus per-stage timings.
+    """
 
     def __init__(
         self,
@@ -159,7 +103,7 @@ class Sam3Service:
         self._device: Optional[str] = None
         self._error: Optional[str] = None
         self._last_image_key: Optional[str] = None
-        self._last_image: Any = None  # PIL image (needed to normalise boxes)
+        self._last_image: Any = None  # PIL image, needed to normalise boxes
         self._last_vision_embeds: Any = None
 
     # status
@@ -167,7 +111,7 @@ class Sam3Service:
     @staticmethod
     def installed() -> bool:
         try:
-            import torch
+            import torch  # noqa: F401
             import transformers
 
             return hasattr(transformers, "Sam3Model")
@@ -180,7 +124,7 @@ class Sam3Service:
         if not installed and error is None:
             error = (
                 "SAM 3 is not installed in the backend environment "
-                "(pip install -r requirements-sam3.txt)."
+                "(pip install -r backend/requirements.txt)."
             )
         return {
             "available": installed and error is None,
@@ -209,6 +153,7 @@ class Sam3Service:
             self._ensure_loaded()
 
     def _ensure_loaded(self) -> Tuple[Any, Any]:
+        """Must be called with `self._lock` held."""
         if self._model is not None:
             return self._model, self._processor
         if self._error is not None:
@@ -233,23 +178,12 @@ class Sam3Service:
             if any(k in lowered for k in ("gated", "401", "403", "authoriz", "token")):
                 message += (
                     " — the SAM 3 weights are gated: request access to "
-                    f"https://huggingface.co/{DEFAULT_HF_MODEL} and run `hf auth login`."
+                    f"https://huggingface.co/{DEFAULT_SAM3_MODEL} and run `hf auth login`."
                 )
             self._error = message
             raise Sam3Unavailable(message) from exc
 
     # inference
-
-    @staticmethod
-    def _decode_image(image_bytes: bytes) -> Any:
-        import cv2
-        from PIL import Image
-
-        buffer = np.frombuffer(image_bytes, dtype=np.uint8)
-        bgr = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
-        if bgr is None:
-            raise PromptError("The uploaded frame could not be decoded as an image.")
-        return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
 
     def segment_with_points(
         self,
@@ -258,20 +192,22 @@ class Sam3Service:
         *,
         text: Optional[str] = None,
         image_key: Optional[str] = None,
-        refine: Optional[BoxRefiner] = None,
     ) -> ConceptResult:
         """Click-driven entry point used by the API.
 
-        Converts `points` to exemplar boxes
-        and runs `segment`. Either `points` or `text` must be given.
+        Each click becomes a small exemplar box; a text prompt can be combined
+        with them. Either `points` or `text` must be given.
         """
         text = (text or "").strip() or None
         if not points and text is None:
             raise PromptError("Click on an example of the class or type its name.")
-        image = self._decode_image(image_bytes)
+        image = decode_image_pil(image_bytes)
         width, height = image.size
         boxes = exemplar_boxes_from_points(
-            points, width, height, refine=refine, fraction=self.config.exemplar_fraction
+            points,
+            width,
+            height,
+            fraction=self.config.exemplar_fraction,
         )
         if not boxes and text is None:
             raise PromptError("No usable exemplar could be built from the clicks.")
@@ -290,8 +226,8 @@ class Sam3Service:
     ) -> ConceptResult:
         """Run SAM 3 with a text prompt and/or exemplar boxes; union the hits.
 
-        `image_key` identifies the frame for the embedding cache (defaults to
-        the SHA-1 of the bytes). `image` may pass an already decoded PIL image.
+        `image_key` identifies the frame for the embedding cache (defaults to the
+        SHA-1 of the bytes). `image` may pass an already decoded PIL image.
         """
         text = (text or "").strip() or None
         if text is None and not boxes:
@@ -306,7 +242,7 @@ class Sam3Service:
             if reuse:
                 image = self._last_image
             elif image is None:
-                image = self._decode_image(image_bytes)
+                image = decode_image_pil(image_bytes)
             width, height = image.size
             for box in boxes:
                 box.validate(width, height)
@@ -320,9 +256,7 @@ class Sam3Service:
             )
             device = self._device or "cpu"
             model_dtype = next(model.parameters()).dtype
-            tensors = {
-                k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")
-            }
+            tensors = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
             pixel_values = tensors.pop("pixel_values").to(model_dtype)
             original_sizes = inputs["original_sizes"]
             if hasattr(original_sizes, "tolist"):
@@ -342,11 +276,18 @@ class Sam3Service:
 
                 forward_kwargs = {
                     k: tensors[k]
-                    for k in ("input_ids", "attention_mask", "input_boxes", "input_boxes_labels")
+                    for k in (
+                        "input_ids",
+                        "attention_mask",
+                        "input_boxes",
+                        "input_boxes_labels",
+                    )
                     if k in tensors
                 }
                 if "input_boxes" in forward_kwargs:
-                    forward_kwargs["input_boxes"] = forward_kwargs["input_boxes"].to(model_dtype)
+                    forward_kwargs["input_boxes"] = forward_kwargs["input_boxes"].to(
+                        model_dtype
+                    )
                 started = time.perf_counter()
                 outputs = model(vision_embeds=vision_embeds, **forward_kwargs)
                 results = processor.post_process_instance_segmentation(
@@ -360,7 +301,9 @@ class Sam3Service:
         masks = results["masks"]
         scores = results["scores"]
         masks_np = (
-            masks.detach().to("cpu").numpy() if hasattr(masks, "detach") else np.asarray(masks)
+            masks.detach().to("cpu").numpy()
+            if hasattr(masks, "detach")
+            else np.asarray(masks)
         )
         scores_np = (
             scores.detach().float().to("cpu").numpy()

@@ -1,3 +1,5 @@
+"""Bundle a directory of frame folders (+ annotations) into project archives."""
+
 import argparse
 import json
 import os
@@ -6,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
 
-from project_builder import (
+from src.projects.builder import (
     ANNOTATIONS_DIR,
     FRAMES_DIR,
     MODES,
@@ -24,6 +26,7 @@ COMPRESSION_OPTIONS = {
     "bzip2": (zipfile.ZIP_BZIP2, 9),
     "lzma": (zipfile.ZIP_LZMA, None),
 }
+
 
 def find_video_file(video_dataset, clip_name):
     """Return the video file for `clip_name` inside `video_dataset`, if any."""
@@ -44,6 +47,7 @@ def read_dataset(annotation_file):
     except (OSError, ValueError):
         return None
 
+
 def create_clip_zip(task):
     """Build a single project zip containing the clip's frames and annotation.
 
@@ -56,7 +60,7 @@ def create_clip_zip(task):
     frame_dir, annotation_file, video_file, output_zip, compression_name, mode = task
     compression, compresslevel = COMPRESSION_OPTIONS[compression_name]
     clip_name = os.path.basename(frame_dir)
-    
+
     frames = []
     for name in sorted(os.listdir(frame_dir)):
         path = os.path.join(frame_dir, name)
@@ -83,7 +87,7 @@ def create_clip_zip(task):
             video_entry = (
                 f"{VIDEO_DIR}/{clip_name}{os.path.splitext(video_file)[1].lower()}"
             )
-            
+
         with zipfile.ZipFile(
             output_zip,
             "w",
@@ -98,14 +102,12 @@ def create_clip_zip(task):
                     compress_type=compression,
                     compresslevel=compresslevel,
                 )
-                
+
             annotation_entry = f"{ANNOTATIONS_DIR}/{clip_name}.json"
             if dataset is not None:
                 annotation_entry = (
                     f"{ANNOTATIONS_DIR}/{os.path.basename(annotation_file)}"
                 )
-                
-                
                 if record.get("segmentation_mode") not in MODES:
                     record["segmentation_mode"] = mode
                 elif record["segmentation_mode"] != mode:
@@ -131,8 +133,10 @@ def create_clip_zip(task):
                 )
 
             if has_video:
-                zf.write(video_file, arcname=video_entry, compress_type=zipfile.ZIP_STORED)
-                
+                zf.write(
+                    video_file, arcname=video_entry, compress_type=zipfile.ZIP_STORED
+                )
+
     except Exception as exc:
         if os.path.exists(output_zip):
             os.remove(output_zip)
@@ -171,7 +175,9 @@ def main(args):
             continue
 
         video_file = find_video_file(video_dataset, name)
-        tasks.append((frame_dir, annotation_file, video_file, output_zip, compression, mode))
+        tasks.append(
+            (frame_dir, annotation_file, video_file, output_zip, compression, mode)
+        )
 
     if not tasks:
         print(
@@ -179,9 +185,7 @@ def main(args):
         )
         return
 
-    workers = (
-        args.workers if args.workers and args.workers > 0 else (os.cpu_count() or 1)
-    )
+    workers = args.workers if args.workers and args.workers > 0 else (os.cpu_count() or 1)
     total = len(tasks)
     print(f"Found {len(frame_dirs)} clip folders ({skipped} already zipped).")
     print(

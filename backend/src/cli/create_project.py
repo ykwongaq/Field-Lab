@@ -1,4 +1,4 @@
-"""Create a Video Segmenter project from a video file."""
+"""Create a VideoSegmenter project from a video file."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from project_builder import (
+from src.projects.builder import (
     DEFAULT_JPEG_QUALITY,
     MODE_DESCRIPTIONS,
     MODES,
@@ -19,7 +19,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Bundle one video into a reviewer project archive.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="\n".join(f"  {mode}: {desc}" for mode, desc in MODE_DESCRIPTIONS.items()),
+        epilog="\n".join(
+            f"  {mode}: {desc}" for mode, desc in MODE_DESCRIPTIONS.items()
+        ),
     )
     parser.add_argument("video", help="Path to the source video file")
     parser.add_argument(
@@ -34,11 +36,18 @@ def main() -> int:
         default=".",
         help="Directory for the archive when --output is not given",
     )
-    parser.add_argument("--frame_step", type=int, default=1, help="Keep every N-th frame")
     parser.add_argument(
-        "--jpeg_quality", type=int, default=DEFAULT_JPEG_QUALITY, help="JPEG quality 1-100"
+        "--frame_step", type=int, default=1, help="Keep every N-th frame"
     )
-    parser.add_argument("--max_frames", type=int, default=None, help="Cap on frames written")
+    parser.add_argument(
+        "--jpeg_quality",
+        type=int,
+        default=DEFAULT_JPEG_QUALITY,
+        help="JPEG quality 1-100",
+    )
+    parser.add_argument(
+        "--max_frames", type=int, default=None, help="Cap on frames written"
+    )
     parser.add_argument(
         "--overwrite", action="store_true", help="Replace an existing archive"
     )
