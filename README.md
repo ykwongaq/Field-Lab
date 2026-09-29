@@ -43,7 +43,7 @@ This document is written for **researchers and engineers who will maintain and e
 - A clip can be reviewed offline or on a remote collaborator's laptop by simply sharing one file.
 - The Python backend is reduced to a **single, tiny, well-defined job** (RLE decoding — see below), which makes the whole tool easy to host and to reason about.
 
-**What this repo is NOT.** The upstream video-instance-segmentation / tracking model that *produces* the masks and labels lives in a separate research codebase. This repository is the **human-in-the-loop QC layer** that consumes that model's output and produces verified annotations.
+**What this repo is NOT.** The upstream video-instance-segmentation / tracking model that _produces_ the masks and labels lives in a separate research codebase. This repository is the **human-in-the-loop QC layer** that consumes that model's output and produces verified annotations.
 
 ---
 
@@ -56,7 +56,7 @@ flowchart LR
     end
 
     B --> C["make_projects.py<br/>(bundler, Python CLI)"]
-    C --> D["Project ZIP<br/>frames/* + annotations/*.json"]
+    C --> D["Project ZIP<br/>frames/* + annotation.json"]
 
     D -->|drag & drop| E["Browser reviewer<br/>(React / TS / Vite)"]
 
@@ -123,16 +123,15 @@ A **project** is a single `.zip` file that a reviewer opens in the tool. The bun
 │   ├── 000000.jpg              # one image per frame, zero-padded names
 │   ├── 000001.jpg
 │   └── ...                     # file_names[] in the JSON must match these
-└── annotations/
-    └── <clip>.json             # the annotation dataset for the clip
+└── annotation.json             # the annotation dataset for the clip
 ```
 
-| Rule | Detail |
-| --- | --- |
-| Frame names | Any image format the browser can decode (JPEG recommended); the basenames must exactly match `video.file_names` in the annotation JSON. |
-| Annotation location | Exactly one JSON under `annotations/` is consumed (the first match). |
-| Compression | Must be **STORED (0)** or **DEFLATE (8)** — the browser reader does not support LZMA/BZIP2. **Use `--compression deflated` when bundling for the reviewer.** |
-| Missing frames | Tolerated — the tool reports them and shows a "Frame unavailable" placeholder. |
+| Rule                | Detail                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Frame names         | Any image format the browser can decode (JPEG recommended); the basenames must exactly match `video.file_names` in the annotation JSON.                      |
+| Annotation location | `annotation.json` at the root of the archive. Older archives that keep the dataset under `annotations/` are still read.                                      |
+| Compression         | Must be **STORED (0)** or **DEFLATE (8)** — the browser reader does not support LZMA/BZIP2. **Use `--compression deflated` when bundling for the reviewer.** |
+| Missing frames      | Tolerated — the tool reports them and shows a "Frame unavailable" placeholder.                                                                               |
 
 ---
 
@@ -142,44 +141,52 @@ The annotation file follows the **`VideoSegmentation` layout** emitted by pycoco
 
 ```jsonc
 {
-  "videos": [
-    {
-      "id": 1,
-      "video_name": "clip_007",
-      "file_names": ["000000.jpg", "000001.jpg", "..."],
-      "length": 123,            // number of frames
-      "height": 1080,
-      "width": 1920,
-      "fps": 25,
-      // optional provenance fields used by the upstream pipeline:
-      "original_video": "...", "scene_id": "...",
-      "start_frame": 0, "end_frame": 122, "status": "..."
-    }
-  ],
-  "annotations": [
-    {
-      "id": 1001,               // tracklet id
-      "video_id": 1,
-      "object_id": 3,           // instance id inside the video
-      "category_id": 55,        // points into categories[]
-      "noun_phrase": "Ateles geoffroyi",
-      "segmentations": [        // one entry PER FRAME (index == frame index)
-        { "size": [1080, 1920], "counts": "<pycocotools RLE string>" },
-        null,                   // null when the object is not visible in that frame
-        "..."
-      ]
-    }
-  ],
-  "categories": [
-    {
-      "id": 55,
-      "taxon_id": 123456,
-      "kingdom": "Animalia", "phylum": "Chordata", "class": "Mammalia",
-      "order": "Primates", "family": "Atelidae",
-      "genus": "Ateles", "species": "Ateles geoffroyi",
-      "common_name": "Geoffroy's spider monkey"
-    }
-  ]
+    "videos": [
+        {
+            "id": 1,
+            "video_name": "clip_007",
+            "file_names": ["000000.jpg", "000001.jpg", "..."],
+            "length": 123, // number of frames
+            "height": 1080,
+            "width": 1920,
+            "fps": 25,
+            // optional provenance fields used by the upstream pipeline:
+            "original_video": "...",
+            "scene_id": "...",
+            "start_frame": 0,
+            "end_frame": 122,
+            "status": "...",
+        },
+    ],
+    "annotations": [
+        {
+            "id": 1001, // tracklet id
+            "video_id": 1,
+            "object_id": 3, // instance id inside the video
+            "category_id": 55, // points into categories[]
+            "noun_phrase": "Ateles geoffroyi",
+            "segmentations": [
+                // one entry PER FRAME (index == frame index)
+                { "size": [1080, 1920], "counts": "<pycocotools RLE string>" },
+                null, // null when the object is not visible in that frame
+                "...",
+            ],
+        },
+    ],
+    "categories": [
+        {
+            "id": 55,
+            "taxon_id": 123456,
+            "kingdom": "Animalia",
+            "phylum": "Chordata",
+            "class": "Mammalia",
+            "order": "Primates",
+            "family": "Atelidae",
+            "genus": "Ateles",
+            "species": "Ateles geoffroyi",
+            "common_name": "Geoffroy's spider monkey",
+        },
+    ],
 }
 ```
 
@@ -197,13 +204,15 @@ Notes for developers:
 `backend/main.py` is a deliberately small **FastAPI** application (see `backend/requirements.txt` for pinned dependencies).
 
 ### Why it exists
-`pycocotools.mask.decode` turns a compressed RLE into a dense `(height, width)` boolean bitmap. Doing that in JavaScript would require re-implementing the RLE codec; doing it *per frame in the browser* is wasteful. Instead:
+
+`pycocotools.mask.decode` turns a compressed RLE into a dense `(height, width)` boolean bitmap. Doing that in JavaScript would require re-implementing the RLE codec; doing it _per frame in the browser_ is wasteful. Instead:
 
 1. The browser sends only the compact RLE payloads it actually needs.
 2. The backend decodes them with `pycocotools`.
 3. The backend converts each bitmap into a compact list of **foreground runs** and returns those.
 
 ### The foreground-run trick
+
 Instead of shipping back a `(height, width)` bitmap (hundreds of thousands of numbers per mask), the backend converts the decoded binary mask into **1 px-wide vertical strips**, matching the column-major nature of the RLE encoding:
 
 ```python
@@ -216,9 +225,9 @@ A mask is thus represented by far fewer numbers (one tuple per run) that the ren
 
 ### API surface
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /health` | Liveness probe. |
+| Endpoint                 | Purpose                                           |
+| ------------------------ | ------------------------------------------------- |
+| `GET /health`            | Liveness probe.                                   |
 | `POST /api/decode/masks` | Decode a batch of RLE masks into foreground runs. |
 
 Request / response shapes (mirrored by `frontend/src/lib/maskApi.ts` and the pydantic models in `main.py`):
@@ -265,7 +274,7 @@ python make_projects.py \
 Behaviour worth knowing:
 
 - **Skip-if-done:** existing `.zip` outputs are left untouched, so re-runs resume instead of restarting. Useful for very large datasets.
-- **Missing annotation handling:** a clip folder with no matching `annotations/<clip>.json` is still zipped (frames only) and counted in the "clips without an annotation" summary.
+- **Missing annotation handling:** a clip folder with no matching `<clip>.json` in the annotation dataset is still zipped (frames only) and counted in the "clips without an annotation" summary.
 - **Parallelism:** bundling is I/O + CPU bound, so clips are compressed across a `ProcessPoolExecutor` with progress printed every 100 clips.
 - **Compression methods:** `stored`, `deflated` (level 9), `bzip2`, `lzma`. `lzma` yields the smallest files but is slow, and — critically — **the browser reader cannot decompress LZMA**. See the [gotcha](#known-limitations--gotchas) section.
 
@@ -355,10 +364,10 @@ The browser never materialises a full mask bitmap. Decoded masks are stored as *
 
 ### 3. Two-tier caching for smooth scrubbing
 
-| Cache | What | Capacity | Why |
-| --- | --- | --- | --- |
-| `FrameCache` | Decoded `ImageBitmap` per frame | ~40 (LRU) | JPEG decode to a full-res bitmap is the expensive step; a small LRU plus preloading (±15 frames around the playhead) keeps scrubbing smooth while bounding memory. Bitmaps are `close()`d on eviction to free GPU/CPU memory promptly. |
-| `MaskCache` | Decoded foreground runs | ~512 (LRU) | Bounded so "show all masks" on long clips cannot grow unbounded. |
+| Cache        | What                            | Capacity   | Why                                                                                                                                                                                                                                    |
+| ------------ | ------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FrameCache` | Decoded `ImageBitmap` per frame | ~40 (LRU)  | JPEG decode to a full-res bitmap is the expensive step; a small LRU plus preloading (±15 frames around the playhead) keeps scrubbing smooth while bounding memory. Bitmaps are `close()`d on eviction to free GPU/CPU memory promptly. |
+| `MaskCache`  | Decoded foreground runs         | ~512 (LRU) | Bounded so "show all masks" on long clips cannot grow unbounded.                                                                                                                                                                       |
 
 Preloading is fire-and-forget (`void this.get(index).catch(...)`), so a missing/corrupt frame degrades gracefully instead of blocking the UI.
 
@@ -368,14 +377,14 @@ Reviews are stored **per clip** under the key `vsr.review.<clipName>` as a JSON 
 
 ```ts
 interface TrackletReview {
-  labelConfirmed: boolean;
-  taxonomy: Taxonomy | null;   // the reviewer-corrected hierarchy
-  maskVerdict: "good" | "bad" | "unsure" | null;
-  comment: string;
+    labelConfirmed: boolean;
+    taxonomy: Taxonomy | null; // the reviewer-corrected hierarchy
+    maskVerdict: "good" | "bad" | "unsure" | null;
+    comment: string;
 }
 ```
 
-Because only the *deltas* are stored (a `null` taxonomy means "unchanged from the original"), the store stays small, clips can be resumed after a browser restart, and exports can always reconstruct original vs. final values. Storage failures are swallowed so the app still works in private/restricted browsing modes (in-memory only).
+Because only the _deltas_ are stored (a `null` taxonomy means "unchanged from the original"), the store stays small, clips can be resumed after a browser restart, and exports can always reconstruct original vs. final values. Storage failures are swallowed so the app still works in private/restricted browsing modes (in-memory only).
 
 ### 5. Colour-blind-friendly palette (`lib/palette.ts`)
 
@@ -431,12 +440,12 @@ python make_projects.py \
 
 ### Useful scripts
 
-| Command | Meaning |
-| --- | --- |
-| `npm run dev` | Start the Vite dev server. |
-| `npm run build` | Type-check (`tsc -b`) then production build into `dist/`. |
-| `npm run preview` | Locally preview the production build. |
-| `npm run lint` | Lint with oxlint. |
+| Command           | Meaning                                                   |
+| ----------------- | --------------------------------------------------------- |
+| `npm run dev`     | Start the Vite dev server.                                |
+| `npm run build`   | Type-check (`tsc -b`) then production build into `dist/`. |
+| `npm run preview` | Locally preview the production build.                     |
+| `npm run lint`    | Lint with oxlint.                                         |
 
 For a static deployment, serve `frontend/dist` from any static host. In production the `/api` proxy does **not** apply, so either set the backend URL in `maskApi.ts` (`ENDPOINT`) or reverse-proxy `/api/decode/masks` to the FastAPI service.
 
@@ -455,14 +464,14 @@ Recommended review loop:
 
 ### Keyboard shortcuts
 
-| Key | Action |
-| --- | --- |
-| `Space` | Play / pause |
-| `←` / `→` | Step one frame back / forward |
-| `3` | Verdict mask: **Accurate** |
-| `4` | Verdict mask: **Inaccurate** |
-| `n` | Jump to next unverified tracklet |
-| `x` | Toggle "Show all masks" |
+| Key       | Action                           |
+| --------- | -------------------------------- |
+| `Space`   | Play / pause                     |
+| `←` / `→` | Step one frame back / forward    |
+| `3`       | Verdict mask: **Accurate**       |
+| `4`       | Verdict mask: **Inaccurate**     |
+| `n`       | Jump to next unverified tracklet |
+| `x`       | Toggle "Show all masks"          |
 
 > "Unsure" has no hotkey — use the Inspector button. Shortcuts are disabled while typing in an input/textarea/select.
 
@@ -498,11 +507,13 @@ mask_verdict, comment
 This platform is intentionally narrow today; these are the most natural extensions (roughly ordered by leverage):
 
 **Data & workflow**
+
 - **Review-status sync / persistence on the server.** `localStorage` is per-browser. A thin persistence layer (e.g. store review deltas next to each clip, or a small DB) would enable multi-session, multi-user, and team auditing.
 - **Merge reviewed output back into the dataset.** Add a "finalise clip" step that writes a corrected annotation JSON (or the CSV/JSON export is consumed by an import script in the upstream pipeline).
 - **Batch/queue mode** — a landing page listing many project ZIPs with per-clip completion state and a single aggregated export.
 
 **Reviewer UX**
+
 - **In-frame mask editing** — instead of only verdicting a mask, allow scribble erasing/addition on bad frames (re-encode edits back to RLE).
 - **Taxonomy autocomplete / validation** against a taxonomic backbone (GBIF/WoRMS/NCBI) with confidence hints, and fuzzy matching of the predicted `noun_phrase`.
 - **Visual mask-quality metrics** (e.g. temporal stability, jitter between adjacent frames) to pre-flag suspicious tracklets.
@@ -510,6 +521,7 @@ This platform is intentionally narrow today; these are the most natural extensio
 - **Local video playback** as an alternative to frame directories (WebCodecs) when memory is a concern.
 
 **Engineering / robustness**
+
 - **Unit tests** for `lib/zip.ts` (round-trip stored/deflate, corrupt-archive paths), the `Clip` parser, `ReviewStore` export CSV escaping, and backend RLE decoding (compare runs against `pycocotools` ground truth).
 - **Add an annotation viewer test dataset** under `testdata/` (a tiny synthetic clip) so contributors can run the UI without real data.
 - **Clean up committed artifacts**: `backend/temp.py`, `backend/__pycache__/`, and the stray `backend/package-lock.json` should be removed from git and added to a root `.gitignore`.
@@ -522,7 +534,7 @@ This platform is intentionally narrow today; these are the most natural extensio
 - **Conventional commits** are used (`feat:`, `fix:`, `refactor:`, ...) — keep it that way so `git log` stays readable.
 - **TypeScript**: strict, `verbatimModuleSyntax`, `noUnusedLocals`/`noUnusedParameters` on. The app is written with tabs for indentation in the frontend, 4-space in the Python backend.
 - **Lint** with `npm run lint` (oxlint) before committing frontend changes. The React Compiler plugin means **hooks rules are enforced at build time** — write idiomatic hooks code.
-- Every frontend module and most backend functions carry a short doc comment explaining *why*; preserve that practice when adding code.
+- Every frontend module and most backend functions carry a short doc comment explaining _why_; preserve that practice when adding code.
 - If you change the data contract (`types.ts` / annotation schema), update this README's schema section, the backend pydantic models, and — if needed — the bundler, in the same commit.
 - There is currently **no automated test suite** — see [Ideas for further development](#ideas-for-further-development).
 

@@ -248,6 +248,8 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
                 annotation,
                 originalFps,
                 targetFps: frameRate,
+                width: info?.width ?? null,
+                height: info?.height ?? null,
                 signal: controller.signal,
                 onProgress: setProgress,
             });
@@ -269,6 +271,7 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
         frameRate,
         frames,
         hasSource,
+        info,
         mode,
         originalFps,
         trimmedName,

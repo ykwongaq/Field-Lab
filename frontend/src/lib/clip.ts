@@ -10,7 +10,7 @@ import type {
 import type { ZipArchive } from "./zip";
 import { ZipWriter } from "./zipWriter";
 import { colorForIndex } from "./palette";
-import { readProjectMode, type ProjectMode } from "./project";
+import { ANNOTATION_ENTRY, readProjectMode, type ProjectMode } from "./project";
 import { rleIsEmpty, subtractRle, unionRle } from "./rle";
 import {
     classMasksToLabelMap,
@@ -91,10 +91,52 @@ interface ClipInit {
     labelMaps: (string | null)[] | null;
     /** Frames whose masks changed since the archive was opened. */
     dirtyFrames: ReadonlySet<number>;
+    /** `true` when the frames were materialised outside the archive. */
+    framesExternal: boolean;
 }
 
 /** Progress callback while label maps are decoded on open. */
 export type LoadProgress = (done: number, total: number) => void;
+
+/**
+ * The frame sequence the backend materialised for a project.
+ *
+ * It wins over the archive's own `file_names` because it describes the frames
+ * that actually exist, measured after extraction, rather than what was asked
+ * for when the archive was packed.
+ */
+export interface FrameOverride {
+    frameNames: readonly string[];
+    fps: number;
+    width: number;
+    height: number;
+    /** `true` when the frames live outside the archive. */
+    external?: boolean;
+}
+
+export interface OpenOptions {
+    onProgress?: LoadProgress;
+    frames?: FrameOverride;
+}
+
+/** Legacy archives kept the dataset in a folder rather than at the root. */
+const LEGACY_ANNOTATION_PATTERN = /^annotations\/[^/]+\.json$/i;
+
+/**
+ * The archive entry holding the dataset: `annotation.json` at the root, or —
+ * for archives written before the layout was flattened — the single JSON under
+ * `annotations/`.
+ */
+function findAnnotationEntry(zip: ZipArchive): string {
+    if (zip.hasEntry(ANNOTATION_ENTRY)) return ANNOTATION_ENTRY;
+    for (const name of zip.getEntries()) {
+        if (LEGACY_ANNOTATION_PATTERN.test(name)) return name;
+    }
+    throw new Error(
+        `No annotation JSON found: expected ${ANNOTATION_ENTRY} at the root of ` +
+            "the archive (older archives may keep it under annotations/).",
+    );
+}
 
 /**
  * Parsed representation of one clip: its frames plus the tracklets to review.
@@ -124,12 +166,14 @@ export class Clip {
     readonly modeAssumed: boolean;
     /** Archive entry of the embedded source video, when present. */
     readonly videoEntry: string | null;
-    /** Archive entry the annotations were read from, e.g. `annotations/clip.json`. */
+    /** Archive entry the annotations were read from, usually `annotation.json`. */
     readonly annotationEntry: string;
     /** Number of mask edits made in the app since the archive was opened. */
     readonly editCount: number;
     /** Frames whose masks changed in the app (drives which label maps are rewritten). */
     readonly dirtyFrames: ReadonlySet<number>;
+    /** `true` when the frames came from the backend rather than the archive. */
+    readonly framesExternal: boolean;
 
     private readonly raw: RawDataset;
     private readonly labelMaps: (string | null)[] | null;
@@ -157,21 +201,15 @@ export class Clip {
         this.editCount = init.editCount;
         this.labelMaps = init.labelMaps;
         this.dirtyFrames = init.dirtyFrames;
+        this.framesExternal = init.framesExternal;
     }
 
     static async fromZip(
         zip: ZipArchive,
-        onProgress?: LoadProgress,
+        options: OpenOptions = {},
     ): Promise<Clip> {
-        const jsonEntries = zip
-            .getEntries()
-            .filter((name) => /^annotations\/[^/]+\.json$/i.test(name));
-        if (jsonEntries.length === 0) {
-            throw new Error(
-                "No annotation JSON found under annotations/ in the archive.",
-            );
-        }
-        const annotationEntry = jsonEntries[0];
+        const { onProgress } = options;
+        const annotationEntry = findAnnotationEntry(zip);
 
         const raw = JSON.parse(
             await zip.readAsText(annotationEntry),
@@ -179,13 +217,33 @@ export class Clip {
         const video = raw.videos?.[0];
         if (!video)
             throw new Error("Annotation JSON contains no video record.");
-        if (!Array.isArray(video.file_names) || video.file_names.length === 0) {
+
+        // The backend materialises the frames and reports the sequence back, so
+        // a project opens the same way whether its archive carried a frame
+        // folder or a video. Without that report, the archive's own list is the
+        // only option — and it exists only when the archive shipped with frames.
+        const override = options.frames;
+        const frameNames = override
+            ? [...override.frameNames]
+            : Array.isArray(video.file_names)
+              ? [...video.file_names]
+              : [];
+        if (frameNames.length === 0) {
             throw new Error(
                 video.video_file
-                    ? `This project carries a source video (${video.video_file}) but no extracted frames, so there is nothing to review yet. Add a frames/ folder to the archive, or extract frames from the video first.`
+                    ? `This project carries a source video (${video.video_file}) but no frames. Open it through the backend, which extracts them first.`
                     : "Annotation JSON contains no frame list (file_names).",
             );
         }
+
+        // The session measured the frames it produced; the JSON only records
+        // what was asked for, so the session wins wherever it has an answer.
+        const width = override?.width || video.width || 0;
+        const height = override?.height || video.height || 0;
+        const fps =
+            override?.fps ||
+            (typeof video.fps === "number" && video.fps > 0 ? video.fps : 25);
+
         // Mode before anything else: an unsupported mode rejects the archive.
         const { mode, assumed: modeAssumed } = readProjectMode(video);
         const videoEntry =
@@ -223,11 +281,14 @@ export class Clip {
                 };
             });
 
+        // `video_name` is written by every creation path; the entry name is a
+        // fallback for hand-made archives, where the fixed root entry carries
+        // no project name of its own.
         const name =
             video.video_name ??
-            annotationEntry
-                .replace(/^annotations\//, "")
-                .replace(/\.json$/i, "");
+            (annotationEntry === ANNOTATION_ENTRY
+                ? "clip"
+                : annotationEntry.replace(/^.*\//, "").replace(/\.json$/i, ""));
 
         const maxOf = (values: number[]) =>
             values.length ? Math.max(...values) : 0;
@@ -237,7 +298,7 @@ export class Clip {
         // instance one — per-tracklet RLE — and converted on export.)
         const labelMaps =
             mode === "semantic" && Array.isArray(video.label_maps)
-                ? video.file_names.map((_, i) => video.label_maps?.[i] ?? null)
+                ? frameNames.map((_, i) => video.label_maps?.[i] ?? null)
                 : null;
         let nextTrackletId =
             maxOf((raw.annotations ?? []).map((a) => a.id)) + 1;
@@ -245,7 +306,7 @@ export class Clip {
             maxOf((raw.annotations ?? []).map((a) => a.object_id)) + 1;
         if (labelMaps) {
             const byCategory = new Map(tracklets.map((t) => [t.categoryId, t]));
-            const frameCount = video.file_names.length;
+            const frameCount = frameNames.length;
             for (const tracklet of tracklets) {
                 tracklet.segmentations = new Array(frameCount).fill(null);
             }
@@ -256,13 +317,13 @@ export class Clip {
             for (const { entry, i } of present) {
                 const ids = await decodeLabelMapPng(
                     await zip.readAsBlob(entry as string),
-                    video.width,
-                    video.height,
+                    width,
+                    height,
                 );
                 for (const [classId, rle] of labelMapToClassMasks(
                     ids,
-                    video.width,
-                    video.height,
+                    width,
+                    height,
                 )) {
                     let tracklet = byCategory.get(classId);
                     if (!tracklet) {
@@ -297,11 +358,11 @@ export class Clip {
 
         return new Clip({
             name,
-            width: video.width,
-            height: video.height,
-            fps:
-                typeof video.fps === "number" && video.fps > 0 ? video.fps : 25,
-            frameNames: [...video.file_names],
+            width,
+            height,
+            fps,
+            frameNames,
+            framesExternal: override?.external ?? false,
             tracklets,
             mode,
             modeAssumed,
@@ -325,11 +386,12 @@ export class Clip {
         return this.frameNames.length;
     }
 
-    frameEntry(index: number): string {
-        return `frames/${this.frameNames[index]}`;
-    }
-
+    /**
+     * Frames the archive does not carry. Always empty when the frames came from
+     * the backend, which guarantees the sequence it reported.
+     */
     missingFrames(zip: ZipArchive): string[] {
+        if (this.framesExternal) return [];
         return this.frameNames.filter(
             (name) => !zip.hasEntry(`frames/${name}`),
         );
@@ -362,6 +424,7 @@ export class Clip {
             editCount: this.editCount,
             labelMaps: this.labelMaps,
             dirtyFrames: this.dirtyFrames,
+            framesExternal: this.framesExternal,
             ...patch,
         });
     }

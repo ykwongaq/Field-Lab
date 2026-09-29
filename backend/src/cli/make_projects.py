@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import cv2
 
 from src.projects.builder import (
-    ANNOTATIONS_DIR,
+    ANNOTATION_ENTRY,
     FRAMES_DIR,
     MODES,
     VIDEO_DIR,
@@ -53,7 +53,7 @@ def create_clip_zip(task):
 
     Layout inside each zip:
         frames/<image files>
-        annotations/<clip_name>.json   (only if an annotation exists)
+        annotation.json                (only if an annotation exists)
 
     Returns (clip_name, has_annotation, error_message_or_None).
     """
@@ -103,11 +103,8 @@ def create_clip_zip(task):
                     compresslevel=compresslevel,
                 )
 
-            annotation_entry = f"{ANNOTATIONS_DIR}/{clip_name}.json"
+            annotation_entry = ANNOTATION_ENTRY
             if dataset is not None:
-                annotation_entry = (
-                    f"{ANNOTATIONS_DIR}/{os.path.basename(annotation_file)}"
-                )
                 if record.get("segmentation_mode") not in MODES:
                     record["segmentation_mode"] = mode
                 elif record["segmentation_mode"] != mode:

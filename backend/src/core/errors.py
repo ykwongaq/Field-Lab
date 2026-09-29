@@ -50,3 +50,13 @@ class AlreadyExists(VsrError):
     """The target already exists and the caller did not ask to replace it."""
 
     status_code = 409
+
+
+class NotFound(VsrError):
+    """The caller asked for something that is not there.
+
+    Sessions are swept on a TTL, so a caller holding an id can legitimately
+    find it gone; that is a 404 rather than an error worth logging loudly.
+    """
+
+    status_code = 404

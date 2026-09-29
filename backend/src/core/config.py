@@ -46,6 +46,15 @@ DEFAULT_SAM3_MASK_THRESHOLD = 0.5
 DEFAULT_SAM3_EXEMPLAR_FRACTION = 0.06
 DEFAULT_PROPAGATE_MAX_FRAMES = 120
 
+# A session is a disposable frame working copy under `temp_dir/sessions/<uuid>/`.
+# It is a cache of something the archive can always regenerate, so an idle one
+# may be swept at any time; the byte cap bounds how much disk all of them hold.
+DEFAULT_SESSION_TTL_SECONDS = 6 * 60 * 60  # 6 hours idle
+DEFAULT_SESSION_MAX_BYTES = 64 * 1024**3  # 64 GiB across every session
+DEFAULT_FRAMES_JPEG_QUALITY = 95
+DEFAULT_FFMPEG_BIN = "ffmpeg"
+DEFAULT_FFPROBE_BIN = "ffprobe"
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
@@ -236,6 +245,13 @@ class Settings:
     sam3_tracker_model: Optional[str] = None
     propagate_max_frames: int = DEFAULT_PROPAGATE_MAX_FRAMES
 
+    # Sessions: the frame working copy every reader shares
+    session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    session_max_bytes: int = DEFAULT_SESSION_MAX_BYTES
+    frames_jpeg_quality: int = DEFAULT_FRAMES_JPEG_QUALITY
+    ffmpeg_bin: str = DEFAULT_FFMPEG_BIN
+    ffprobe_bin: str = DEFAULT_FFPROBE_BIN
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
@@ -252,6 +268,7 @@ def get_settings() -> Settings:
     sam3 = _section(config, "sam3")
     video = _section(config, "video")
     propagate = _section(config, "propagate")
+    sessions = _section(config, "sessions")
 
     return Settings(
         host=_str_env(
@@ -359,6 +376,45 @@ def get_settings() -> Settings:
                 "max_frames",
                 DEFAULT_PROPAGATE_MAX_FRAMES,
                 label="propagate.max_frames",
+            ),
+        ),
+        session_ttl_seconds=_int_env(
+            "VSR_SESSION_TTL_SECONDS",
+            _file_int(
+                sessions,
+                "ttl_seconds",
+                DEFAULT_SESSION_TTL_SECONDS,
+                label="sessions.ttl_seconds",
+            ),
+        ),
+        session_max_bytes=_int_env(
+            "VSR_SESSION_MAX_BYTES",
+            _file_int(
+                sessions,
+                "max_bytes",
+                DEFAULT_SESSION_MAX_BYTES,
+                label="sessions.max_bytes",
+            ),
+        ),
+        frames_jpeg_quality=_int_env(
+            "VSR_FRAMES_JPEG_QUALITY",
+            _file_int(
+                config,
+                "frames_jpeg_quality",
+                DEFAULT_FRAMES_JPEG_QUALITY,
+                label="frames_jpeg_quality",
+            ),
+        ),
+        ffmpeg_bin=_str_env(
+            "VSR_FFMPEG_BIN",
+            _file_str(
+                config, "ffmpeg_bin", DEFAULT_FFMPEG_BIN, label="ffmpeg_bin"
+            ),
+        ),
+        ffprobe_bin=_str_env(
+            "VSR_FFPROBE_BIN",
+            _file_str(
+                config, "ffprobe_bin", DEFAULT_FFPROBE_BIN, label="ffprobe_bin"
             ),
         ),
     )

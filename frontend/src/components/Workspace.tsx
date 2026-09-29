@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Clip } from "../lib/clip";
+import type { FrameSource } from "../lib/frames";
 import type { ZipArchive } from "../lib/zip";
 import type {
     MaskVerdict,
@@ -69,6 +70,8 @@ const DEFAULT_PROPAGATE_FORWARD = 10;
 interface WorkspaceProps {
     clip: Clip;
     zip: ZipArchive;
+    /** Where the displayed pixels come from; the archive only holds the rest. */
+    frames: FrameSource;
     notice?: WorkspaceNotice | null;
     onDismissNotice?: () => void;
     onReset: () => void;
@@ -77,6 +80,7 @@ interface WorkspaceProps {
 export function Workspace({
     clip: initialClip,
     zip,
+    frames,
     notice: externalNotice = null,
     onDismissNotice,
     onReset,
@@ -403,7 +407,7 @@ export function Workspace({
             setSegmenting(true);
             setPromptError(null);
             try {
-                const image = await zip.readAsBlob(clip.frameEntry(frameIndex));
+                const image = await frames.frame(frameIndex);
                 const request = {
                     image,
                     imageKey: `${clip.name}/${clip.frameNames[frameIndex]}`,
@@ -429,7 +433,7 @@ export function Workspace({
                 }
             }
         },
-        [zip, clip, frameIndex, semantic, className],
+        [frames, clip, frameIndex, semantic, className],
     );
 
     const runTextPrompt = useCallback(() => {
@@ -731,19 +735,24 @@ export function Workspace({
         setPropRun(null);
         const anchor = frameIndex;
         try {
-            const frames = [];
+            const indices: number[] = [];
             for (
                 let index = propRange.first;
                 index <= propRange.last;
                 index++
             ) {
-                frames.push({
-                    index,
-                    image: await zip.readAsBlob(clip.frameEntry(index)),
-                });
+                indices.push(index);
             }
+            // Fetched together: these are round trips to the session, not local
+            // slices of an archive.
+            const images = await Promise.all(
+                indices.map((index) => frames.frame(index)),
+            );
             const result = await propagateMask({
-                frames,
+                frames: indices.map((index, i) => ({
+                    index,
+                    image: images[i],
+                })),
                 anchor,
                 mask: anchorMask,
                 backward: propRange.back,
@@ -783,7 +792,7 @@ export function Workspace({
         propagating,
         propRange,
         frameIndex,
-        zip,
+        frames,
         clip,
         propagateBackend,
     ]);
@@ -1045,7 +1054,7 @@ export function Workspace({
         }
 
         downloadText(
-            clip.annotationEntry.replace(/^annotations\//, ""),
+            `${clip.name}.json`,
             JSON.stringify(clip.toDataset(store.getRecord()), null, 2),
             "application/json",
         );
@@ -1735,7 +1744,7 @@ export function Workspace({
                     )}
                     <VideoPanel
                         clip={clip}
-                        zip={zip}
+                        frames={frames}
                         frameIndex={frameIndex}
                         playing={playing}
                         selectedTrackletId={selectedId}

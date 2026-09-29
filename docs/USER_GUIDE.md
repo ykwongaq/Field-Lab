@@ -35,9 +35,9 @@ Everything runs in your browser. Your frames never leave your computer.
 
 You need two things:
 
-| Requirement | Details |
-| --- | --- |
-| **A project archive** | A single `.zip` file for one clip. It contains a `frames/` folder (one image per frame) and an annotation JSON under `annotations/`. Your data provider or the `make_projects.py` bundler creates these for you. |
+| Requirement           | Details                                                                                                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A project archive** | A single `.zip` file for one clip. It contains a `frames/` folder (one image per frame) and an `annotation.json` at the root. Your data provider or the `make_projects.py` bundler creates these for you. |
 
 ---
 
@@ -50,7 +50,7 @@ When the app loads you will see the **upload screen**.
 **To open a project:**
 
 1. **Drag** the project `.zip` file from your file manager and **drop** it anywhere on the drop zone.
-   — *or* —
+   — _or_ —
    **Click** the drop zone to open your file browser, then pick the `.zip` file.
 2. A short **"Loading"** screen appears while the app reads frames and annotations.
 3. The review workspace opens automatically once the clip is ready.
@@ -65,12 +65,12 @@ The workspace is divided into three areas:
 
 ![image-20260910132321725](images/2_interface.png)
 
-| Area | What it does |
-| --- | --- |
-| **① Header bar** | Shows the clip name, technical details (frame count, fps, resolution, number of tracklets), the **review progress bar**, the **Export** button, and **Open another**. |
-| **② Video canvas** | Plays the clip and draws the coloured mask overlay for the selected tracklet. |
-| **③ Tracklet list** | Lists every tracked object. Search, filter, and click to select. |
-| **④ Inspector** | Where you edit the taxonomic label, confirm it, and give the mask a verdict. |
+| Area                | What it does                                                                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **① Header bar**    | Shows the clip name, technical details (frame count, fps, resolution, number of tracklets), the **review progress bar**, the **Export** button, and **Open another**. |
+| **② Video canvas**  | Plays the clip and draws the coloured mask overlay for the selected tracklet.                                                                                         |
+| **③ Tracklet list** | Lists every tracked object. Search, filter, and click to select.                                                                                                      |
+| **④ Inspector**     | Where you edit the taxonomic label, confirm it, and give the mask a verdict.                                                                                          |
 
 ---
 
@@ -99,10 +99,10 @@ The **tracklet list** on the right is your work queue.
 
 - **Search** — type part of a label, tracklet ID, or object ID to filter the list (for example `Ateles` or `17`).
 - **Filter buttons** — narrow the list to the ones you still need:
-  - **All** — every tracklet.
-  - **Pending** — not reviewed yet.
-  - **In progress** — you have confirmed the label *or* given a mask verdict, but not both.
-  - **Verified** — label confirmed **and** mask verdict recorded.
+    - **All** — every tracklet.
+    - **Pending** — not reviewed yet.
+    - **In progress** — you have confirmed the label _or_ given a mask verdict, but not both.
+    - **Verified** — label confirmed **and** mask verdict recorded.
 - **Click a row** to select that tracklet. Each row shows the colour swatch, the object's label, its IDs, and how many frames it appears in.
 
 > 💡 **Tip:** Selecting a tracklet automatically jumps the video to the **first frame where that object is visible**, so you start in the right place.
@@ -156,13 +156,13 @@ Still in the Inspector, under **Mask quality**, choose one of three verdicts:
 
 > ![PLACEHOLDER — mask-overlay-example](./images/5_mask.png)
 
-| Verdict | When to use it | Shortcut |
-| --- | --- | --- |
-| **Accurate** | The mask correctly and consistently outlines the animal on all visible frames. | `3` |
-| **Inaccurate** | The mask is wrong on one or more frames (too large, too small, drifting, or covering the wrong object). | `4` |
-| **Unsure** | You cannot confidently judge the mask (poor visibility, ambiguous boundaries, or heavy occlusion). | *(none — click the button)* |
+| Verdict        | When to use it                                                                                          | Shortcut                    |
+| -------------- | ------------------------------------------------------------------------------------------------------- | --------------------------- |
+| **Accurate**   | The mask correctly and consistently outlines the animal on all visible frames.                          | `3`                         |
+| **Inaccurate** | The mask is wrong on one or more frames (too large, too small, drifting, or covering the wrong object). | `4`                         |
+| **Unsure**     | You cannot confidently judge the mask (poor visibility, ambiguous boundaries, or heavy occlusion).      | _(none — click the button)_ |
 
-Optionally, add a note in the **comment box** — for example, *"mask drifts off the tail after frame 40"* or *"partially occluded by foliage, verdict provisional"*. Comments are included in the export and are valuable to downstream curation.
+Optionally, add a note in the **comment box** — for example, _"mask drifts off the tail after frame 40"_ or _"partially occluded by foliage, verdict provisional"_. Comments are included in the export and are valuable to downstream curation.
 
 A tracklet is **Verified** when **both** the label is confirmed **and** a mask verdict is set.
 
@@ -172,15 +172,15 @@ A tracklet is **Verified** when **both** the label is confirmed **and** a mask v
 
 These shortcuts let you review quickly without reaching for the mouse.
 
-| Key | Action |
-| --- | --- |
-| `Space` | Play / pause |
-| `←` | Step one frame back |
-| `→` | Step one frame forward |
-| `3` | Verdict mask: **Accurate** |
-| `4` | Verdict mask: **Inaccurate** |
-| `n` | Jump to the **next unverified** tracklet |
-| `x` | Toggle **Show all masks** |
+| Key     | Action                                   |
+| ------- | ---------------------------------------- |
+| `Space` | Play / pause                             |
+| `←`     | Step one frame back                      |
+| `→`     | Step one frame forward                   |
+| `3`     | Verdict mask: **Accurate**               |
+| `4`     | Verdict mask: **Inaccurate**             |
+| `n`     | Jump to the **next unverified** tracklet |
+| `x`     | Toggle **Show all masks**                |
 
 > ℹ️ **Note:** Shortcuts are paused while you are typing in a text field, so you can safely type labels and comments. "Unsure" has no shortcut by design — click the button in the Inspector.
 
@@ -201,7 +201,7 @@ The **progress bar** in the header shows how many tracklets are verified, for ex
 Each tracklet's status is also shown in the list:
 
 - **Pending** — not started.
-- **In progress** — partially reviewed (label *or* mask done, not both).
+- **In progress** — partially reviewed (label _or_ mask done, not both).
 - **Verified** — fully reviewed.
 
 Your work is **saved automatically** in your browser as you go, so you can close the tab and come back later — just re-open the same project file to resume where you left off.
@@ -225,31 +225,31 @@ Click **Open another** in the header to load a different project archive.
 
 ## 12. Troubleshooting
 
-| Symptom | Cause | What to do |
-| --- | --- | --- |
-| **"Could not open archive"** mentioning compression or method 14 | The `.zip` uses LZMA/BZIP2, which the browser cannot read. | Ask for a copy re-exported with `--compression deflated` (DEFLATE), or re-bundle it with `make_projects.py`. |
-| **"Could not open archive"** with another message | The archive is missing the expected layout, or the annotation JSON is absent. | Confirm the `.zip` contains a `frames/` folder and exactly one `.json` under `annotations/`. |
-| **A grey "Frame unavailable" box appears** | One or more frame images are missing from the archive. | The header warns how many frames are missing. Continue reviewing the available frames; notify your data provider if it matters. |
-| **No coloured overlay appears on the video** | The mask service is not running, or a mask has not yet loaded for this frame. | Make sure the helper service is running, then select the tracklet again to re-request its masks. |
-| **Masks lag briefly during playback** | Masks are being decoded and may arrive a moment after the frame. | This usually resolves within a moment. Step frame-by-frame for the most reliable inspection. |
-| **Shortcuts stop working** | Your cursor is inside a text field. | Click on the video canvas or press `Escape`, then try again. |
-| **Review progress is empty after reopening** | The project was opened in a different browser/machine, or browser data was cleared. | Re-do the review, and export promptly. Exported files are the durable record. |
+| Symptom                                                          | Cause                                                                               | What to do                                                                                                                      |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **"Could not open archive"** mentioning compression or method 14 | The `.zip` uses LZMA/BZIP2, which the browser cannot read.                          | Ask for a copy re-exported with `--compression deflated` (DEFLATE), or re-bundle it with `make_projects.py`.                    |
+| **"Could not open archive"** with another message                | The archive is missing the expected layout, or the annotation JSON is absent.       | Confirm the `.zip` contains a `frames/` folder and an `annotation.json` at its root.                                            |
+| **A grey "Frame unavailable" box appears**                       | One or more frame images are missing from the archive.                              | The header warns how many frames are missing. Continue reviewing the available frames; notify your data provider if it matters. |
+| **No coloured overlay appears on the video**                     | The mask service is not running, or a mask has not yet loaded for this frame.       | Make sure the helper service is running, then select the tracklet again to re-request its masks.                                |
+| **Masks lag briefly during playback**                            | Masks are being decoded and may arrive a moment after the frame.                    | This usually resolves within a moment. Step frame-by-frame for the most reliable inspection.                                    |
+| **Shortcuts stop working**                                       | Your cursor is inside a text field.                                                 | Click on the video canvas or press `Escape`, then try again.                                                                    |
+| **Review progress is empty after reopening**                     | The project was opened in a different browser/machine, or browser data was cleared. | Re-do the review, and export promptly. Exported files are the durable record.                                                   |
 
 ---
 
 ## 13. Glossary
 
-| Term | Meaning |
-| --- | --- |
-| **Clip** | One video, represented by one project `.zip` archive. |
-| **Frame** | A single still image in the clip. |
-| **Tracklet** | One object tracked across frames (one animal), with a mask and a taxonomic label. |
-| **Mask** | The pixel-level outline of an object on a frame, drawn as a coloured overlay. |
+| Term         | Meaning                                                                                                   |
+| ------------ | --------------------------------------------------------------------------------------------------------- |
+| **Clip**     | One video, represented by one project `.zip` archive.                                                     |
+| **Frame**    | A single still image in the clip.                                                                         |
+| **Tracklet** | One object tracked across frames (one animal), with a mask and a taxonomic label.                         |
+| **Mask**     | The pixel-level outline of an object on a frame, drawn as a coloured overlay.                             |
 | **Taxonomy** | The scientific classification of the object: kingdom → phylum → class → order → family → genus → species. |
-| **Verdict** | Your judgement of a mask's quality: Accurate, Inaccurate, or Unsure. |
-| **Verified** | A tracklet whose label is confirmed **and** whose mask has a verdict. |
-| **Export** | The JSON + CSV files containing your completed review. |
+| **Verdict**  | Your judgement of a mask's quality: Accurate, Inaccurate, or Unsure.                                      |
+| **Verified** | A tracklet whose label is confirmed **and** whose mask has a verdict.                                     |
+| **Export**   | The JSON + CSV files containing your completed review.                                                    |
 
 ---
 
-*Questions or corrections? Flag them to the platform maintainer so this guide can be kept up to date.*
+_Questions or corrections? Flag them to the platform maintainer so this guide can be kept up to date._

@@ -7,7 +7,7 @@ The archive layout produced here is a contract with the browser reader
                                (STORED, not re-compressed)
     frames/000000.jpg ...      every kept frame, STORED so the browser can
                                inflate it without an LZMA-capable reader
-    annotations/<name>.json    VideoSegmentation dataset: the caller's annotation
+    annotation.json            VideoSegmentation dataset: the caller's annotation
                                file with its video record completed, or a
                                fresh skeleton
     metadata.json              free-form user metadata (always written)
@@ -18,6 +18,9 @@ thin wrapper for callers that think in `frame_step` rather than `target_fps`.
 This module is the *batch* path (CLI, scripts, `make_projects.py`). Interactive
 creation happens in the browser instead — `frontend/src/lib/projectWriter.ts` —
 which packs the same layout without uploading anything.
+
+`cv2` is imported inside the functions that need it, so reading this layout (or
+building a session from an archive) never requires the image stack.
 """
 
 from __future__ import annotations
@@ -29,15 +32,13 @@ import zipfile
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional
 
-import cv2
-
 from src.core.config import DEFAULT_TARGET_FPS
 from src.core.errors import InvalidRequest
 from src.core.storage import ensure_dir
 
 VIDEO_DIR = "video"
 FRAMES_DIR = "frames"
-ANNOTATIONS_DIR = "annotations"
+ANNOTATION_ENTRY = "annotation.json"
 FRAME_NAME_PATTERN = "{:06d}.jpg"
 
 ProjectMode = Literal["instance", "semantic"]
@@ -327,6 +328,8 @@ def probe_video(
     video_path: str, label: Optional[str] = None
 ) -> tuple[float, int, int, int]:
     """Return (fps, width, height, estimated_frame_count) for a video."""
+    import cv2
+
     label = label or os.path.basename(video_path)
     capture = cv2.VideoCapture(video_path)
     try:
@@ -383,6 +386,8 @@ def select_frame_files(folder: str) -> List[str]:
 
 def probe_frame_folder(folder: str) -> tuple[int, int, int]:
     """Return (frame_count, width, height) for a folder of frames."""
+    import cv2
+
     names = select_frame_files(folder)
     first = cv2.imread(os.path.join(folder, names[0]))
     if first is None:
@@ -432,6 +437,8 @@ def _write_frames_from_video(
     progress: Optional[ProgressCallback],
 ) -> _FramesWritten:
     """Decode the video and keep every `step`-th frame as a JPEG in `frames/`."""
+    import cv2
+
     total = (estimate + step - 1) // step if estimate else None
     if total is not None and max_frames is not None:
         total = min(total, max_frames)
@@ -495,6 +502,8 @@ def _write_frames_from_folder(
     would only cost time and quality. Names are kept, which means `file_names`
     mirrors the folder the caller uploaded.
     """
+    import cv2
+
     available = select_frame_files(folder)
     selected = available[::step]
     if max_frames is not None:
@@ -606,7 +615,7 @@ def create_project(
     video_entry = (
         f"{VIDEO_DIR}/{project_name}{extension}" if video_path is not None else None
     )
-    annotation_entry = f"{ANNOTATIONS_DIR}/{project_name}.json"
+    annotation_entry = ANNOTATION_ENTRY
 
     # 2. Read the caller's annotation file up front: a broken one should fail
     #    before an hour of frame extraction is spent.

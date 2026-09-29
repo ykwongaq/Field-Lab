@@ -10,18 +10,17 @@
  *
  *     video/<name><ext>          when a video was provided
  *     frames/<name>              when frames were provided (order = natural sort)
- *     annotations/<name>.json    VideoSegmentation dataset
+ *     annotation.json            VideoSegmentation dataset
  *     metadata.json              free-form user metadata
  */
 
 import type { RawDataset, RawVideo } from "../types";
-import type { ProjectMode } from "./project";
+import { ANNOTATION_ENTRY, type ProjectMode } from "./project";
 import { ZipWriter } from "./zipWriter";
 
 export const PROJECT_EXTENSION = ".project";
 export const METADATA_ENTRY = "metadata.json";
 
-const ANNOTATIONS_DIR = "annotations";
 const FRAMES_DIR = "frames";
 const VIDEO_DIR = "video";
 const DEFAULT_FPS_FALLBACK = 25;
@@ -33,7 +32,7 @@ export type CreateProjectProgress =
     | { stage: "video"; loaded: number; total: number };
 
 export interface CreateProjectInput {
-    /** Project name: used for the archive, the annotation entry and video_name. */
+    /** Project name: used for the archive name and `video_name`. */
     name: string;
     mode: ProjectMode;
     /** Source video, when the user gave one. */
@@ -48,6 +47,13 @@ export interface CreateProjectInput {
     originalFps?: number | null;
     /** Frame rate the reviewer should treat the project as having. */
     targetFps?: number | null;
+    /**
+     * Frame size the browser probed from the source video. Frames win when
+     * they are given, and this is the only source of a size for a video-only
+     * project, which has no frame to measure.
+     */
+    width?: number | null;
+    height?: number | null;
     onProgress?: (progress: CreateProjectProgress) => void;
     signal?: AbortSignal;
 }
@@ -246,8 +252,9 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
  *
  * At least one of `video` or `frames` is needed, and both is fine: the frames
  * are what the reviewer looks at, the video keeps the provenance. `originalFps`
- * / `targetFps` are recorded in the annotation file as intent — they never
- * change the stored bytes, so no frame rate maths happens here.
+ * / `targetFps` / `width` / `height` are recorded in the annotation file as
+ * intent — they never change the stored bytes, so no frame rate maths and no
+ * decoding happens here.
  */
 export async function createProjectFile(
     input: CreateProjectInput,
@@ -275,9 +282,16 @@ export async function createProjectFile(
 
     const ordered = orderFrames(frames);
     const frameNames = ordered.map((entry) => entry.name);
-    const size = ordered.length
+    // A frame is the real pixel source, so it decides the size. `input.width` /
+    // `input.height` cover the video-only case, which has no frame to measure,
+    // and stand in when the browser cannot decode the first frame's format.
+    const measured = ordered.length
         ? await frameSize(ordered[0].file)
         : { width: 0, height: 0 };
+    const size = {
+        width: measured.width || input.width || 0,
+        height: measured.height || input.height || 0,
+    };
     const fps = input.targetFps ?? input.originalFps ?? DEFAULT_FPS_FALLBACK;
 
     const videoEntry = video
@@ -329,10 +343,7 @@ export async function createProjectFile(
             input.onProgress?.({ stage: "video", loaded, total }),
         );
     }
-    writer.addText(
-        `${ANNOTATIONS_DIR}/${name}.json`,
-        JSON.stringify(dataset, null, 2),
-    );
+    writer.addText(ANNOTATION_ENTRY, JSON.stringify(dataset, null, 2));
     writer.addText(METADATA_ENTRY, JSON.stringify(metadata, null, 2));
 
     return {

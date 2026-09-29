@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.errors import register_exception_handlers
-from src.api.routes import health, masks, propagate, sam3
+from src.api.routes import health, masks, propagate, sam3, sessions
 from src.core.config import get_settings
 from src.core.lifespan import lifespan
 
@@ -43,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(masks.router)
     app.include_router(sam3.router)
     app.include_router(propagate.router)
+    app.include_router(sessions.router)
     return app
 
 
