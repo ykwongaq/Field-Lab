@@ -9,10 +9,12 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from src.api.deps import (
+    SAM3_DISABLED_MESSAGE,
     PropagateDep,
     SettingsDep,
     parse_json_field,
     read_capped_upload,
+    require_sam3,
 )
 from src.api.serializers import propagate_response
 from src.core.errors import PayloadTooLarge
@@ -25,8 +27,19 @@ router = APIRouter(prefix="/api/propagate", tags=["propagate"])
 
 
 @router.get("/status", response_model=PropagateStatus)
-def propagate_status(service: PropagateDep) -> PropagateStatus:
+def propagate_status(settings: SettingsDep, service: PropagateDep) -> PropagateStatus:
     """Report tracker availability and the per-request frame cap."""
+    if not settings.enable_sam3:
+        return PropagateStatus(
+            sam3=ModelStatus(
+                available=False,
+                loaded=False,
+                model=settings.sam3_tracker_model or settings.sam3_model,
+                device=settings.sam3_device,
+                error=SAM3_DISABLED_MESSAGE,
+            ),
+            max_frames=settings.propagate_max_frames,
+        )
     status = service.status()
     return PropagateStatus(
         sam3=ModelStatus(**status["sam3"]),
@@ -68,6 +81,7 @@ async def propagate_mask(
     bounded by `PROPAGATE_MAX_FRAMES`; longer stretches take several runs. The
     anchor's own mask is not returned.
     """
+    require_sam3(settings)
     indices = parse_json_field(frame_indices, "frame_indices")
     if not isinstance(indices, list) or not all(
         isinstance(index, int) for index in indices

@@ -7,7 +7,14 @@ from typing import Optional
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
-from src.api.deps import Sam3Dep, SettingsDep, parse_json_field, read_capped_upload
+from src.api.deps import (
+    SAM3_DISABLED_MESSAGE,
+    Sam3Dep,
+    SettingsDep,
+    parse_json_field,
+    read_capped_upload,
+    require_sam3,
+)
 from src.api.serializers import sam3_segment_response
 from src.domain.segmentation import PromptError, parse_points
 from src.schemas.sam import Sam3SegmentResponse, Sam3Status
@@ -16,8 +23,21 @@ router = APIRouter(prefix="/api/sam3", tags=["sam3"])
 
 
 @router.get("/status", response_model=Sam3Status)
-def sam3_status(sam3: Sam3Dep) -> Sam3Status:
-    """Report whether SAM 3 is installed, loaded, and on which device."""
+def sam3_status(settings: SettingsDep, sam3: Sam3Dep) -> Sam3Status:
+    """Report whether SAM 3 is installed, loaded, and on which device.
+
+    With `sam3.enabled=false` this answers from the settings alone, so the
+    service is never asked to probe transformers.
+    """
+    if not settings.enable_sam3:
+        return Sam3Status(
+            available=False,
+            loaded=False,
+            model=settings.sam3_model,
+            device=settings.sam3_device,
+            threshold=settings.sam3_threshold,
+            error=SAM3_DISABLED_MESSAGE,
+        )
     return Sam3Status(**sam3.status())
 
 
@@ -44,6 +64,7 @@ async def sam3_segment(
     The browser calls this after every click while the reviewer refines the
     prompt; repeated calls on the same `image_key` reuse the cached embedding.
     """
+    require_sam3(settings)
     raw_points = parse_json_field(points, "points")
     if not isinstance(raw_points, list):
         raise PromptError("`points` must be a list.")

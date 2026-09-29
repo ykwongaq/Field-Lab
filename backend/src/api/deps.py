@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from fastapi import Depends, UploadFile
 
 from src.core.config import Settings, get_settings
-from src.core.errors import InvalidRequest, PayloadTooLarge
+from src.core.errors import InvalidRequest, PayloadTooLarge, Unavailable
 from src.inference.propagate import PropagateService
 from src.inference.registry import get_propagate_service, get_sam3_service
 from src.inference.sam3 import Sam3Service
@@ -70,6 +70,22 @@ def parse_json_field(raw: str, field: str) -> Any:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise InvalidRequest(f"`{field}` is not JSON: {exc}") from exc
+
+
+SAM3_DISABLED_MESSAGE = (
+    "SAM 3 is disabled by configuration (`sam3.enabled` is false in "
+    "config/server.json; set SAM3_ENABLED=1 to turn it back on)."
+)
+
+
+def require_sam3(settings: Settings) -> None:
+    """Refuse a SAM 3 request early when the model is switched off.
+
+    Called before any upload is read or any service is touched, so a disabled
+    backend never imports torch/transformers, let alone loads weights.
+    """
+    if not settings.enable_sam3:
+        raise Unavailable(SAM3_DISABLED_MESSAGE)
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]

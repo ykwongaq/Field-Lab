@@ -1,0 +1,485 @@
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 22px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    text-align: left;
+    min-height: 0;
+}
+
+.heading {
+    margin: 0;
+    font-size: 1.05rem;
+}
+
+.lede {
+    margin: -8px 0 0;
+    color: var(--muted);
+    font-size: 0.88rem;
+}
+
+.videoDrop {
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    align-items: center;
+    text-align: center;
+    cursor: pointer;
+    transition:
+        border-color 120ms ease,
+        background 120ms ease;
+}
+
+.videoDrop:hover,
+.dragOver {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.hasFile {
+    border-style: solid;
+    border-color: var(--good);
+    background: var(--good-soft);
+}
+
+.videoDrop[aria-disabled="true"] {
+    cursor: progress;
+    opacity: 0.7;
+}
+
+.dropTitle {
+    font-weight: 600;
+}
+
+.fileName {
+    font-weight: 600;
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    word-break: break-all;
+}
+
+.fileMeta {
+    color: var(--muted);
+    font-size: 0.76rem;
+}
+
+.hiddenInput {
+    display: none;
+}
+
+.modes {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+}
+
+.legend {
+    padding: 0;
+    margin: 0 0 6px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.lockNote {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 0.75rem;
+    color: var(--warn);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.lockIcon {
+    flex: 0 0 auto;
+}
+
+.modeGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.modeCard {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    cursor: pointer;
+    background: #fff;
+    transition:
+        border-color 120ms ease,
+        box-shadow 120ms ease;
+}
+
+.modeCard:hover {
+    border-color: var(--accent);
+}
+
+.modeActive {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+    background: var(--accent-soft);
+}
+
+.modeRadio {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    margin: 0;
+    cursor: pointer;
+}
+
+.modeRadio:focus-visible + .modeTitle {
+    text-decoration: underline;
+}
+
+.modeTitle {
+    font-weight: 600;
+}
+
+.modeDescription {
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.3;
+}
+
+.optionRow {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+}
+
+.option {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.optionSmall {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.optionLabel {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+}
+
+.textInput,
+.numberInput {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    background: #fff;
+    color: var(--ink);
+    min-width: 0;
+}
+
+.textInput:focus,
+.numberInput:focus {
+    outline: 2px solid var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.numberInput {
+    width: 64px;
+    text-align: right;
+}
+
+.stepGroup {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.stepSuffix {
+    color: var(--muted);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.actions button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.summary {
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
+/* --- wizard ------------------------------------------------------------- */
+
+.steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.step {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+}
+
+.stepNumber {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    font-size: 0.68rem;
+    letter-spacing: 0;
+}
+
+.stepActive {
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.stepActive .stepNumber {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+}
+
+.stepDone .stepNumber {
+    border-color: var(--good);
+    color: var(--good);
+}
+
+.sourceGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.videoDrop[role="button"]:focus-visible {
+    outline: 2px solid var(--accent-soft);
+    border-color: var(--accent);
+}
+
+/*
+ * Step 2: the preview owns the left half, the settings stack down the right.
+ * Two flex columns — a grid with a row span for the preview would create
+ * phantom rows (and their gaps) and end up far taller than its contents.
+ */
+.detailsGrid {
+    display: flex;
+    align-items: flex-start;
+    gap: 22px;
+}
+
+.detailsGrid > .preview {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.settings {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.preview {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #000;
+    min-height: 0;
+}
+
+/*
+ * The media flexes to whatever height is left over, and the vh cap keeps a
+ * tall clip from pushing the options past the bottom of the window.
+ */
+.previewMedia {
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: 40vh;
+    border-radius: 6px;
+    background: #000;
+    object-fit: contain;
+}
+
+.fpsBlock {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.fpsChoices {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.preview .fileMeta {
+    color: #cbd5e1;
+}
+
+.previewNote {
+    margin: 0;
+    color: #fbbf24;
+    font-size: 0.74rem;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.progressTrack {
+    height: 6px;
+    border-radius: 999px;
+    background: var(--line);
+    overflow: hidden;
+}
+
+.progressFill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 120ms ease;
+}
+
+.error {
+    margin: 0;
+    color: var(--warn);
+    font-size: 0.85rem;
+}
+
+.resultList {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.resultList li {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    font-size: 0.88rem;
+}
+
+.resultKey {
+    flex: 0 0 92px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+}
+
+@media (max-width: 900px) {
+    .detailsGrid {
+        flex-direction: column;
+    }
+    .detailsGrid > .preview,
+    .settings {
+        flex: 1 1 auto;
+        width: 100%;
+    }
+}
+
+/* Short windows (laptops, split screens): tighten everything a notch more. */
+@media (max-height: 760px) {
+    .panel {
+        padding: 14px 18px 12px;
+        gap: 10px;
+    }
+    .detailsGrid {
+        gap: 18px;
+    }
+    .previewMedia {
+        max-height: 34vh;
+    }
+    .modeCard {
+        padding: 8px 10px;
+    }
+    .modeDescription {
+        font-size: 0.74rem;
+    }
+    .settings {
+        gap: 8px;
+    }
+}
+
+/* Short *and* narrow: a last notch so even a 600px-tall window needs no scroll. */
+@media (max-height: 660px) {
+    .panel {
+        padding: 12px 16px 10px;
+        gap: 9px;
+    }
+    .previewMedia {
+        max-height: 30vh;
+    }
+    .modeCard {
+        padding: 8px 10px;
+    }
+    .settings {
+        gap: 8px;
+    }
+}
+
+@media (max-width: 560px) {
+    .modeGrid {
+        grid-template-columns: 1fr;
+    }
+    .optionRow {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .sourceGrid {
+        grid-template-columns: 1fr;
+    }
+    .resultList li {
+        flex-direction: column;
+        gap: 2px;
+    }
+}

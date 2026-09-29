@@ -44,3 +44,9 @@ class UnsupportedMediaType(VsrError):
     """The upload is a kind of file this backend does not accept."""
 
     status_code = 415
+
+
+class AlreadyExists(VsrError):
+    """The target already exists and the caller did not ask to replace it."""
+
+    status_code = 409

@@ -32,3 +32,5 @@ node_modules/
 
 # Generated project archives
 *.zip
+
+backend/models

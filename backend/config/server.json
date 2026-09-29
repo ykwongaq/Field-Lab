@@ -1,0 +1,45 @@
+{
+  "_comment": "VideoSegmenter backend settings. Precedence: environment variable > this file > built-in defaults. Relative paths resolve against the process working directory. Point VSR_CONFIG_FILE at another file to use it instead of this one.",
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "cors_origins": ["*"]
+  },
+
+  "temp_dir": "tmp",
+
+  "projects_dir": "projects",
+
+  "logging": {
+    "log_dir": "logs",
+    "log_level": "INFO"
+  },
+
+  "http": {
+    "max_upload_bytes": 4294967296,
+    "max_frame_bytes": 33554432
+  },
+
+  "sam3": {
+    "_comment": "Set enabled=false to run the backend without SAM 3 at all: no model is probed or loaded and /api/sam3 and /api/propagate answer 503.",
+    "enabled": false,
+    "model_path": "backend/models/sam3.pt",
+    "tracker_model_path": null,
+    "device": "auto",
+    "dtype": "auto",
+    "threshold": 0.5,
+    "mask_threshold": 0.5,
+    "exemplar_fraction": 0.06,
+    "eager": false,
+    "bpe_path": "backend/models/bpe_simple_vocab_16e6.txt.gz"
+  },
+
+  "video": {
+    "default_fps": 6
+  },
+
+  "propagate": {
+    "max_frames": 120
+  }
+}

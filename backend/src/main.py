@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.errors import register_exception_handlers
-from src.api.routes import health, masks, projects, propagate, sam3
+from src.api.routes import health, masks, propagate, sam3
 from src.core.config import get_settings
 from src.core.lifespan import lifespan
 
@@ -36,19 +36,11 @@ def create_app() -> FastAPI:
         allow_origins=list(settings.cors_origins),
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=[
-            "Content-Disposition",
-            "X-Project-Name",
-            "X-Project-Mode",
-            "X-Project-Frames",
-            "X-Project-Fps",
-        ],
     )
 
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(masks.router)
-    app.include_router(projects.router)
     app.include_router(sam3.router)
     app.include_router(propagate.router)
     return app
