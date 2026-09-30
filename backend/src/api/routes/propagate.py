@@ -1,120 +1,220 @@
-"""Propagate one mask across a window of neighbouring frames."""
+"""Propagating one mask across a clip, as a background job.
+
+A run can cover every frame of a long clip, so it cannot be a single request:
+the reviewer starts a job, watches masks arrive, and can cancel. The frames come
+from the session (the clip is already open), while the anchor mask travels in the
+body, because the annotation belongs to the browser's archive rather than to the
+backend.
+
+One job propagates one mask. Asking for several objects means several jobs, which
+the queue runs back to back — that is what bounds GPU memory to one object's
+tracker state instead of growing with the number of objects.
+"""
 
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, Sequence
 
 import numpy as np
-from fastapi import APIRouter, File, Form, UploadFile
-from fastapi.concurrency import run_in_threadpool
+from fastapi import APIRouter
 
-from src.api.deps import (
-    SAM3_DISABLED_MESSAGE,
-    PropagateDep,
-    SettingsDep,
-    parse_json_field,
-    read_capped_upload,
-    require_sam3,
-)
-from src.api.serializers import propagate_response
-from src.core.errors import PayloadTooLarge
+from src.api.deps import JobsDep, PropagateDep, SettingsDep, require_sam3
+from src.api.serializers import job_is_active, job_response
+from src.core.errors import InvalidRequest
+from src.core.sessions import open_session
 from src.domain.rle import decode_rle
-from src.inference.propagate import FrameInput, PropagateError
-from src.schemas.propagate import PropagateResponse, PropagateStatus
+from src.inference.frames import frame_size
+from src.inference.sam3_video import PropagateError
+from src.schemas.propagate import (
+    JobListResponse,
+    JobResponse,
+    PinnedMask,
+    PropagationRequest,
+    PropagateStatus,
+)
 from src.schemas.sam import ModelStatus
 
 router = APIRouter(prefix="/api/propagate", tags=["propagate"])
 
 
+def _decode_pins(
+    pins: Sequence[PinnedMask], *, anchor: int, width: int, height: int
+) -> Dict[int, np.ndarray]:
+    """Decode and check the frames the reviewer verified by hand.
+
+    A pin is written into tracker memory as authoritative, exactly like the
+    anchor, so it gets the same scrutiny: the right shape, a real object in it,
+    and no duplicate of a frame that is already spoken for. An empty pin is
+    rejected rather than ignored because "the object is not on this frame" is a
+    *cleared* frame (no mask at all), not a mask full of zeros.
+    """
+    decoded: Dict[int, np.ndarray] = {}
+    for pin in pins:
+        if pin.frame_index == anchor:
+            raise InvalidRequest(
+                f"Verified frame {pin.frame_index} is the anchor frame; its mask "
+                "travels as `mask`, not as a pin."
+            )
+        if pin.frame_index in decoded:
+            raise InvalidRequest(
+                f"Verified frame {pin.frame_index} was sent more than once."
+            )
+        mask = decode_rle(pin.mask.size, pin.mask.counts)
+        if mask.shape != (height, width):
+            raise PropagateError(
+                f"The mask for verified frame {pin.frame_index} is "
+                f"{mask.shape[1]}x{mask.shape[0]} but the frames are "
+                f"{width}x{height}."
+            )
+        if not mask.any():
+            raise InvalidRequest(
+                f"The mask for verified frame {pin.frame_index} is empty. A frame "
+                "with no object is a cleared frame, not a pin."
+            )
+        decoded[pin.frame_index] = mask
+    return decoded
+
+
 @router.get("/status", response_model=PropagateStatus)
 def propagate_status(settings: SettingsDep, service: PropagateDep) -> PropagateStatus:
-    """Report tracker availability and the per-request frame cap."""
-    if not settings.enable_sam3:
-        return PropagateStatus(
-            sam3=ModelStatus(
-                available=False,
-                loaded=False,
-                model=settings.sam3_tracker_model or settings.sam3_model,
-                device=settings.sam3_device,
-                error=SAM3_DISABLED_MESSAGE,
-            ),
-            max_frames=settings.propagate_max_frames,
-        )
-    status = service.status()
+    """Report tracker availability and the window sizing in force."""
+    service_status = service.status()
+    sam3 = ModelStatus(
+        available=bool(service_status["available"]),
+        loaded=bool(service_status["loaded"]),
+        model=str(service_status["model"]),
+        device=str(service_status["device"]),
+        error=service_status.get("error"),
+    )
     return PropagateStatus(
-        sam3=ModelStatus(**status["sam3"]),
-        max_frames=status["max_frames"],
+        sam3=sam3,
+        window_frames=int(service_status["window_frames"]),
+        overlap=int(service_status["overlap"]),
+        anchor_max=int(service_status["anchor_max"]),
+        chaining=str(service_status.get("chaining", "derived")),
     )
 
 
-def _parse_anchor_mask(raw: str) -> np.ndarray:
-    """Decode the `mask` form field into a bool (H, W) array."""
-    payload = parse_json_field(raw, "mask")
-    if not isinstance(payload, dict):
-        raise PropagateError("`mask` must be {size: [h, w], counts: str}.")
-    try:
-        size, counts = payload["size"], payload["counts"]
-    except KeyError as exc:
-        raise PropagateError("`mask` must be {size: [h, w], counts: str}.") from exc
-    return decode_rle(size, counts)
-
-
-@router.post("", response_model=PropagateResponse)
-async def propagate_mask(
+@router.post("/jobs", response_model=JobResponse, status_code=202)
+def start_job(
+    request: PropagationRequest,
     settings: SettingsDep,
     service: PropagateDep,
-    frames: List[UploadFile] = File(
-        ..., description="The frames of the window (anchor included), any order"
-    ),
-    frame_indices: str = Form(
-        ..., description="JSON list with the clip frame index of each uploaded file"
-    ),
-    anchor: int = Form(..., description="Clip frame index that carries the mask"),
-    mask: str = Form(..., description='JSON RLE {"size": [h, w], "counts": str}'),
-    backward: int = Form(0, description="Frames to track before the anchor"),
-    forward: int = Form(0, description="Frames to track after the anchor"),
-    backend: str = Form("sam3", description="Tracker to use; only 'sam3' is available"),
-) -> PropagateResponse:
-    """Propagate one mask over `backward` + `forward` neighbouring frames.
+    jobs: JobsDep,
+) -> JobResponse:
+    """Queue a propagation run and return it straight away.
 
-    The browser uploads exactly the frames of the window, so the request size is
-    bounded by `PROPAGATE_MAX_FRAMES`; longer stretches take several runs. The
-    anchor's own mask is not returned.
+    The whole request is validated here — the mask against the frame size, the
+    range against the clip, and the range against the anchor — so a malformed run
+    is a 422 rather than a job that fails a minute later.
     """
     require_sam3(settings)
-    indices = parse_json_field(frame_indices, "frame_indices")
-    if not isinstance(indices, list) or not all(
-        isinstance(index, int) for index in indices
-    ):
-        raise PropagateError("`frame_indices` must be a JSON list of integers.")
-    if len(indices) != len(frames):
+    session = open_session(settings.temp_dir, request.session_id)
+    frame_count = session.frame_count()
+    if frame_count == 0:
+        raise InvalidRequest(
+            f"Session {session.id} has no frames, so there is nothing to propagate."
+        )
+    if request.anchor_frame >= frame_count:
+        raise InvalidRequest(
+            f"Frame {request.anchor_frame} is past the end of the clip "
+            f"({frame_count} frames)."
+        )
+
+    width, height = frame_size(session, request.anchor_frame)
+    mask = decode_rle(request.mask.size, request.mask.counts)
+    if mask.shape != (height, width):
         raise PropagateError(
-            f"{len(frames)} files but {len(indices)} frame indices were sent."
+            f"The mask is {mask.shape[1]}x{mask.shape[0]} but the frames are "
+            f"{width}x{height}."
         )
-
-    anchor_mask = _parse_anchor_mask(mask)
-
-    max_frames = settings.propagate_max_frames
-    if len(frames) > max_frames:
-        raise PayloadTooLarge(
-            f"{len(frames)} frames exceed PROPAGATE_MAX_FRAMES={max_frames}; "
-            "propagate in shorter runs."
+    if not mask.any():
+        raise InvalidRequest(
+            "The anchor mask is empty, so there is no object to propagate. Draw or "
+            "pick a mask on the anchor frame first."
         )
-
-    inputs: List[FrameInput] = []
-    for index, upload in zip(indices, frames):
-        data = await read_capped_upload(
-            upload, settings.max_frame_bytes, label=f"Frame {index}"
-        )
-        inputs.append(FrameInput(index=index, data=data))
-
-    result = await run_in_threadpool(
-        service.propagate,
-        backend,
-        inputs,
-        anchor,
-        anchor_mask,
-        backward=backward,
-        forward=forward,
+    pins = _decode_pins(
+        request.pins, anchor=request.anchor_frame, width=width, height=height
     )
-    return propagate_response(result)
+
+    first = 0 if request.first is None else request.first
+    last = (
+        frame_count - 1 if request.last is None else min(request.last, frame_count - 1)
+    )
+    plan = service.plan(
+        anchor=request.anchor_frame,
+        first=first,
+        last=last,
+        direction=request.direction,
+        frame_count=frame_count,
+    )
+
+    # A pin the plan never visits could not be injected (SAM 3 addresses frames
+    # inside one session), so it is a mistake in the request rather than a pin
+    # that quietly does nothing.
+    outside = sorted(frame for frame in pins if not plan.covers(frame))
+    if outside:
+        raise InvalidRequest(
+            f"Verified frame(s) {outside} are outside the frames this run covers "
+            f"({plan.first}..{plan.last}, {plan.direction})."
+        )
+
+    position = jobs.queued_count()
+    if plan.frames_total <= 1:
+        raise InvalidRequest(
+            f"Frames {plan.first}..{plan.last} hold only the anchor frame, so there "
+            "is nothing to propagate. Widen the range."
+        )
+    job = jobs.submit(
+        session_id=session.id,
+        anchor=request.anchor_frame,
+        direction=plan.direction,
+        first=plan.first,
+        last=plan.last,
+        anchor_mask=mask,
+        frame_count=frame_count,
+        object_id=request.object_id,
+        pins=pins,
+        chaining=request.chaining,
+    )
+    session.touch()
+    return job_response(job, include_masks=False, queue_position=position)
+
+
+@router.get("/jobs", response_model=JobListResponse)
+def list_jobs(jobs: JobsDep) -> JobListResponse:
+    """The queue, oldest first, so the reviewer can show what is waiting."""
+    known = jobs.list()
+    running = next((job.id for job in known if job_is_active(job)), None)
+    return JobListResponse(
+        jobs=[job_response(job, include_masks=False) for job in known],
+        running=running,
+    )
+
+
+@router.get("/jobs/{job_id}", response_model=JobResponse)
+def get_job(
+    job_id: str,
+    jobs: JobsDep,
+    since: int = -1,
+    include_masks: bool = True,
+) -> JobResponse:
+    """Poll one job, optionally fetching only the masks newer than `since`.
+
+    `since` is the highest frame index the caller already holds, which is what
+    keeps a poll's payload proportional to the new frames rather than to the
+    whole run.
+    """
+    job = jobs.get(job_id)
+    return job_response(job, since=since, include_masks=include_masks)
+
+
+@router.delete("/jobs/{job_id}", response_model=JobResponse)
+def cancel_job(job_id: str, jobs: JobsDep) -> JobResponse:
+    """Ask a job to stop; a queued job never starts, a running one stops soon.
+
+    Whatever it has already produced is kept, so the caller can still accept the
+    frames that were computed before the cancel.
+    """
+    job = jobs.cancel(job_id)
+    return job_response(job, include_masks=False)

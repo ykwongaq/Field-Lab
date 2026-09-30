@@ -1,5 +1,5 @@
 {
-  "_comment": "VideoSegmenter backend settings. Precedence: environment variable > this file > built-in defaults. Relative paths resolve against the process working directory. Point VSR_CONFIG_FILE at another file to use it instead of this one.",
+  "_comment": "VideoSegmenter backend settings. Precedence: environment variable > this file > built-in defaults. Relative paths for temp_dir/projects_dir/log_dir resolve against the process working directory; relative model paths (sam3.checkpoint, sam3.bpe_path) resolve against the backend folder. Point VSR_CONFIG_FILE at another file to use it instead of this one.",
 
   "server": {
     "host": "0.0.0.0",
@@ -22,17 +22,17 @@
   },
 
   "sam3": {
-    "_comment": "Set enabled=false to run the backend without SAM 3 at all: no model is probed or loaded and /api/sam3 and /api/propagate answer 503.",
-    "enabled": false,
-    "model_path": "backend/models/sam3.pt",
-    "tracker_model_path": null,
+    "_comment": "Set enabled=false to run the backend without SAM 3 at all: no model is probed or loaded and /api/sam3 and /api/propagate answer 503. `checkpoint` points at a local sam3.pt (relative paths resolve against backend/); leave it null to download the gated facebook/sam3 weights instead, which needs `hf auth login`. `bpe_path` can stay null: the tokenizer vocabulary ships inside the sam3 package. `eager` loads the models while the server starts and keeps them resident; `max_resident_models` is how many fit at once (2 = the image model and the video predictor together, so neither load evicts the other).",
+    "enabled": true,
+    "checkpoint": "models/sam3.pt",
+    "bpe_path": null,
     "device": "auto",
-    "dtype": "auto",
     "threshold": 0.5,
-    "mask_threshold": 0.5,
-    "exemplar_fraction": 0.06,
-    "eager": false,
-    "bpe_path": "backend/models/bpe_simple_vocab_16e6.txt.gz"
+    "eager": true,
+    "max_resident_models": 2,
+    "inst_interactivity": true,
+    "autocast": true,
+    "image_cache_size": 2
   },
 
   "video": {
@@ -40,6 +40,12 @@
   },
 
   "propagate": {
-    "max_frames": 120
+    "_comment": "window_frames is how many frames one SAM 3 session holds while propagating and overlap is how many neighboring windows share (the re-anchoring stretch). A longer range is split into overlapping windows, so a mask can be propagated to the end of any clip; there is no frame cap. chaining decides what a window with no hand-verified mask may be seeded with: 'derived' (default) hands it the previous window's own prediction, which is what reaches the whole clip; 'verified' stops the run instead, so it never travels more than one window past a mask a human drew. A request may override it per run.",
+    "window_frames": 48,
+    "overlap": 8,
+    "anchor_max": 3,
+    "chaining": "derived",
+    "max_jobs": 32,
+    "job_ttl_seconds": 1800
   }
 }

@@ -17,6 +17,7 @@ import {
     type PaintMode,
 } from "../lib/raster";
 import type { DecodedMask, PromptPoint, RawRle, Tracklet } from "../types";
+import type { PromptBox } from "../lib/sam3Api";
 import type { DrawMethod, Tool } from "./Toolbar";
 import styles from "./VideoPanel.module.css";
 
@@ -58,6 +59,10 @@ interface VideoPanelProps {
     candidate: DecodedMask | null;
     editingTrackletId: number | null;
     onPromptPoint: (point: PromptPoint) => void;
+    /** A box drag finished; the reviewer segments the object inside it. */
+    onPromptBox?: (rect: PromptBox) => void;
+    /** A box that is part of the current prompt (shown so it can be cleared). */
+    box?: PromptBox | null;
     onPolygonPoint: (point: FramePoint) => void;
     onPolygonClose: () => void;
     onStroke: (stroke: RawRle, mode: PaintMode) => void;
@@ -68,14 +73,29 @@ interface VideoPanelProps {
 export function VideoPanel(props: VideoPanelProps) {
     const wrapRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    //: A pending "layout has not settled" retry, so it can be cancelled with the
+    //: draw it belongs to.
+    const retryRef = useRef<number | null>(null);
 
     const cacheRef = useRef<FrameCache | null>(null);
     if (!cacheRef.current) {
         cacheRef.current = new FrameCache(props.frames);
     }
     const maskRef = useRef<MaskRenderer | null>(null);
-    if (!maskRef.current) {
-        maskRef.current = new MaskRenderer(props.clip.width, props.clip.height);
+    // Rebuild whenever the frame size changes. The renderer is an offscreen
+    // canvas of the clip's size, and compositing a 0x0 canvas throws — which used
+    // to kill the whole paint, leaving a blank panel with no error on screen. A
+    // renderer built before the size was known must therefore be replaced, and if
+    // the size is still unknown it gets a nominal one so it is never null and the
+    // frame keeps painting.
+    const maskWidth = props.clip.width > 0 ? props.clip.width : 1920;
+    const maskHeight = props.clip.height > 0 ? props.clip.height : 1080;
+    if (
+        !maskRef.current ||
+        maskRef.current.canvasElement.width !== maskWidth ||
+        maskRef.current.canvasElement.height !== maskHeight
+    ) {
+        maskRef.current = new MaskRenderer(maskWidth, maskHeight);
     }
     const maskCacheRef = useRef<MaskCache | null>(null);
     if (!maskCacheRef.current) {
@@ -101,6 +121,9 @@ export function VideoPanel(props: VideoPanelProps) {
     } | null>(null);
 
     const [cursor, setCursor] = useState<FramePoint | null>(null);
+    //: The box being dragged (box prompt): live while dragging, committed on release.
+    const [boxRect, setBoxRect] = useState<PromptBox | null>(null);
+    const boxStartRef = useRef<FramePoint | null>(null);
 
     const drawing = props.tool === "addMask" || props.tool === "editMask";
 
@@ -166,7 +189,7 @@ export function VideoPanel(props: VideoPanelProps) {
                 return;
             }
             event.preventDefault();
-            if (props.method === "sam") {
+            if (props.method === "point") {
                 const negative = event.shiftKey || event.button === 2;
                 props.onPromptPoint({
                     x: Math.round(point.x * 10) / 10,
@@ -238,6 +261,21 @@ export function VideoPanel(props: VideoPanelProps) {
 
     const handlePointerDown = useCallback(
         (event: ReactPointerEvent<HTMLCanvasElement>) => {
+            // A box is a drag, not a click: start it here, commit it on release.
+            if (drawing && props.method === "box") {
+                if (event.button !== 0) return;
+                const start = toFrame(event, true);
+                if (!start) return;
+                event.preventDefault();
+                boxStartRef.current = start;
+                setBoxRect({
+                    x0: start.x,
+                    y0: start.y,
+                    x1: start.x,
+                    y1: start.y,
+                });
+                return;
+            }
             if (!drawing || props.method !== "brush") return;
             if (event.button !== 0 && event.button !== 2) return;
             const point = toFrame(event);
@@ -277,6 +315,20 @@ export function VideoPanel(props: VideoPanelProps) {
                 y: (event.clientY - rect.top - layout.y) / layout.scale,
             };
             if (drawing) setCursor(raw);
+            if (boxStartRef.current) {
+                const start = boxStartRef.current;
+                const to: FramePoint = {
+                    x: Math.min(layout.width, Math.max(0, raw.x)),
+                    y: Math.min(layout.height, Math.max(0, raw.y)),
+                };
+                setBoxRect({
+                    x0: Math.min(start.x, to.x),
+                    y0: Math.min(start.y, to.y),
+                    x1: Math.max(start.x, to.x),
+                    y1: Math.max(start.y, to.y),
+                });
+                return;
+            }
             const stroke = strokeRef.current;
             if (!stroke || stroke.pointerId !== event.pointerId) return;
             const point: FramePoint = {
@@ -296,6 +348,16 @@ export function VideoPanel(props: VideoPanelProps) {
 
     const finishStroke = useCallback(
         (event: ReactPointerEvent<HTMLCanvasElement>) => {
+            if (boxStartRef.current) {
+                boxStartRef.current = null;
+                const rect = boxRect;
+                setBoxRect(null);
+                // A stray press is not a box: require a usable area.
+                if (rect && rect.x1 - rect.x0 >= 2 && rect.y1 - rect.y0 >= 2) {
+                    props.onPromptBox?.(rect);
+                }
+                return;
+            }
             const stroke = strokeRef.current;
             if (!stroke || stroke.pointerId !== event.pointerId) return;
             strokeRef.current = null;
@@ -303,7 +365,7 @@ export function VideoPanel(props: VideoPanelProps) {
             const rle = rasterRef.current!.toRle();
             if (rle) props.onStroke(rle, stroke.mode);
         },
-        [props],
+        [props, boxRect],
     );
 
     const [viewport, setViewport] = useState({ w: 0, h: 0 });
@@ -410,14 +472,31 @@ export function VideoPanel(props: VideoPanelProps) {
     useEffect(() => {
         let cancelled = false;
 
-        const draw = async () => {
+        const draw = async (attempt = 0) => {
             const canvas = canvasRef.current;
             const maskRenderer = maskRef.current;
             if (!canvas || !maskRenderer) return;
 
+            // Measure the wrapper here rather than trusting the observer's state.
+            // Setting canvas.width clears the canvas, so a stale 0x0 reading would
+            // wipe the frame and then bail out, leaving a blank panel and no error.
+            const bounds = wrapRef.current?.getBoundingClientRect();
+            const width = Math.round(bounds?.width ?? 0);
+            const height = Math.round(bounds?.height ?? 0);
+            if (width === 0 || height === 0) {
+                // Layout has not settled. Retry for a second, then give up rather
+                // than spinning on animation frames forever.
+                if (attempt < 60 && !cancelled) {
+                    retryRef.current = requestAnimationFrame(() => {
+                        void draw(attempt + 1);
+                    });
+                }
+                return;
+            }
+
             const dpr = window.devicePixelRatio || 1;
-            const backingWidth = Math.max(1, Math.round(viewport.w * dpr));
-            const backingHeight = Math.max(1, Math.round(viewport.h * dpr));
+            const backingWidth = Math.max(1, Math.round(width * dpr));
+            const backingHeight = Math.max(1, Math.round(height * dpr));
             if (canvas.width !== backingWidth) canvas.width = backingWidth;
             if (canvas.height !== backingHeight) canvas.height = backingHeight;
 
@@ -431,18 +510,14 @@ export function VideoPanel(props: VideoPanelProps) {
                 frame = null;
             }
             if (cancelled) return;
-            if (viewport.w === 0 || viewport.h === 0) return;
 
             const frameWidth = frame ? frame.width : props.clip.width;
             const frameHeight = frame ? frame.height : props.clip.height;
-            const scale = Math.min(
-                viewport.w / frameWidth,
-                viewport.h / frameHeight,
-            );
+            const scale = Math.min(width / frameWidth, height / frameHeight);
             const drawWidth = frameWidth * scale;
             const drawHeight = frameHeight * scale;
-            const drawX = (viewport.w - drawWidth) / 2;
-            const drawY = (viewport.h - drawHeight) / 2;
+            const drawX = (width - drawWidth) / 2;
+            const drawY = (height - drawHeight) / 2;
             const nextLayout: FrameLayout = {
                 x: drawX,
                 y: drawY,
@@ -464,7 +539,7 @@ export function VideoPanel(props: VideoPanelProps) {
 
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.fillStyle = "#000";
-            ctx.fillRect(0, 0, viewport.w, viewport.h);
+            ctx.fillRect(0, 0, width, height);
 
             if (frame) {
                 ctx.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
@@ -553,7 +628,7 @@ export function VideoPanel(props: VideoPanelProps) {
                 ctx.restore();
             }
 
-            if (!drawing || props.method !== "sam") return;
+            if (!drawing || props.method === "brush") return;
 
             for (const point of props.prompt) {
                 const px = drawX + point.x * scale;
@@ -580,6 +655,10 @@ export function VideoPanel(props: VideoPanelProps) {
         void draw();
         return () => {
             cancelled = true;
+            if (retryRef.current !== null) {
+                cancelAnimationFrame(retryRef.current);
+                retryRef.current = null;
+            }
         };
     }, [
         viewport,
@@ -601,12 +680,21 @@ export function VideoPanel(props: VideoPanelProps) {
     if (props.tool === "propagate") {
         hint = props.promptHint ?? null;
     } else if (drawing) {
-        if (props.method === "sam") {
+        if (props.method === "point") {
             hint =
                 props.prompt.length === 0
                     ? (props.promptHint ??
                       "Click the object to segment it · Shift-click or right-click to exclude a region")
                     : `${props.prompt.length} point${props.prompt.length === 1 ? "" : "s"} · keep clicking to refine`;
+            if (props.box)
+                hint +=
+                    " · the box prompt is still active (clear it to use clicks alone)";
+        } else if (props.method === "box") {
+            hint = boxRect
+                ? `Release to segment inside the box (${Math.round(boxRect.x1 - boxRect.x0)}×${Math.round(boxRect.y1 - boxRect.y0)} px)`
+                : "Drag a box around the object";
+        } else if (props.method === "text") {
+            hint = "Type a class name in the prompt bar and press Enter";
         } else if (props.method === "polygon") {
             hint =
                 props.polygon.length === 0
@@ -661,6 +749,36 @@ export function VideoPanel(props: VideoPanelProps) {
                         width={viewport.w}
                         height={viewport.h}
                     >
+                        {props.box && (
+                            <rect
+                                x={layout.x + props.box.x0 * layout.scale}
+                                y={layout.y + props.box.y0 * layout.scale}
+                                width={
+                                    (props.box.x1 - props.box.x0) * layout.scale
+                                }
+                                height={
+                                    (props.box.y1 - props.box.y0) * layout.scale
+                                }
+                                fill="none"
+                                stroke={POSITIVE_COLOR}
+                                strokeWidth={1.5}
+                                strokeDasharray="3 3"
+                            />
+                        )}
+                        {props.method === "box" && boxRect && (
+                            <rect
+                                x={layout.x + boxRect.x0 * layout.scale}
+                                y={layout.y + boxRect.y0 * layout.scale}
+                                width={(boxRect.x1 - boxRect.x0) * layout.scale}
+                                height={
+                                    (boxRect.y1 - boxRect.y0) * layout.scale
+                                }
+                                fill="none"
+                                stroke={PREVIEW_COLOR}
+                                strokeWidth={2}
+                                strokeDasharray="6 4"
+                            />
+                        )}
                         {props.method === "polygon" &&
                             props.polygon.length > 0 && (
                                 <>

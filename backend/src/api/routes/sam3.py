@@ -1,85 +1,81 @@
-"""SAM 3 concept segmentation on a single frame."""
+"""SAM 3 prompts on a single frame of an open session.
+
+The frame is named by index, not uploaded: the clip's pixels already live in the
+session the archive was opened into, so a click does not pay for an image
+upload, and the vision embeddings for that frame can be cached across the whole
+click-by-click refinement of a mask.
+"""
 
 from __future__ import annotations
 
-from typing import Optional
+from fastapi import APIRouter
 
-from fastapi import APIRouter, File, Form, UploadFile
-from fastapi.concurrency import run_in_threadpool
-
-from src.api.deps import (
-    SAM3_DISABLED_MESSAGE,
-    Sam3Dep,
-    SettingsDep,
-    parse_json_field,
-    read_capped_upload,
-    require_sam3,
-)
-from src.api.serializers import sam3_segment_response
-from src.domain.segmentation import PromptError, parse_points
-from src.schemas.sam import Sam3SegmentResponse, Sam3Status
+from src.api.deps import SAM3_DISABLED_MESSAGE, Sam3Dep, SettingsDep, require_sam3
+from src.api.serializers import segment_response
+from src.core.sessions import open_session
+from src.domain.prompts import SegmentPrompt
+from src.inference.frames import frame_size
+from src.schemas.sam import Sam3Status, SegmentRequest, SegmentResponse
 
 router = APIRouter(prefix="/api/sam3", tags=["sam3"])
 
 
 @router.get("/status", response_model=Sam3Status)
-def sam3_status(settings: SettingsDep, sam3: Sam3Dep) -> Sam3Status:
+def sam3_status(settings: SettingsDep, service: Sam3Dep) -> Sam3Status:
     """Report whether SAM 3 is installed, loaded, and on which device.
 
     With `sam3.enabled=false` this answers from the settings alone, so the
-    service is never asked to probe transformers.
+    service is never asked to load anything.
     """
     if not settings.enable_sam3:
         return Sam3Status(
             available=False,
             loaded=False,
-            model=settings.sam3_model,
+            model="SAM 3",
             device=settings.sam3_device,
             threshold=settings.sam3_threshold,
             error=SAM3_DISABLED_MESSAGE,
         )
-    return Sam3Status(**sam3.status())
+    status = service.status()
+    return Sam3Status(
+        available=bool(status["available"]),
+        loaded=bool(status["loaded"]),
+        model=str(status["model"]),
+        device=str(status["device"]),
+        error=status.get("error"),
+        threshold=settings.sam3_threshold,
+        loaded_models=list(status.get("loaded_models") or []),
+        cache_entries=int(status.get("cache_entries") or 0),
+        point_prompts=bool(status.get("point_prompts", True)),
+    )
 
 
-@router.post("/segment", response_model=Sam3SegmentResponse)
-async def sam3_segment(
-    settings: SettingsDep,
-    sam3: Sam3Dep,
-    image: UploadFile = File(..., description="The frame image (JPEG/PNG)"),
-    points: str = Form(
-        "[]",
-        description='JSON list of {"x","y","label"} clicks in frame pixels; '
-        "may be empty when `text` is given",
-    ),
-    text: Optional[str] = Form(
-        None, description="Optional class name / noun phrase, e.g. 'coral'"
-    ),
-    image_key: Optional[str] = Form(
-        None,
-        description="Stable id of the frame so repeated prompts reuse the cached embedding",
-    ),
-) -> Sam3SegmentResponse:
-    """Segment a whole class on one frame from clicks and/or a class name.
+@router.post("/segment", response_model=SegmentResponse)
+def sam3_segment(
+    request: SegmentRequest, settings: SettingsDep, service: Sam3Dep
+) -> SegmentResponse:
+    """Turn one prompt on one frame into a mask.
 
-    The browser calls this after every click while the reviewer refines the
-    prompt; repeated calls on the same `image_key` reuse the cached embedding.
+    `point` and `box` describe a single object; `text` describes a class and may
+    match several instances, which come back in `instances` so an instance-mode
+    project can split them instead of gluing them into one object.
     """
     require_sam3(settings)
-    raw_points = parse_json_field(points, "points")
-    if not isinstance(raw_points, list):
-        raise PromptError("`points` must be a list.")
-    # Unlike a click-only tool, an empty click list is fine when text is given.
-    parsed_points = parse_points(raw_points) if raw_points else []
-    class_name = (text or "").strip() or None
-    if not parsed_points and class_name is None:
-        raise PromptError("Click on an example of the class or type its name.")
-
-    data = await read_capped_upload(image, settings.max_frame_bytes, label="Frame")
-    result = await run_in_threadpool(
-        sam3.segment_with_points,
-        data,
-        parsed_points,
-        text=class_name,
-        image_key=image_key,
+    session = open_session(settings.temp_dir, request.session_id)
+    prompt = SegmentPrompt.from_wire(
+        request.prompt.kind,
+        points=[point.model_dump() for point in request.prompt.points],
+        boxes=[
+            box if isinstance(box, list) else box.model_dump()
+            for box in request.prompt.boxes
+        ],
+        text=request.prompt.text,
     )
-    return sam3_segment_response(result)
+    # Check the prompt against the frame it will be applied to *before* loading a
+    # model: a click outside the frame is a 422, not a wasted forward pass.
+    width, height = frame_size(session, request.frame_index)
+    prompt.validate(width, height)
+
+    result = service.segment(session, request.frame_index, prompt)
+    session.touch()
+    return segment_response(result, max_instances=request.max_instances)

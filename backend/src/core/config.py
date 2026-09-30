@@ -22,6 +22,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
+from src.domain.windows import CHAININGS
+
 DEFAULT_CONFIG_FILE = "config/server.json"
 
 DEFAULT_HOST = "0.0.0.0"
@@ -40,11 +42,29 @@ DEFAULT_TARGET_FPS = 6.0
 DEFAULT_MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB source video
 DEFAULT_MAX_FRAME_BYTES = 32 * 1024**2  # 32 MiB single frame
 
-DEFAULT_SAM3_MODEL = "facebook/sam3"
+# Frames one SAM 3 session may hold while propagating, how many of them are
+# shared with the next window (the re-anchoring stretch), and how many of those
+# shared frames are written into tracker memory. Peak GPU memory follows the
+# window size, not the clip length, which is what lets a reviewer propagate a
+# mask to the end of a long clip.
+DEFAULT_PROPAGATE_WINDOW_FRAMES = 48
+DEFAULT_PROPAGATE_OVERLAP = 8
+DEFAULT_PROPAGATE_ANCHOR_MAX = 3
+DEFAULT_PROPAGATE_CHAINING = "derived"
+DEFAULT_PROPAGATE_MAX_JOBS = 32
+DEFAULT_PROPAGATE_JOB_TTL_SECONDS = 1800
+
+#: Detection threshold for text (concept) prompts.
 DEFAULT_SAM3_THRESHOLD = 0.5
-DEFAULT_SAM3_MASK_THRESHOLD = 0.5
-DEFAULT_SAM3_EXEMPLAR_FRACTION = 0.06
-DEFAULT_PROPAGATE_MAX_FRAMES = 120
+#: Run inference under bf16 autocast on CUDA (see `Sam3Config.autocast_enabled`).
+DEFAULT_SAM3_AUTOCAST = True
+#: Models kept resident at once. 2 holds both the image model and the video
+#: predictor, which is what makes an eager start-up worth doing: the reviewer can
+#: click and propagate without either load evicting the other. Drop it to 1 on a
+#: small GPU, where the two will take turns instead.
+DEFAULT_SAM3_MAX_RESIDENT_MODELS = 2
+#: Frames whose vision embeddings stay cached for click-by-click prompting.
+DEFAULT_SAM3_IMAGE_CACHE_SIZE = 2
 
 # A session is a disposable frame working copy under `temp_dir/sessions/<uuid>/`.
 # It is a cache of something the archive can always regenerate, so an idle one
@@ -174,7 +194,9 @@ def _file_float(
     return float(value)
 
 
-def _file_bool(section: Mapping[str, Any], key: str, default: bool, *, label: str) -> bool:
+def _file_bool(
+    section: Mapping[str, Any], key: str, default: bool, *, label: str
+) -> bool:
     value = section.get(key)
     if value is None:
         return default
@@ -227,23 +249,36 @@ class Settings:
     # New projects: frame rate used when the caller does not choose one
     default_fps: float = DEFAULT_TARGET_FPS
 
-    # SAM 3 (image concept segmentation)
-    # `enable_sam3=False` keeps the process free of transformers/torch: no model
-    # is probed or loaded and the SAM 3 endpoints answer 503.
+    # SAM 3
+    # `enable_sam3=False` keeps the process free of torch and sam3: no model is
+    # probed or loaded and the SAM 3 endpoints answer 503.
     enable_sam3: bool = True
-    sam3_model: str = DEFAULT_SAM3_MODEL
-    sam3_device: str = "auto"
-    sam3_dtype: str = "auto"
-    sam3_threshold: float = DEFAULT_SAM3_THRESHOLD
-    sam3_mask_threshold: float = DEFAULT_SAM3_MASK_THRESHOLD
-    sam3_exemplar_fraction: float = DEFAULT_SAM3_EXEMPLAR_FRACTION
-    sam3_eager: bool = False
-    # Tokenizer vocabulary used when SAM 3 is loaded from a local checkpoint.
+    #: Path to a local `sam3.pt`. `None` lets the package fetch the gated
+    #: `facebook/sam3` checkpoint from the Hugging Face cache.
+    sam3_checkpoint: Optional[str] = None
+    #: Tokenizer vocabulary for a local checkpoint (the package asset otherwise).
     sam3_bpe_path: Optional[str] = None
+    sam3_device: str = "auto"
+    #: Detection threshold for text prompts.
+    sam3_threshold: float = DEFAULT_SAM3_THRESHOLD
+    #: How many of the two models may be loaded at once (LRU).
+    sam3_max_resident_models: int = DEFAULT_SAM3_MAX_RESIDENT_MODELS
+    #: Instance interactivity is what makes point and box prompts possible.
+    sam3_inst_interactivity: bool = True
+    #: Wrap every model call in one bf16 autocast context (CUDA only).
+    sam3_autocast: bool = DEFAULT_SAM3_AUTOCAST
+    sam3_image_cache_size: int = DEFAULT_SAM3_IMAGE_CACHE_SIZE
+    sam3_eager: bool = False
 
-    # SAM 3 video tracker (mask propagation)
-    sam3_tracker_model: Optional[str] = None
-    propagate_max_frames: int = DEFAULT_PROPAGATE_MAX_FRAMES
+    # Propagation
+    propagate_window_frames: int = DEFAULT_PROPAGATE_WINDOW_FRAMES
+    propagate_overlap: int = DEFAULT_PROPAGATE_OVERLAP
+    propagate_anchor_max: int = DEFAULT_PROPAGATE_ANCHOR_MAX
+    #: `derived` | `verified`: whether a window with no verified mask of its own
+    #: may be seeded from the previous window's output. See `domain.windows`.
+    propagate_chaining: str = DEFAULT_PROPAGATE_CHAINING
+    propagate_max_jobs: int = DEFAULT_PROPAGATE_MAX_JOBS
+    propagate_job_ttl_seconds: int = DEFAULT_PROPAGATE_JOB_TTL_SECONDS
 
     # Sessions: the frame working copy every reader shares
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
@@ -251,6 +286,51 @@ class Settings:
     frames_jpeg_quality: int = DEFAULT_FRAMES_JPEG_QUALITY
     ffmpeg_bin: str = DEFAULT_FFMPEG_BIN
     ffprobe_bin: str = DEFAULT_FFPROBE_BIN
+
+    def __post_init__(self) -> None:
+        """Reject window settings that could never produce a plan.
+
+        A propagation window chain needs a positive stride, and the stride is
+        `window_frames - overlap`, so an overlap that reaches the window size
+        would leave the planner with nowhere to step. The image cache and the job
+        ceiling are likewise meaningless at zero. Failing here means a bad
+        `config/server.json` stops the service at startup instead of surfacing as
+        a confusing error on the first propagation.
+        """
+        if self.propagate_window_frames < 2:
+            raise ValueError(
+                "propagate.window_frames must be at least 2, got "
+                f"{self.propagate_window_frames}."
+            )
+        if not 0 <= self.propagate_overlap < self.propagate_window_frames:
+            raise ValueError(
+                "propagate.overlap must be at least 0 and smaller than "
+                f"propagate.window_frames ({self.propagate_window_frames}), got "
+                f"{self.propagate_overlap}."
+            )
+        if self.propagate_anchor_max < 0:
+            raise ValueError(
+                f"propagate.anchor_max must be >= 0, got {self.propagate_anchor_max}."
+            )
+        if self.propagate_chaining not in CHAININGS:
+            raise ValueError(
+                f"propagate.chaining must be one of {', '.join(CHAININGS)}, got "
+                f"{self.propagate_chaining!r}."
+            )
+        if self.propagate_max_jobs < 1:
+            raise ValueError(
+                f"propagate.max_jobs must be at least 1, got {self.propagate_max_jobs}."
+            )
+        if self.sam3_max_resident_models < 1:
+            raise ValueError(
+                "sam3.max_resident_models must be at least 1, got "
+                f"{self.sam3_max_resident_models}."
+            )
+        if self.sam3_image_cache_size < 1:
+            raise ValueError(
+                "sam3.image_cache_size must be at least 1, got "
+                f"{self.sam3_image_cache_size}."
+            )
 
 
 @lru_cache(maxsize=1)
@@ -279,12 +359,17 @@ def get_settings() -> Settings:
         ),
         log_dir=_str_env(
             "VSR_LOG_DIR",
-            _file_str(logging_section, "log_dir", DEFAULT_LOG_DIR, label="logging.log_dir"),
+            _file_str(
+                logging_section, "log_dir", DEFAULT_LOG_DIR, label="logging.log_dir"
+            ),
         ),
         log_level=_str_env(
             "VSR_LOG_LEVEL",
             _file_str(
-                logging_section, "log_level", DEFAULT_LOG_LEVEL, label="logging.log_level"
+                logging_section,
+                "log_level",
+                DEFAULT_LOG_LEVEL,
+                label="logging.log_level",
             ),
         ),
         temp_dir=_str_env(
@@ -293,42 +378,48 @@ def get_settings() -> Settings:
         ),
         projects_dir=_str_env(
             "VSR_PROJECTS_DIR",
-            _file_str(config, "projects_dir", DEFAULT_PROJECTS_DIR, label="projects_dir"),
+            _file_str(
+                config, "projects_dir", DEFAULT_PROJECTS_DIR, label="projects_dir"
+            ),
         ),
         max_upload_bytes=_int_env(
             "VSR_MAX_UPLOAD_BYTES",
             _file_int(
-                http, "max_upload_bytes", DEFAULT_MAX_UPLOAD_BYTES, label="http.max_upload_bytes"
+                http,
+                "max_upload_bytes",
+                DEFAULT_MAX_UPLOAD_BYTES,
+                label="http.max_upload_bytes",
             ),
         ),
         max_frame_bytes=_int_env(
             "VSR_MAX_FRAME_BYTES",
             _file_int(
-                http, "max_frame_bytes", DEFAULT_MAX_FRAME_BYTES, label="http.max_frame_bytes"
+                http,
+                "max_frame_bytes",
+                DEFAULT_MAX_FRAME_BYTES,
+                label="http.max_frame_bytes",
             ),
         ),
         cors_origins=_list_env(
             "VSR_CORS_ORIGINS",
-            _file_str_list(
-                server, "cors_origins", ("*",), label="server.cors_origins"
-            ),
+            _file_str_list(server, "cors_origins", ("*",), label="server.cors_origins"),
         ),
         default_fps=_float_env(
             "VSR_DEFAULT_FPS",
-            _file_float(video, "default_fps", DEFAULT_TARGET_FPS, label="video.default_fps"),
+            _file_float(
+                video, "default_fps", DEFAULT_TARGET_FPS, label="video.default_fps"
+            ),
         ),
-        sam3_model=_str_env(
-            "SAM3_MODEL",
-            _file_str(sam3, "model_path", DEFAULT_SAM3_MODEL, label="sam3.model_path"),
-        ),
+        sam3_checkpoint=_str_env(
+            "SAM3_CHECKPOINT",
+            _file_str(sam3, "checkpoint", "", label="sam3.checkpoint"),
+        )
+        or None,
         enable_sam3=_bool_env(
             "SAM3_ENABLED", _file_bool(sam3, "enabled", True, label="sam3.enabled")
         ),
         sam3_device=_str_env(
             "SAM3_DEVICE", _file_str(sam3, "device", "auto", label="sam3.device")
-        ),
-        sam3_dtype=_str_env(
-            "SAM3_DTYPE", _file_str(sam3, "dtype", "auto", label="sam3.dtype")
         ),
         sam3_threshold=_float_env(
             "SAM3_THRESHOLD",
@@ -336,22 +427,35 @@ def get_settings() -> Settings:
                 sam3, "threshold", DEFAULT_SAM3_THRESHOLD, label="sam3.threshold"
             ),
         ),
-        sam3_mask_threshold=_float_env(
-            "SAM3_MASK_THRESHOLD",
-            _file_float(
+        sam3_max_resident_models=_int_env(
+            "SAM3_MAX_RESIDENT_MODELS",
+            _file_int(
                 sam3,
-                "mask_threshold",
-                DEFAULT_SAM3_MASK_THRESHOLD,
-                label="sam3.mask_threshold",
+                "max_resident_models",
+                DEFAULT_SAM3_MAX_RESIDENT_MODELS,
+                label="sam3.max_resident_models",
             ),
         ),
-        sam3_exemplar_fraction=_float_env(
-            "SAM3_EXEMPLAR_BOX",
-            _file_float(
+        sam3_inst_interactivity=_bool_env(
+            "SAM3_INST_INTERACTIVITY",
+            _file_bool(
                 sam3,
-                "exemplar_fraction",
-                DEFAULT_SAM3_EXEMPLAR_FRACTION,
-                label="sam3.exemplar_fraction",
+                "inst_interactivity",
+                True,
+                label="sam3.inst_interactivity",
+            ),
+        ),
+        sam3_autocast=_bool_env(
+            "SAM3_AUTOCAST",
+            _file_bool(sam3, "autocast", DEFAULT_SAM3_AUTOCAST, label="sam3.autocast"),
+        ),
+        sam3_image_cache_size=_int_env(
+            "SAM3_IMAGE_CACHE_SIZE",
+            _file_int(
+                sam3,
+                "image_cache_size",
+                DEFAULT_SAM3_IMAGE_CACHE_SIZE,
+                label="sam3.image_cache_size",
             ),
         ),
         sam3_eager=_bool_env(
@@ -362,20 +466,58 @@ def get_settings() -> Settings:
             _file_str(sam3, "bpe_path", "", label="sam3.bpe_path"),
         )
         or None,
-        sam3_tracker_model=_str_env(
-            "SAM3_TRACKER_MODEL",
-            _file_str(
-                sam3, "tracker_model_path", "", label="sam3.tracker_model_path"
-            ),
-        )
-        or None,
-        propagate_max_frames=_int_env(
-            "PROPAGATE_MAX_FRAMES",
+        propagate_window_frames=_int_env(
+            "PROPAGATE_WINDOW_FRAMES",
             _file_int(
                 propagate,
-                "max_frames",
-                DEFAULT_PROPAGATE_MAX_FRAMES,
-                label="propagate.max_frames",
+                "window_frames",
+                DEFAULT_PROPAGATE_WINDOW_FRAMES,
+                label="propagate.window_frames",
+            ),
+        ),
+        propagate_overlap=_int_env(
+            "PROPAGATE_OVERLAP",
+            _file_int(
+                propagate,
+                "overlap",
+                DEFAULT_PROPAGATE_OVERLAP,
+                label="propagate.overlap",
+            ),
+        ),
+        propagate_anchor_max=_int_env(
+            "PROPAGATE_ANCHOR_MAX",
+            _file_int(
+                propagate,
+                "anchor_max",
+                DEFAULT_PROPAGATE_ANCHOR_MAX,
+                label="propagate.anchor_max",
+            ),
+        ),
+        propagate_chaining=_str_env(
+            "PROPAGATE_CHAINING",
+            _file_str(
+                propagate,
+                "chaining",
+                DEFAULT_PROPAGATE_CHAINING,
+                label="propagate.chaining",
+            ),
+        ),
+        propagate_max_jobs=_int_env(
+            "PROPAGATE_MAX_JOBS",
+            _file_int(
+                propagate,
+                "max_jobs",
+                DEFAULT_PROPAGATE_MAX_JOBS,
+                label="propagate.max_jobs",
+            ),
+        ),
+        propagate_job_ttl_seconds=_int_env(
+            "PROPAGATE_JOB_TTL_SECONDS",
+            _file_int(
+                propagate,
+                "job_ttl_seconds",
+                DEFAULT_PROPAGATE_JOB_TTL_SECONDS,
+                label="propagate.job_ttl_seconds",
             ),
         ),
         session_ttl_seconds=_int_env(
@@ -407,14 +549,10 @@ def get_settings() -> Settings:
         ),
         ffmpeg_bin=_str_env(
             "VSR_FFMPEG_BIN",
-            _file_str(
-                config, "ffmpeg_bin", DEFAULT_FFMPEG_BIN, label="ffmpeg_bin"
-            ),
+            _file_str(config, "ffmpeg_bin", DEFAULT_FFMPEG_BIN, label="ffmpeg_bin"),
         ),
         ffprobe_bin=_str_env(
             "VSR_FFPROBE_BIN",
-            _file_str(
-                config, "ffprobe_bin", DEFAULT_FFPROBE_BIN, label="ffprobe_bin"
-            ),
+            _file_str(config, "ffprobe_bin", DEFAULT_FFPROBE_BIN, label="ffprobe_bin"),
         ),
     )

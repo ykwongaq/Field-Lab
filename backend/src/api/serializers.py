@@ -6,18 +6,22 @@ stay free of numpy and pycocotools.
 
 from __future__ import annotations
 
-from typing import Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 
 from src.core.config import Settings
+from src.core.jobs import JobState, PropagationJob
 from src.core.sessions import Session
+from src.domain.prompts import InstanceMask, SegmentResult
 from src.domain.rle import Run, binary_to_runs, encode_rle
-from src.domain.segmentation import ConceptResult, SegmentResult
-from src.inference.propagate import PropagateResult
-from src.schemas.masks import ForegroundRun, RleMask
-from src.schemas.propagate import PropagateResponse, PropagatedFrame
-from src.schemas.sam import Sam3SegmentResponse, SegmentResponse
+from src.schemas.propagate import (
+    JobProgressResponse,
+    JobResponse,
+    PropagatedFrameResponse,
+)
+from src.schemas.rle import ForegroundRun, RleMask
+from src.schemas.sam import InstanceResponse, SegmentResponse
 from src.schemas.sessions import SessionResponse
 
 
@@ -64,50 +68,104 @@ def _mask_runs(mask: np.ndarray) -> List[ForegroundRun]:
     return to_foreground_runs(binary_to_runs(mask.astype(np.uint8)))
 
 
-def segment_response(result: SegmentResult) -> SegmentResponse:
-    """Build the mask response shared by every segmentation endpoint."""
+def instance_response(instance: InstanceMask) -> InstanceResponse:
+    """One proposed mask, with its score and extent."""
+    bbox = instance.bbox()
+    return InstanceResponse(
+        rle=rle_mask(instance.mask),
+        runs=_mask_runs(instance.mask),
+        score=round(float(instance.score), 4),
+        area=instance.area,
+        bbox=list(bbox) if bbox else None,
+    )
+
+
+def segment_response(
+    result: SegmentResult, *, max_instances: int = 0
+) -> SegmentResponse:
+    """Build the segmentation response: the mask to use plus its alternatives.
+
+    `max_instances` trims the alternatives, which matters for a text prompt on a
+    crowded frame: the caller can ask for just the best few instead of every
+    match.
+    """
+    instances = list(result.instances)
+    if max_instances > 0:
+        instances = sorted(instances, key=lambda item: item.score, reverse=True)[
+            :max_instances
+        ]
     bbox = result.bbox()
     return SegmentResponse(
         rle=rle_mask(result.mask),
         runs=_mask_runs(result.mask),
         height=result.height,
         width=result.width,
-        score=result.score,
+        score=round(float(result.score), 4),
         area=result.area,
         bbox=list(bbox) if bbox else None,
+        kind=result.kind,
+        prompt=result.prompt,
         embedding_reused=result.embedding_reused,
         encoder_ms=round(result.encoder_ms, 1),
         decoder_ms=round(result.decoder_ms, 1),
+        instances=[instance_response(item) for item in instances],
+        instance_scores=[round(float(item.score), 4) for item in instances],
     )
 
 
-def sam3_segment_response(result: ConceptResult) -> Sam3SegmentResponse:
-    """Build the SAM 3 response: the union mask plus what was detected."""
-    base = segment_response(result)
-    return Sam3SegmentResponse(
-        **base.model_dump(),
-        instances=result.instances,
-        instance_scores=[round(score, 4) for score in result.instance_scores],
-        exemplars=[box.as_list() + [float(box.label)] for box in result.exemplars],
+def _propagated_frame(frame_index: int, mask: np.ndarray) -> PropagatedFrameResponse:
+    """One produced frame. Runs are omitted: the client decodes the RLE itself."""
+    return PropagatedFrameResponse(
+        frame_index=frame_index,
+        rle=rle_mask(mask),
+        area=int(mask.sum()),
     )
 
 
-def propagate_response(result: PropagateResult) -> PropagateResponse:
-    """Build the propagation response, one entry per frame of the window."""
-    return PropagateResponse(
-        backend=result.backend,
-        model=result.model,
-        device=result.device,
-        height=result.height,
-        width=result.width,
-        elapsed_ms=round(result.elapsed_ms, 1),
+def job_response(
+    job: PropagationJob,
+    *,
+    since: Optional[int] = None,
+    include_masks: bool = True,
+    queue_position: int = 0,
+) -> JobResponse:
+    """Describe a propagation job, optionally with the masks it has produced.
+
+    `since` keeps a poll cheap: the caller passes the highest frame it already
+    has and receives only what is newer, so a long run does not re-send the whole
+    clip on every poll.
+    """
+    masks: Dict[int, np.ndarray] = {}
+    progress = JobProgressResponse(**job.progress.as_dict())
+    if include_masks:
+        masks, snapshot = job.snapshot(since=since)
+        progress = JobProgressResponse(**snapshot.as_dict())
+
+    summary = job.summary()
+    return JobResponse(
+        job_id=summary["job_id"],
+        session_id=summary["session_id"],
+        object_id=summary["object_id"],
+        state=summary["state"],
+        error=summary["error"],
+        anchor=summary["anchor"],
+        direction=summary["direction"],
+        first=summary["first"],
+        last=summary["last"],
+        progress=progress,
+        plan=summary["plan"],
+        queue_position=queue_position,
+        created_at=summary["created_at"],
+        started_at=summary["started_at"],
+        finished_at=summary["finished_at"],
+        updated_at=summary["updated_at"],
         masks=[
-            PropagatedFrame(
-                frame_index=item.frame_index,
-                rle=rle_mask(item.mask),
-                runs=_mask_runs(item.mask),
-                area=item.area,
-            )
-            for item in result.masks
+            _propagated_frame(frame_index, masks[frame_index])
+            for frame_index in sorted(masks)
         ],
     )
+
+
+def job_is_active(job: PropagationJob) -> bool:
+    """Whether a job still occupies the queue."""
+    return job.state in (JobState.QUEUED, JobState.RUNNING)

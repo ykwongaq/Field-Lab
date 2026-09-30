@@ -18,6 +18,15 @@ interface TrackletListProps {
     selectedId: number | null;
     reviews: Record<number, TrackletReview>;
     onSelect: (id: number) => void;
+    /** Ids queued for propagation. */
+    batch?: number[];
+    /**
+     * Shift-click handler.
+     *
+     * Only passed in while the propagate tool is open: queueing objects is a
+     * propagation concept, so the modifier means nothing in the other tools.
+     */
+    onToggleBatch?: (id: number) => void;
 }
 
 function statusOf(review: TrackletReview | undefined): Status {
@@ -34,6 +43,8 @@ export function TrackletList({
     selectedId,
     reviews,
     onSelect,
+    batch = [],
+    onToggleBatch,
 }: TrackletListProps) {
     const [query, setQuery] = useState("");
     const [filter, setFilter] = useState<Filter>("all");
@@ -96,12 +107,22 @@ export function TrackletList({
                 )}
                 {items.map((tracklet) => {
                     const status = statusOf(reviews[tracklet.id]);
+                    const queued = batch.includes(tracklet.id);
                     return (
                         <button
                             key={tracklet.id}
                             type="button"
                             className={`${styles.item} ${tracklet.id === selectedId ? styles.selected : ""}`}
-                            onClick={() => onSelect(tracklet.id)}
+                            onClick={(event) =>
+                                event.shiftKey && onToggleBatch
+                                    ? onToggleBatch(tracklet.id)
+                                    : onSelect(tracklet.id)
+                            }
+                            title={
+                                onToggleBatch
+                                    ? "Shift-click to queue this one for propagation"
+                                    : undefined
+                            }
                         >
                             <span
                                 className={styles.swatch}
@@ -110,6 +131,19 @@ export function TrackletList({
                             <span className={styles.itemBody}>
                                 <span className={styles.itemLabel}>
                                     {tracklet.label}
+                                    {queued && (
+                                        <span
+                                            className={styles.newTag}
+                                            style={{
+                                                background:
+                                                    "rgba(74, 163, 255, 0.18)",
+                                                color: "#4aa3ff",
+                                            }}
+                                            title="Queued for propagation; Shift-click to remove from the queue"
+                                        >
+                                            queued
+                                        </span>
+                                    )}
                                     {tracklet.origin === "created" && (
                                         <span
                                             className={styles.newTag}

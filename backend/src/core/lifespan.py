@@ -15,7 +15,10 @@ from src.core.errors import Unavailable
 from src.core.sessions import sweep_sessions
 from src.core.storage import ensure_dir
 from src.domain.extract import missing_binaries
-from src.inference.registry import get_sam3_service
+from src.inference.registry import (
+    warmup_models,
+    shutdown_services,
+)
 
 logger = logging.getLogger("vsr")
 
@@ -82,9 +85,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     if settings.enable_sam3 and settings.sam3_eager:
         try:
-            get_sam3_service().warmup()
+            loaded = warmup_models()
+            logger.info(
+                "SAM 3 preloaded and held resident: %s", ", ".join(loaded) or "nothing"
+            )
         except Unavailable as exc:
             logger.warning("SAM 3 could not be preloaded: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - never refuse to start for this
+            logger.warning("SAM 3 preload failed: %s: %s", type(exc).__name__, exc)
 
     sweeper = asyncio.create_task(_sweep_forever(settings))
     try:
@@ -93,3 +101,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         sweeper.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sweeper
+        # Cancel queued propagations and hand the models back before the process
+        # goes away: a reload should not leave a GPU holding two checkpoints.
+        await asyncio.to_thread(shutdown_services)
