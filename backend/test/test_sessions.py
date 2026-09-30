@@ -17,22 +17,13 @@ import zipfile
 
 import pytest
 from PIL import Image
-
 from src.core.config import Settings
-from src.core.errors import (
-    InvalidRequest,
-    NotFound,
-    UnsupportedMediaType,
-)
-from src.core.sessions import (
-    create_session as _create_session,
-    delete_session as _delete_session,
-    frame_index,
-    frame_name,
-    list_frame_names,
-    open_session as _open_session,
-    sweep_sessions,
-)
+from src.core.errors import InvalidRequest, NotFound, UnsupportedMediaType
+from src.core.sessions import create_session as _create_session
+from src.core.sessions import delete_session as _delete_session
+from src.core.sessions import frame_index, frame_name, list_frame_names
+from src.core.sessions import open_session as _open_session
+from src.core.sessions import sweep_sessions
 from src.domain import extract
 from src.projects import loader
 
@@ -186,6 +177,33 @@ def test_touch_and_ttl(scratch):
     os.utime(fresh.root, (aged, aged))
     removed = sweep_sessions(scratch, ttl_seconds=0)
     assert fresh.id in removed, removed
+
+
+def test_missing_frame_keeps_indices_stable(scratch):
+    """A record naming a frame that is gone resolves by index, not by shift.
+
+    `frame_names` and `frame_name_at` must agree on one list: every reader
+    addresses a frame by index, so dropping a missing name would renumber the
+    rest and hand back the *wrong* image for every later index. The hole has to
+    stay where it is, as a 404 at its own index.
+    """
+    session = create_session(scratch)
+    names = ["a.jpg", "b.jpg", "c.jpg"]
+    session.update_meta(frame_names=names)
+    for name in ("a.jpg", "c.jpg"):  # `b.jpg` is deliberately left off disk
+        with open(os.path.join(session.frames_dir, name), "wb") as handle:
+            handle.write(b"x")
+
+    assert session.frame_names() == names
+    assert session.frame_count() == 3
+    # The invariant the old code broke: the two must not disagree.
+    for index in range(session.frame_count()):
+        assert session.frame_name_at(index) == session.frame_names()[index]
+
+    assert os.path.basename(session.resolve_frame(0)) == "a.jpg"
+    assert os.path.basename(session.resolve_frame(2)) == "c.jpg"
+    with pytest.raises(NotFound):
+        session.resolve_frame(1)
 
 
 def test_quota(scratch):

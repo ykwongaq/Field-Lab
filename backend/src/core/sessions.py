@@ -151,22 +151,38 @@ class Session:
 
         A session built from a frame folder keeps the archive's own names, and
         the order the archive recorded is the authority — the names themselves
-        only let us guess. Recorded names that are no longer on disk (a partial
-        copy) are dropped, and an empty record falls back to the listing.
+        only let us guess.
+
+        The recorded list is returned *whole*, including an entry whose file is
+        no longer on disk. Dropping such an entry would renumber every frame
+        after it, and every reader addresses frames by index — a frame fetch, a
+        SAM 3 prompt, a propagation range — so the shift would silently serve
+        the *wrong* frame where a missing one was asked for. A hole is reported
+        where it is instead: `resolve_frame` raises `NotFound` for that one
+        index (and the UI shows its "Frame unavailable" placeholder). Only when
+        there is no record at all does the directory listing define the order.
         """
         recorded = self.read_meta().get("frame_names")
         if isinstance(recorded, list) and recorded:
-            present = set(list_frame_names(self.frames_dir))
-            kept = [str(name) for name in recorded if str(name) in present]
-            if kept:
-                return kept
+            return [str(name) for name in recorded]
         return list_frame_names(self.frames_dir)
 
     def frame_name_at(self, index: int) -> str:
         """Name of frame ``index`` without listing the directory.
 
-        Falls back to the canonical 8-digit name, which is what a session built
-        from a video always uses.
+        The record is read from the metadata rather than by listing the
+        directory, because this sits on the per-frame path: `resolve_frame` is
+        called for every frame fetch and for every frame of a propagation
+        window. While a record exists its entries *are* the index space — the
+        same list `frame_names` returns — so the two cannot disagree, and an
+        entry whose file is gone resolves to a name that is simply not there (a
+        `NotFound` at that one index) instead of shifting every later frame.
+
+        With no record at all the canonical 8-digit name answers instead, which
+        is the shift-free numbering a session built from a video uses. The
+        directory listing is deliberately *not* used to resolve an index: it
+        drops a missing file, so indexing into it would shift every frame after
+        the hole — the very drift the record is kept whole to avoid.
         """
         if index < 0:
             raise InvalidRequest("A frame index cannot be negative.")

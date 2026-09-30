@@ -11,7 +11,6 @@ import os
 import time
 
 from fastapi.testclient import TestClient
-
 from src.core.config import get_settings
 from src.core.sessions import create_session
 from src.main import app
@@ -80,6 +79,41 @@ def test_frames_round_trip(api_client, jpeg, archive):
     assert api_client.delete(f"/api/sessions/{session_id}").status_code == 204
     assert session_id not in session_dirs()
     assert api_client.delete(f"/api/sessions/{session_id}").status_code == 204
+
+
+def test_deleted_frame_does_not_shift_later_indices(api_client, jpeg, archive):
+    """Losing one frame must not renumber the rest of the clip.
+
+    The symptom of index drift is the worst kind: the advertised list shrinks,
+    so a frame that still exists becomes unreachable — and with a hole earlier
+    in the clip, `GET .../frames/{i}` answers 200 with a *different* frame's
+    bytes, quietly showing the reviewer the wrong image. The hole belongs at its
+    own index as a 404, with every other index unmoved.
+    """
+    frames = {
+        "a.jpg": jpeg(colour=(200, 0, 0)),
+        "b.jpg": jpeg(colour=(0, 200, 0)),
+        "c.jpg": jpeg(colour=(0, 0, 200)),
+    }
+    opened = post(api_client, "hole.project", archive(frames=frames))
+    assert opened.status_code == 201, opened.text
+    session_id = opened.json()["session_id"]
+
+    # Remove the middle frame behind the API's back, as a partial copy would.
+    frames_dir = os.path.join(get_settings().temp_dir, "sessions", session_id, "frames")
+    os.remove(os.path.join(frames_dir, "b.jpg"))
+
+    described = api_client.get(f"/api/sessions/{session_id}")
+    assert described.status_code == 200
+    assert described.json()["frame_names"] == ["a.jpg", "b.jpg", "c.jpg"]
+    assert described.json()["frame_count"] == 3
+
+    get = lambda index: api_client.get(f"/api/sessions/{session_id}/frames/{index}")
+    assert get(0).content == frames["a.jpg"]
+    assert get(1).status_code == 404
+    assert get(2).content == frames["c.jpg"], "index 2 served the wrong frame"
+
+    api_client.delete(f"/api/sessions/{session_id}")
 
 
 def test_video_round_trip(api_client, video, archive):
