@@ -1,4 +1,4 @@
-import { API_BASE } from "./apiBase";
+import { API_BASE, apiFetch } from "./apiBase";
 
 /**
  * Where a clip's frame pixels come from.
@@ -43,7 +43,7 @@ export class SessionFrameSource implements FrameSource {
                 `Frame ${index} is outside this clip (0–${this.count - 1}).`,
             );
         }
-        const response = await fetch(this.frameUrl(index));
+        const response = await apiFetch(this.frameUrl(index));
         if (!response.ok) {
             throw new Error(
                 `Frame ${index} could not be read from the backend ` +

@@ -1,111 +1,24 @@
 """HTTP checks for `/api/sessions`, using FastAPI's own test client.
 
-Run from the backend root::
-
-    python test/test_sessions_api.py
-
-Needs ffmpeg/ffprobe on PATH, or ``FFMPEG_BIN`` / ``FFPROBE_BIN``. Settings are
-forced to a throwaway temp dir before the app is imported, because
-``get_settings`` is cached and ``main`` builds the app at import time.
+The environment (temp dir, ffmpeg paths, SAM 3 off) is configured by the shared
+`conftest` before the app is imported, because `get_settings` is cached and `main`
+resolves settings while it is being imported. The `api_client` fixture supplies a
+client that already carries the `X-Vsr-Client` header every session endpoint
+requires, and `jpeg`/`archive` build the inputs.
 """
 
-import io
-import json
 import os
-import shutil
-import subprocess
-import sys
-import tempfile
-import zipfile
+import time
 
-BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BACKEND_ROOT)
+from fastapi.testclient import TestClient
 
-FFMPEG = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg")
-FFPROBE = os.environ.get("FFPROBE_BIN") or shutil.which("ffprobe")
-assert FFMPEG and os.path.isfile(FFMPEG), f"ffmpeg not found: {FFMPEG!r}"
-assert FFPROBE and os.path.isfile(FFPROBE), f"ffprobe not found: {FFPROBE!r}"
-
-# Configure before importing the app: `get_settings` is lru_cached and `main`
-# resolves settings while it is being imported.
-ROOT = tempfile.mkdtemp(prefix="vsr-api-")
-TEMP_DIR = os.path.join(ROOT, "tmp")
-os.environ["VSR_TEMP_DIR"] = TEMP_DIR
-os.environ["VSR_LOG_DIR"] = os.path.join(ROOT, "logs")
-os.environ["VSR_PROJECTS_DIR"] = os.path.join(ROOT, "projects")
-os.environ["VSR_FFMPEG_BIN"] = FFMPEG
-os.environ["VSR_FFPROBE_BIN"] = FFPROBE
-os.environ["SAM3_ENABLED"] = "0"
-
-from fastapi.testclient import TestClient  # noqa: E402
-from PIL import Image  # noqa: E402
-
-from src.main import app  # noqa: E402
-
-checks = 0
-SESSIONS_DIR = os.path.join(TEMP_DIR, "sessions")
-
-
-def ok(label):
-    global checks
-    checks += 1
-    print("  ok:", label)
-
-
-def jpeg(width=48, height=32, colour=(90, 30, 160)) -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", (width, height), colour).save(buffer, format="JPEG")
-    return buffer.getvalue()
-
-
-def frames_archive(frames, dataset=None) -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        for name, data in frames.items():
-            archive.writestr(f"frames/{name}", data)
-        archive.writestr(
-            "annotation.json",
-            json.dumps(
-                dataset
-                if dataset is not None
-                else {
-                    "videos": [
-                        {
-                            "id": 1,
-                            "video_name": "clip",
-                            "file_names": list(frames),
-                            "fps": 6,
-                            "segmentation_mode": "instance",
-                        }
-                    ],
-                    "annotations": [],
-                    "categories": [],
-                }
-            ),
-        )
-    return buffer.getvalue()
-
-
-def video_archive(video_path, dataset=None) -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.write(video_path, "video/clip.mp4")
-        archive.writestr(
-            "annotation.json",
-            json.dumps(
-                dataset
-                if dataset is not None
-                else {
-                    "videos": [
-                        {"video_name": "clip", "fps": 6, "target_fps": 6}
-                    ]
-                }
-            ),
-        )
-    return buffer.getvalue()
+from src.core.config import get_settings
+from src.core.sessions import create_session
+from src.main import app
 
 
 def post(client, name, data):
+    """Upload `data` as a named `.project` archive."""
     return client.post(
         "/api/sessions",
         files={"project": (name, data, "application/zip")},
@@ -113,19 +26,27 @@ def post(client, name, data):
 
 
 def session_dirs():
-    if not os.path.isdir(SESSIONS_DIR):
+    """The session ids on disk, in the store the running app is using.
+
+    Read from settings rather than a module constant: the directory is the app's
+    decision, and a test that hard-codes its own copy stops noticing if it moves.
+    """
+    root = os.path.join(get_settings().temp_dir, "sessions")
+    if not os.path.isdir(root):
         return []
-    return sorted(os.listdir(SESSIONS_DIR))
+    return sorted(os.listdir(root))
 
 
-def test_frames_round_trip(client):
+def test_frames_round_trip(api_client, jpeg, archive):
     """A frame folder goes in, the same bytes come back out, in order."""
+    # Spelled out rather than left to the fixture's defaults: the response reports
+    # the frame size, so the size the test sends is part of what it is asserting.
     frames = {
-        "b.jpg": jpeg(colour=(10, 200, 10)),
-        "a.jpg": jpeg(colour=(200, 10, 10)),
-        "c.jpg": jpeg(colour=(10, 10, 200)),
+        "b.jpg": jpeg(width=48, height=32, colour=(10, 200, 10)),
+        "a.jpg": jpeg(width=48, height=32, colour=(200, 10, 10)),
+        "c.jpg": jpeg(width=48, height=32, colour=(10, 10, 200)),
     }
-    response = post(client, "clip_007.project", frames_archive(frames))
+    response = post(api_client, "clip_007.project", archive(frames=frames))
     assert response.status_code == 201, response.text
     body = response.json()
 
@@ -138,41 +59,36 @@ def test_frames_round_trip(client):
     assert body["archive"] == "clip_007.project"
     assert body["recorded_frame_names"] == ["b.jpg", "a.jpg", "c.jpg"]
     assert body["frame_names_match"] is True
-    ok("POST /api/sessions copies a frame folder and reports the sequence")
 
     session_id = body["session_id"]
     for index, name in enumerate(["b.jpg", "a.jpg", "c.jpg"]):
-        frame = client.get(f"/api/sessions/{session_id}/frames/{index}")
+        frame = api_client.get(f"/api/sessions/{session_id}/frames/{index}")
         assert frame.status_code == 200, frame.text
         assert frame.content == frames[name], f"frame {index} bytes differ"
         assert frame.headers["content-type"] == "image/jpeg"
         assert "immutable" in frame.headers["cache-control"]
-    ok("GET frames/{index} returns the stored bytes with immutable caching")
 
-    again = client.get(f"/api/sessions/{session_id}")
+    again = api_client.get(f"/api/sessions/{session_id}")
     assert again.status_code == 200
     assert again.json()["frame_names"] == ["b.jpg", "a.jpg", "c.jpg"]
-    ok("GET /api/sessions/{id} re-describes the session after a reload")
 
-    missing = client.get(f"/api/sessions/{session_id}/frames/99")
+    missing = api_client.get(f"/api/sessions/{session_id}/frames/99")
     assert missing.status_code == 404, missing.status_code
-    negative = client.get(f"/api/sessions/{session_id}/frames/-1")
+    negative = api_client.get(f"/api/sessions/{session_id}/frames/-1")
     assert negative.status_code == 422, negative.status_code
-    ok("an out-of-range frame is 404 and a negative index is 422")
 
-    assert client.delete(f"/api/sessions/{session_id}").status_code == 204
+    assert api_client.delete(f"/api/sessions/{session_id}").status_code == 204
     assert session_id not in session_dirs()
-    assert client.delete(f"/api/sessions/{session_id}").status_code == 204
-    ok("DELETE drops the session and is idempotent")
+    assert api_client.delete(f"/api/sessions/{session_id}").status_code == 204
 
 
-def test_video_round_trip(client, video_path):
+def test_video_round_trip(api_client, video, archive):
     response = post(
-        client,
+        api_client,
         "from_video.project",
-        video_archive(
-            video_path,
-            {
+        archive(
+            video=video,
+            dataset={
                 "videos": [
                     {
                         "video_name": "clip",
@@ -194,22 +110,20 @@ def test_video_round_trip(client, video_path):
     assert (body["width"], body["height"]) == (320, 240)
     assert body["mode"] == "semantic"
     assert body["video_entry"] == "video/clip.mp4"
-    ok("POST /api/sessions decodes a video archive into 8-digit frames")
 
-    frame = client.get(f"/api/sessions/{body['session_id']}/frames/11")
+    frame = api_client.get(f"/api/sessions/{body['session_id']}/frames/11")
     assert frame.status_code == 200
     assert frame.content[:2] == b"\xff\xd8", "not a JPEG"
-    client.delete(f"/api/sessions/{body['session_id']}")
-    ok("a frame from a video session is served as a JPEG")
+    api_client.delete(f"/api/sessions/{body['session_id']}")
 
 
-def test_drift_is_reported(client, video_path):
+def test_drift_is_reported(api_client, video, archive):
     response = post(
-        client,
+        api_client,
         "drift.project",
-        video_archive(
-            video_path,
-            {
+        archive(
+            video=video,
+            dataset={
                 "videos": [
                     {
                         "video_name": "clip",
@@ -225,47 +139,80 @@ def test_drift_is_reported(client, video_path):
     assert body["frame_names_match"] is False, body
     assert body["recorded_frame_names"] == ["00000000.jpg"]
     assert body["frame_count"] == 12
-    client.delete(f"/api/sessions/{body['session_id']}")
-    ok("a recorded list that disagrees with the frames is surfaced in the response")
+    api_client.delete(f"/api/sessions/{body['session_id']}")
 
 
-def test_failures_do_not_leak_sessions(client):
+def test_failures_do_not_leak_sessions(api_client, archive):
     before = len(session_dirs())
 
-    not_zip = post(client, "broken.project", b"definitely not a zip")
+    not_zip = post(api_client, "broken.project", b"definitely not a zip")
     assert not_zip.status_code == 415, not_zip.status_code
-    ok("a non-ZIP upload is 415")
 
     empty = post(
-        client,
+        api_client,
         "empty.project",
-        frames_archive({}, {"videos": [{}]}),
+        archive(frames={}, dataset={"videos": [{}]}),
     )
     assert empty.status_code == 422, empty.status_code
     assert "nothing to review" in empty.json()["detail"], empty.json()
-    ok("an archive with neither frames nor a video is 422 with a clear message")
 
+    # A build that fails must not leave its half-made session behind, or a
+    # client could fill the disk with failed uploads.
     assert len(session_dirs()) == before, "a failed build leaked a session directory"
-    ok("a session that fails to build is not left on disk")
 
     # Ids that cannot be a session id are a 404, never a filesystem lookup. The
     # guard itself is unit-tested with "../../etc" in test_sessions.py; httpx
     # normalises encoded separators out of the URL before it is ever sent.
-    assert client.get("/api/sessions/deadbeef").status_code == 404
-    assert client.get("/api/sessions/zzzz").status_code == 404, "non-hex id"
+    assert api_client.get("/api/sessions/deadbeef").status_code == 404
+    assert api_client.get("/api/sessions/zzzz").status_code == 404, "non-hex id"
     long_id = "0" * 65
-    assert client.get(f"/api/sessions/{long_id}").status_code == 404, "over-long id"
-    assert client.delete("/api/sessions/zzzz").status_code == 204
-    ok("unknown and malformed session ids cannot reach the filesystem")
+    assert api_client.get(f"/api/sessions/{long_id}").status_code == 404, "over-long id"
+    assert api_client.delete("/api/sessions/zzzz").status_code == 204
 
 
-def test_startup_sweep(video_path):
+def test_client_scoping(api_client, jpeg, archive):
+    """The client id is required, and it is what makes a session visible.
+
+    Without this, `GET /api/sessions/{id}/frames/{n}` is readable by anyone who
+    learns an id — and the propagation job list hands out ids.
+    """
+    frames = {"a.jpg": jpeg(), "b.jpg": jpeg(colour=(10, 200, 10))}
+    opened = post(api_client, "scoped.project", archive(frames=frames))
+    assert opened.status_code == 201, opened.text
+    session_id = opened.json()["session_id"]
+
+    assert api_client.get(f"/api/sessions/{session_id}").status_code == 200
+    assert api_client.get(f"/api/sessions/{session_id}/frames/0").status_code == 200
+
+    # No header at all is refused, and the message says what to send.
+    anonymous = TestClient(app)
+    refused = anonymous.get(f"/api/sessions/{session_id}")
+    assert refused.status_code == 422, refused.status_code
+    assert "X-Vsr-Client" in refused.json()["detail"], refused.json()
+    assert anonymous.get(f"/api/sessions/{session_id}/frames/0").status_code == 422
+
+    # A malformed one is refused too, so a guessable id cannot be substituted.
+    for bad in ("", "user1", "z" * 32, "a" * 31):
+        probe = TestClient(app)
+        probe.headers["X-Vsr-Client"] = bad
+        assert probe.get(f"/api/sessions/{session_id}").status_code == 422, bad
+
+    # A different client sees nothing, and cannot learn that the session exists.
+    stranger = TestClient(app)
+    stranger.headers["X-Vsr-Client"] = "b" * 32
+    assert stranger.get(f"/api/sessions/{session_id}").status_code == 404
+    assert stranger.get(f"/api/sessions/{session_id}/frames/0").status_code == 404
+    # A stranger's delete is a no-op, not a way to drop someone else's frames.
+    assert stranger.delete(f"/api/sessions/{session_id}").status_code == 204
+    assert (
+        api_client.get(f"/api/sessions/{session_id}").status_code == 200
+    ), "a stranger's delete removed another client's session"
+    assert api_client.get(f"/api/sessions/{session_id}/frames/0").status_code == 200
+
+
+def test_startup_sweep(client_id):
     """A session left idle by a crashed run is reaped when the app starts."""
-    import time
-
-    from src.core.sessions import create_session
-
-    stale = create_session(TEMP_DIR)
+    stale = create_session(get_settings().temp_dir, owner=client_id)
     # Well past the configured TTL (6 h), which the sweeper honours — a session
     # idled for anything less survives, including across a restart.
     old = time.time() - 100_000
@@ -275,46 +222,3 @@ def test_startup_sweep(video_path):
     with TestClient(app) as fresh_client:
         assert not os.path.isdir(stale.root), "the stale session survived startup"
         assert fresh_client.get("/health").json() == {"status": "ok"}
-    ok("lifespan sweeps a stale session on the way up")
-
-
-def build_video(path):
-    subprocess.run(
-        [
-            FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
-            "-pix_fmt", "yuv420p", path,
-        ],
-        check=True,
-    )
-    return path
-
-
-def main() -> int:
-    os.makedirs(TEMP_DIR, exist_ok=True)
-    video_path = build_video(os.path.join(ROOT, "test.mp4"))
-
-    try:
-        with TestClient(app) as client:
-            print("frames project")
-            test_frames_round_trip(client)
-            print("video project")
-            test_video_round_trip(client, video_path)
-            print("drift")
-            test_drift_is_reported(client, video_path)
-            print("failure handling")
-            test_failures_do_not_leak_sessions(client)
-        print("startup sweep")
-        test_startup_sweep(video_path)
-    except AssertionError as failure:
-        print(f"\nFAILED: {failure}")
-        print(f"artifacts kept in {ROOT}")
-        return 1
-
-    shutil.rmtree(ROOT, ignore_errors=True)
-    print(f"\nALL {checks} CHECKS PASSED")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

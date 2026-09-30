@@ -27,6 +27,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from src.core.config import (
+    DEFAULT_SAM3_IMAGE_CACHE_CLIENTS,
+    DEFAULT_SAM3_IMAGE_CACHE_SIZE,
+)
 from src.core.errors import InvalidRequest
 from src.core.sessions import Session
 from src.domain.prompts import (
@@ -39,8 +43,13 @@ from src.domain.prompts import (
 from src.inference.frames import load_frame
 from src.inference.models import ModelManager, Sam3Config
 
-#: How many frames keep their vision embeddings resident.
-CACHE_SIZE = 2
+#: How many frames keep their vision embeddings resident when the caller does
+#: not say. `sam3.image_cache_size` in `core.config` is the configured value;
+#: this is its default.
+CACHE_SIZE = DEFAULT_SAM3_IMAGE_CACHE_SIZE
+
+#: How many reviewers keep such a cache when the caller does not say.
+CACHE_CLIENTS = DEFAULT_SAM3_IMAGE_CACHE_CLIENTS
 
 
 @dataclass
@@ -61,7 +70,7 @@ class _BaseState:
 
 
 class Sam3ImageService:
-    """Lazily loaded SAM 3 image model, with a small embedding cache."""
+    """Lazily loaded SAM 3 image model, with a small per-reviewer embedding cache."""
 
     def __init__(
         self,
@@ -69,10 +78,20 @@ class Sam3ImageService:
         manager: Optional[ModelManager] = None,
         *,
         cache_size: int = CACHE_SIZE,
+        cache_clients: int = CACHE_CLIENTS,
     ) -> None:
         self._manager = manager or ModelManager(config)
         self._cache_size = max(1, cache_size)
-        self._cache: "OrderedDict[Tuple[str, int], _BaseState]" = OrderedDict()
+        self._cache_clients = max(1, cache_clients)
+        #: reviewer -> (session, frame) -> embeddings. Two levels because the
+        #: budget has to be split *fairly*: one flat LRU lets a reviewer's clicks
+        #: evict another reviewer's frames, and every eviction costs a full
+        #: vision-backbone pass. Frames are LRU within a reviewer, and reviewers
+        #: are LRU across each other, so an idle one gives up its whole cache
+        #: before an active one loses a frame.
+        self._cache: "OrderedDict[str, OrderedDict[Tuple[str, int], _BaseState]]" = (
+            OrderedDict()
+        )
         self._lock = threading.RLock()
 
     # ── availability ────────────────────────────────────────────────────
@@ -84,7 +103,12 @@ class Sam3ImageService:
     def status(self) -> Dict[str, Any]:
         """Model availability, for the reviewer's status chip."""
         status = self._manager.status()
-        status["cache_entries"] = len(self._cache)
+        # Summed under the lock: a request thread can be adding a reviewer's
+        # first entry while a status poll walks the mapping.
+        with self._lock:
+            status["cache_entries"] = sum(
+                len(frames) for frames in self._cache.values()
+            )
         status["point_prompts"] = bool(
             getattr(self._manager.config, "enable_inst_interactivity", True)
         )
@@ -93,15 +117,6 @@ class Sam3ImageService:
     def warmup(self) -> None:
         """Load the model now (used by the lifespan hook when eager loading is on)."""
         self._manager.warmup()
-
-    def forget(self, session_id: Optional[str] = None) -> None:
-        """Drop cached embeddings for a session (or all of them)."""
-        with self._lock:
-            if session_id is None:
-                self._cache.clear()
-                return
-            for key in [key for key in self._cache if key[0] == session_id]:
-                self._cache.pop(key, None)
 
     # ── segmentation ────────────────────────────────────────────────────
 
@@ -113,10 +128,22 @@ class Sam3ImageService:
         width, height = image.size
         prompt.validate(width, height)
 
-        with self._lock, self._manager.inference_context():
+        # The gate is taken first: a prompt waits for at most one propagation
+        # window, and nothing can evict the weights this call is about to use.
+        with (
+            self._manager.gate.interactive(),
+            self._lock,
+            self._manager.inference_context(),
+        ):
             model, processor = self._manager.image()
             base, reused, encoder_ms = self._base_state(
-                processor, session.id, frame_index, image, height, width
+                processor,
+                session.owner,
+                session.id,
+                frame_index,
+                image,
+                height,
+                width,
             )
             started = time.perf_counter()
             if prompt.kind == KIND_TEXT:
@@ -139,28 +166,49 @@ class Sam3ImageService:
     def _base_state(
         self,
         processor: Any,
+        owner: str,
         session_id: str,
         frame_index: int,
         image: Any,
         height: int,
         width: int,
     ) -> Tuple[_BaseState, bool, float]:
-        """The frame's embeddings, running the vision backbone only when needed."""
-        key = (session_id, frame_index)
-        cached = self._cache.get(key)
-        if cached is not None:
-            self._cache.move_to_end(key)
-            return cached, True, 0.0
+        """The frame's embeddings, running the vision backbone only when needed.
+
+        The reviewer is the cache's outer key, so a click on someone else's frame
+        cannot cost this reviewer a re-encode. `session_id` is part of the inner
+        key rather than the outer one because one reviewer may have several
+        clips open, and two clips can share a frame index.
+        """
+        frames = self._cache.get(owner)
+        if frames is not None:
+            cached = frames.get((session_id, frame_index))
+            if cached is not None:
+                self._cache.move_to_end(owner)
+                frames.move_to_end((session_id, frame_index))
+                return cached, True, 0.0
 
         started = time.perf_counter()
         state = processor.set_image(image)
         encoder_ms = (time.perf_counter() - started) * 1000.0
         base = _BaseState(state=state, height=height, width=width)
-        self._cache[key] = base
-        self._cache.move_to_end(key)
-        while len(self._cache) > self._cache_size:
-            self._cache.popitem(last=False)
+        if frames is None:
+            frames = OrderedDict()
+            self._cache[owner] = frames
+        frames[(session_id, frame_index)] = base
+        self._cache.move_to_end(owner)
+        self._evict(owner)
         return base, False, encoder_ms
+
+    def _evict(self, owner: str) -> None:
+        """Hold the cache to `cache_clients` reviewers × `cache_size` frames."""
+        frames = self._cache[owner]
+        while len(frames) > self._cache_size:
+            frames.popitem(last=False)
+        while len(self._cache) > self._cache_clients:
+            # `owner` was just moved to the end, so this drops another reviewer —
+            # the one that has not clicked for longest — and never the caller.
+            self._cache.popitem(last=False)
 
     def _text_prompt(
         self, processor: Any, base: _BaseState, prompt: SegmentPrompt
@@ -237,7 +285,8 @@ class Sam3ImageService:
     ) -> SegmentResult:
         """Degraded box prompting: the detector's answer inside the box."""
         box = prompt.primary_box
-        assert box is not None  # the caller checked
+        if box is None:  # the caller checked, so this cannot happen
+            raise InvalidRequest("A box prompt reached the detector with no box.")
         state = base.fresh()
         label = bool(box.label)
         state = processor.add_geometric_prompt(
@@ -260,17 +309,35 @@ class Sam3ImageService:
         )
 
 
+def _to_numpy(value: Any) -> Any:
+    """Bring a model output onto the host so numpy can read it.
+
+    The models hand back torch tensors that are still on the GPU, and
+    `np.asarray` on a CUDA tensor refuses rather than copying: "can't convert
+    cuda:0 device type tensor to numpy. Use Tensor.cpu() to copy the tensor to
+    host memory first." Torch is duck-typed rather than imported because this
+    module has to stay importable without it (see the module docstring), and a
+    numpy array or a plain list has no `detach` and falls straight through.
+    """
+    detach = getattr(value, "detach", None)
+    if callable(detach):
+        return detach().cpu().numpy()
+    return value
+
+
 def _instances_from_batch(
     masks: Any, scores: Any, height: int, width: int
 ) -> List[InstanceMask]:
     """Normalise whatever shape the models return into `InstanceMask` objects.
 
     Accepts `(N, H, W)`, `(N, 1, H, W)` and a single `(H, W)` mask, with scores
-    either per instance or missing entirely.
+    either per instance or missing entirely. This is the boundary where a model
+    result stops being torch-shaped and becomes numpy-shaped, which is why the
+    tensors are moved to the host here rather than anywhere downstream.
     """
     if masks is None:
         return []
-    array = np.asarray(masks)
+    array = np.asarray(_to_numpy(masks))
     if array.size == 0:
         return []
     if array.ndim == 2:
@@ -285,7 +352,7 @@ def _instances_from_batch(
     if scores is None:
         score_list = [1.0] * array.shape[0]
     else:
-        flat = np.asarray(scores).reshape(-1)
+        flat = np.asarray(_to_numpy(scores)).reshape(-1)
         score_list = [float(value) for value in flat[: array.shape[0]]]
 
     instances: List[InstanceMask] = []

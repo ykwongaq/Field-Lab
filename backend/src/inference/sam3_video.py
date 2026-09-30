@@ -20,6 +20,10 @@ the mask itself:
 
 Every step is driven through `handle_request`/`handle_stream_request`, so the
 whole thing is testable with a stub predictor and no GPU.
+
+Each window holds `ModelManager.gate` for its own duration rather than the run
+holding it from end to end, so an interactive prompt waits for one window and not
+for a whole clip. See `inference.gate`.
 """
 
 from __future__ import annotations
@@ -31,7 +35,13 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from src.core.config import Settings
+from src.core.config import (
+    DEFAULT_PROPAGATE_ANCHOR_MAX,
+    DEFAULT_PROPAGATE_CHAINING,
+    DEFAULT_PROPAGATE_OVERLAP,
+    DEFAULT_PROPAGATE_WINDOW_FRAMES,
+    Settings,
+)
 from src.core.errors import InvalidRequest, Unavailable
 from src.core.jobs import PropagationJob
 from src.core.sessions import Session, open_session
@@ -71,12 +81,15 @@ WindowCallback = Callable[[int, int], None]
 class PropagateConfig:
     """Window sizing for propagation, and how a window may be seeded."""
 
-    window_frames: int = 48
-    overlap: int = 8
-    anchor_max: int = 3
+    #: Defaults come from `core.config`, which is where `config/server.json` and
+    #: the environment are read, so each value has one source of truth instead of
+    #: a second copy here that can drift out of step with it.
+    window_frames: int = DEFAULT_PROPAGATE_WINDOW_FRAMES
+    overlap: int = DEFAULT_PROPAGATE_OVERLAP
+    anchor_max: int = DEFAULT_PROPAGATE_ANCHOR_MAX
     #: `derived` (default) lets a window with no verified frame be seeded from the
     #: previous window's own output; `verified` stops the chain there instead.
-    chaining: str = CHAINING_DERIVED
+    chaining: str = DEFAULT_PROPAGATE_CHAINING
 
     def __post_init__(self) -> None:
         if self.window_frames < 2:
@@ -128,12 +141,18 @@ class Sam3VideoPropagator:
         return ModelManager.installed()
 
     def status(self) -> Dict[str, Any]:
-        """Tracker availability plus the window sizing in force."""
+        """Tracker availability, the window sizing in force, and gate occupancy."""
         status = self._manager.status()
         status["window_frames"] = self.config.window_frames
         status["overlap"] = self.config.overlap
         status["anchor_max"] = self.config.anchor_max
         status["chaining"] = self.config.chaining
+        # Whether a model call is in flight, and how many callers are queued for
+        # it. The gate is process-wide, so this covers prompts as well as runs:
+        # it is the number that explains a click which is slow because a
+        # propagation window currently holds the models.
+        status["gpu_busy"] = self._manager.gate.busy
+        status["gpu_waiting"] = self._manager.gate.waiting
         return status
 
     def warmup(self) -> None:
@@ -254,9 +273,12 @@ class Sam3VideoPropagator:
         frames = load_frames(session, window.frames)
         uniform_size(frames)
 
-        # The conditioning masks and the stream they condition must be produced
-        # under one autocast context; see `ModelManager.inference_context`.
-        with self._manager.inference_context():
+        # Two contexts, both released together at the end of the window:
+        #  * the gate, so only one model call runs at a time and a prompt waits
+        #    for a window rather than for the whole run;
+        #  * one autocast context covering the conditioning masks and the stream
+        #    they condition; see `ModelManager.inference_context`.
+        with self._manager.gate.batch(), self._manager.inference_context():
             session_id = self._start_session(predictor, window, frames)
             del frames  # the session keeps its own copy
             try:
@@ -436,7 +458,9 @@ class PropagationRunner:
     def __call__(self, job: PropagationJob) -> None:
         if job.anchor_mask is None:
             raise PropagateError("The job has no anchor mask to propagate.")
-        session = open_session(self.settings.temp_dir, job.session_id)
+        session = open_session(
+            self.settings.temp_dir, job.session_id, owner=job.client_id
+        )
         session.touch()
 
         plan = self.propagator.plan(

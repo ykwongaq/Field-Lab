@@ -11,8 +11,6 @@ handlers and routers. All behaviour lives in `api/`, `domain/`, `projects/` and
 
 from __future__ import annotations
 
-import logging
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,12 +18,13 @@ from src.api.errors import register_exception_handlers
 from src.api.routes import health, propagate, sam3, sessions
 from src.core.config import get_settings
 from src.core.lifespan import lifespan
+from src.core.logging_setup import configure_logging
 
 
 def create_app() -> FastAPI:
     """Build the application: middleware, exception handlers, routers."""
     settings = get_settings()
-    logging.getLogger("vsr").setLevel(settings.log_level.upper())
+    configure_logging(settings)
 
     app = FastAPI(title="Video Segmenter backend", lifespan=lifespan)
 

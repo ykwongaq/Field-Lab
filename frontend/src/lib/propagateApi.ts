@@ -1,5 +1,5 @@
 import type { RawRle } from "../types";
-import { API_BASE } from "./apiBase";
+import { API_BASE, apiFetch } from "./apiBase";
 
 /**
  * Client for mask propagation jobs.
@@ -153,7 +153,7 @@ export async function fetchPropagateStatus(
         chaining: "derived",
     });
     try {
-        const response = await fetch(STATUS_ENDPOINT, { signal });
+        const response = await apiFetch(STATUS_ENDPOINT, { signal });
         if (!response.ok) {
             return fallback(
                 `Backend answered ${response.status} for the tracker status.`,
@@ -238,7 +238,7 @@ export async function startPropagation(
     }
     if (options.chaining) body.chaining = options.chaining;
 
-    const response = await fetch(JOBS_ENDPOINT, {
+    const response = await apiFetch(JOBS_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -271,7 +271,7 @@ export async function getPropagationJob(
     if (options.since !== undefined) query.set("since", String(options.since));
     if (options.includeMasks === false) query.set("include_masks", "false");
     const suffix = query.toString() ? `?${query}` : "";
-    const response = await fetch(
+    const response = await apiFetch(
         `${JOBS_ENDPOINT}/${encodeURIComponent(jobId)}${suffix}`,
         { signal: options.signal },
     );
@@ -288,7 +288,7 @@ export async function getPropagationJob(
 export async function cancelPropagation(
     jobId: string,
 ): Promise<PropagationJob> {
-    const response = await fetch(
+    const response = await apiFetch(
         `${JOBS_ENDPOINT}/${encodeURIComponent(jobId)}`,
         { method: "DELETE" },
     );

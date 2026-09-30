@@ -56,6 +56,7 @@ def get_sam3_service() -> Sam3ImageService:
         _model_config(),
         manager=model_manager(),
         cache_size=settings.sam3_image_cache_size,
+        cache_clients=settings.sam3_image_cache_clients,
     )
 
 
@@ -76,6 +77,7 @@ def get_job_registry() -> JobRegistry:
     return JobRegistry(
         PropagationRunner(get_propagator(), settings),
         max_jobs=settings.propagate_max_jobs,
+        max_jobs_per_client=settings.propagate_max_jobs_per_client,
         ttl_seconds=settings.propagate_job_ttl_seconds,
     )
 

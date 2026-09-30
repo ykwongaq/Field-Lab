@@ -1,9 +1,5 @@
 """Checks for windowed mask propagation, driven by a stub predictor.
 
-Run from the backend root::
-
-    python test/test_propagation.py
-
 The point of the stub is that the *request sequence* — start a session per
 window, condition it with masks from the previous window, propagate with the
 tracker forced, close the session — is what this code is responsible for. The
@@ -16,45 +12,46 @@ observable.
 """
 
 import os
-import shutil
-import sys
-import tempfile
 import threading
+import time
 
 import numpy as np
+import pytest
 from PIL import Image
 
-BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BACKEND_ROOT)
-
-from src.core.errors import NotFound  # noqa: E402
-from src.core.sessions import create_session, frame_name  # noqa: E402
-from src.domain.windows import DIRECTION_BACKWARD, DIRECTION_FORWARD  # noqa: E402
-from src.inference.sam3_video import (  # noqa: E402
+from src.core.errors import InvalidRequest, NotFound
+from src.core.jobs import JobRegistry
+from src.core.sessions import create_session, frame_name
+from src.domain.windows import DIRECTION_BACKWARD, DIRECTION_FORWARD
+from src.inference.sam3_video import (
     PropagateConfig,
+    PropagateError,
+    PropagateUnavailable,
     Sam3VideoPropagator,
 )
 
-checks = 0
-ROOT = tempfile.mkdtemp(prefix="vsr-propagate-")
 HEIGHT, WIDTH = 6, 24
 
-
-def ok(label):
-    global checks
-    checks += 1
-    print("  ok:", label)
+#: Every session and job belongs to a client. These tests act as one client; the
+#: registry-scoping check below uses a second. See `core.identity`.
+OWNER = "a" * 32
 
 
-def make_session(frame_count, tag):
-    """A throwaway session holding `frame_count` tiny JPEGs."""
-    session = create_session(ROOT)
-    for index in range(frame_count):
-        Image.new("RGB", (WIDTH, HEIGHT), (index * 7 % 255, 60, 120)).save(
-            os.path.join(session.frames_dir, frame_name(index)), format="JPEG"
-        )
-    session.update_meta(tag=tag)
-    return session
+@pytest.fixture
+def make_session(scratch):
+    """`make_session(frame_count, tag)` -> a throwaway session in the test's dir."""
+
+    def make(frame_count: int, tag: str):
+        """A session holding `frame_count` tiny JPEGs."""
+        session = create_session(scratch, owner=OWNER)
+        for index in range(frame_count):
+            Image.new("RGB", (WIDTH, HEIGHT), (index * 7 % 255, 60, 120)).save(
+                os.path.join(session.frames_dir, frame_name(index)), format="JPEG"
+            )
+        session.update_meta(tag=tag)
+        return session
+
+    return make
 
 
 def marker(local, shape=(HEIGHT, WIDTH)):
@@ -149,7 +146,7 @@ ANCHOR_MASK = np.zeros((HEIGHT, WIDTH), dtype=bool)
 ANCHOR_MASK[2:4, 2:4] = True
 
 
-def test_windows_are_used_and_everything_is_covered():
+def test_windows_are_used_and_everything_is_covered(make_session):
     session = make_session(16, "coverage")
     predictor = StubPredictor()
     engine, plan, produced = run(
@@ -159,10 +156,9 @@ def test_windows_are_used_and_everything_is_covered():
     assert len(predictor.sessions) == 2, "one session per window"
     assert sorted(predictor.closed) == ["s0", "s1"], "every session is closed"
     assert set(produced) == set(range(0, 16)), f"coverage: {sorted(produced)}"
-    ok("16 frames in windows of 10/overlap 4: 2 sessions, every frame produced")
 
 
-def test_stitching_prefers_the_most_interior_window():
+def test_stitching_prefers_the_most_interior_window(make_session):
     """Frame 6 and frame 8 are covered twice; the better-placed window wins."""
     session = make_session(16, "stitch")
     predictor = StubPredictor()
@@ -176,10 +172,9 @@ def test_stitching_prefers_the_most_interior_window():
     assert (
         np.flatnonzero(produced[8][0])[0] == 2
     ), "frame 8 belongs to window 2 (score 2) rather than window 1 (score 1)"
-    ok("overlapping frames keep the value from the more interior window")
 
 
-def test_the_anchor_frame_is_never_overwritten():
+def test_the_anchor_frame_is_never_overwritten(make_session):
     session = make_session(12, "anchor")
     predictor = StubPredictor()
     engine, plan, produced = run(
@@ -188,10 +183,9 @@ def test_the_anchor_frame_is_never_overwritten():
     assert np.array_equal(
         produced[5], ANCHOR_MASK
     ), "the caller's mask is authoritative on its own frame"
-    ok("the anchor frame keeps the caller's mask, not the tracker's")
 
 
-def test_later_windows_are_conditioned_on_the_overlap():
+def test_later_windows_are_conditioned_on_the_overlap(make_session):
     session = make_session(16, "anchors")
     predictor = StubPredictor()
     run(session, predictor, anchor=0, mask=ANCHOR_MASK, direction=DIRECTION_FORWARD)
@@ -206,10 +200,9 @@ def test_later_windows_are_conditioned_on_the_overlap():
         request["obj_id"] == 1 for request in predictor.add_masks
     ), "one object per window"
     assert np.asarray(predictor.add_masks[0]["mask"]).shape == (HEIGHT, WIDTH)
-    ok("window 2 is anchored on three masks taken from the overlap")
 
 
-def test_tracking_is_forced_and_follows_the_window_direction():
+def test_tracking_is_forced_and_follows_the_window_direction(make_session):
     session = make_session(16, "force")
     predictor = StubPredictor()
     _, plan, _ = run(
@@ -222,10 +215,9 @@ def test_tracking_is_forced_and_follows_the_window_direction():
             "replay cached predictions"
         )
     assert predictor.streams[0]["propagation_direction"] == DIRECTION_FORWARD
-    ok("every window propagates with the tracker forced, in the window's direction")
 
 
-def test_progress_callbacks_report_frames_and_windows():
+def test_progress_callbacks_report_frames_and_windows(make_session):
     session = make_session(16, "progress")
     predictor = StubPredictor()
     events = []
@@ -263,12 +255,9 @@ def test_progress_callbacks_report_frames_and_windows():
         "every propagated frame was published at least once (the anchor is not "
         "published: it is the caller's mask, not a prediction)"
     )
-    ok(
-        f"masks stream out per window ({len(events)} publications) and windows announce themselves"
-    )
 
 
-def test_cancelling_stops_the_run_and_keeps_what_was_produced():
+def test_cancelling_stops_the_run_and_keeps_what_was_produced(make_session):
     session = make_session(40, "cancel")
     cancel = threading.Event()
     state = {"session": 0}
@@ -295,10 +284,9 @@ def test_cancelling_stops_the_run_and_keeps_what_was_produced():
     assert len(predictor.streams) < plan.windows_total, "the run stopped early"
     assert produced, "the frames produced before the cancel are kept"
     assert len(predictor.closed) == len(predictor.sessions), "sessions still close"
-    ok(f"cancel stopped after {len(predictor.streams)} of {plan.windows_total} windows")
 
 
-def test_backward_runs_are_planned_the_other_way():
+def test_backward_runs_are_planned_the_other_way(make_session):
     session = make_session(16, "backward")
     predictor = StubPredictor()
     engine, plan, produced = run(
@@ -313,10 +301,9 @@ def test_backward_runs_are_planned_the_other_way():
     assert plan.windows[0].end == 16, "the first window ends just past the anchor"
     assert set(produced) == set(range(0, 16)), "coverage"
     assert predictor.streams[0]["propagation_direction"] == DIRECTION_BACKWARD
-    ok("a backward run starts at the anchor and walks down")
 
 
-def test_anchor_mask_shape():
+def test_anchor_mask_shape(make_session):
     """A leading singleton channel is fine; anything else is not a mask."""
     session = make_session(4, "shape")
     predictor = StubPredictor()
@@ -331,34 +318,26 @@ def test_anchor_mask_shape():
         plan=plan,
     )
     assert np.array_equal(produced[0], ANCHOR_MASK), "a (1, H, W) mask is squeezed"
-    try:
+    with pytest.raises(PropagateError, match="2-D"):
         engine.propagate(
             session, anchor=0, anchor_mask=np.zeros((2, 2, 2), dtype=bool), plan=plan
         )
-    except Exception as exc:  # PropagateError
-        assert "2-D" in str(exc), str(exc)
-    else:
-        raise AssertionError("a mask that is not 2-D must be rejected")
-    ok("a (1, H, W) mask is accepted and a 3-D one is rejected")
 
 
-def test_predictor_failures_are_not_swallowed():
+def test_predictor_failures_are_not_swallowed(make_session):
+    """A failed window surfaces as an error the caller can act on."""
     session = make_session(4, "failure")
     predictor = StubPredictor(fail_on_start=True)
     engine = propagator(predictor)
     plan = engine.plan(
         anchor=0, first=0, last=3, direction=DIRECTION_FORWARD, frame_count=4
     )
-    try:
+    with pytest.raises(PropagateUnavailable, match="out of memory"):
         engine.propagate(session, anchor=0, anchor_mask=ANCHOR_MASK, plan=plan)
-    except Exception as exc:
-        assert "out of memory" in str(exc), str(exc)
-    else:
-        raise AssertionError("a predictor failure must reach the caller")
-    ok("a failed window surfaces as an error instead of silence")
 
 
-def test_missing_frames_are_reported():
+def test_missing_frames_are_reported(make_session):
+    """A frame missing from the session is a 404, not a crash."""
     session = make_session(4, "missing")
     os.remove(os.path.join(session.frames_dir, frame_name(2)))
     predictor = StubPredictor()
@@ -366,15 +345,11 @@ def test_missing_frames_are_reported():
     plan = engine.plan(
         anchor=0, first=0, last=3, direction=DIRECTION_FORWARD, frame_count=4
     )
-    try:
+    with pytest.raises(NotFound):
         engine.propagate(session, anchor=0, anchor_mask=ANCHOR_MASK, plan=plan)
-    except NotFound:
-        ok("a frame missing from the session is a 404, not a crash")
-    else:
-        raise AssertionError("a missing frame must be reported")
 
 
-def test_propagation_runner_resolves_the_session_and_plans():
+def test_propagation_runner_resolves_the_session_and_plans(make_session, scratch):
     """The runner is what the job queue calls; it must plan and publish."""
     from src.core.config import Settings
     from src.core.jobs import PropagationJob
@@ -382,22 +357,11 @@ def test_propagation_runner_resolves_the_session_and_plans():
 
     session = make_session(12, "runner")
     predictor = StubPredictor()
-
-    class Registry:
-        """Capture the masks the runner publishes, without a queue."""
-
-        def __init__(self):
-            self.masks = {}
-            self.plan = None
-
-        def __call__(self, job):
-            PropagationRunner(engine, settings)(job)
-
     engine = propagator(predictor)
-    settings = Settings(temp_dir=ROOT)
     job = PropagationJob(
         id="job-1",
         session_id=session.id,
+        client_id=OWNER,
         anchor=0,
         direction=DIRECTION_FORWARD,
         first=0,
@@ -405,7 +369,7 @@ def test_propagation_runner_resolves_the_session_and_plans():
         anchor_mask=ANCHOR_MASK,
         frame_count=12,
     )
-    PropagationRunner(engine, settings)(job)
+    PropagationRunner(engine, Settings(temp_dir=scratch))(job)
     masks, progress = job.snapshot()
     # The anchor frame is the caller's own mask, so the run does not produce it,
     # and progress is counted against the frames that do have to be produced.
@@ -415,10 +379,9 @@ def test_propagation_runner_resolves_the_session_and_plans():
     assert job.plan is not None and job.plan["windows_total"] == 2, job.plan
     assert job.plan["frames_to_produce"] == 11, job.plan
     assert "elapsed_ms" in job.plan, "the plan records how long the run took"
-    ok("the job runner opens the session, plans, propagates and publishes masks")
 
 
-def test_verified_frames_anchor_and_are_never_overwritten():
+def test_verified_frames_anchor_and_are_never_overwritten(make_session):
     """A pin is authoritative, exactly like the anchor. The tracker cannot replace it."""
     session = make_session(16, "pins")
     predictor = StubPredictor()
@@ -448,10 +411,9 @@ def test_verified_frames_anchor_and_are_never_overwritten():
     ), "the verified mask outranks the prediction on its own frame"
     assert np.array_equal(produced[0], ANCHOR_MASK)
     assert set(produced) == set(range(0, 16)), "coverage is unchanged"
-    ok("a verified frame anchors its windows and the run cannot overwrite it")
 
 
-def test_strict_chaining_stops_where_verification_ends():
+def test_strict_chaining_stops_where_verification_ends(make_session):
     """`verified` refuses a derived hand-off, so the run stops at the window edge."""
     session = make_session(16, "strict")
     predictor = StubPredictor()
@@ -468,22 +430,17 @@ def test_strict_chaining_stops_where_verification_ends():
     assert len(predictor.streams) == 1, "no chain stepped past the verification"
     assert set(produced) == set(range(0, 10)), sorted(produced)
     assert len(predictor.closed) == 1, "the session still closes"
-    ok("strict chaining stops instead of seeding a window from a prediction")
 
 
 def test_an_unknown_chaining_mode_is_rejected():
-    try:
+    """`chaining` is `derived` or `verified`, and derived is the default."""
+    with pytest.raises(ValueError, match="chaining"):
         PropagateConfig(chaining="sometimes")
-    except ValueError as exc:
-        assert "chaining" in str(exc), str(exc)
-    else:
-        raise AssertionError("an unknown chaining mode must be rejected")
     assert PropagateConfig().allow_derived is True, "derived is the default"
     assert PropagateConfig(chaining="verified").allow_derived is False
-    ok("chaining is `derived` or `verified`, and derived is the default")
 
 
-def test_the_runner_counts_verified_frames_out_of_progress():
+def test_the_runner_counts_verified_frames_out_of_progress(make_session, scratch):
     """Pins are input, not output: they must not leave the progress bar short."""
     from src.core.config import Settings
     from src.core.jobs import PropagationJob
@@ -497,6 +454,7 @@ def test_the_runner_counts_verified_frames_out_of_progress():
     job = PropagationJob(
         id="job-pin-progress",
         session_id=session.id,
+        client_id=OWNER,
         anchor=0,
         direction=DIRECTION_FORWARD,
         first=0,
@@ -505,7 +463,7 @@ def test_the_runner_counts_verified_frames_out_of_progress():
         frame_count=12,
         pins={4: pin},
     )
-    PropagationRunner(engine, Settings(temp_dir=ROOT))(job)
+    PropagationRunner(engine, Settings(temp_dir=scratch))(job)
     masks, progress = job.snapshot()
     # A job publishes the frames it *produced*. The anchor and the verified frame
     # are input — the caller already holds both — so they are absent here, which is
@@ -516,10 +474,9 @@ def test_the_runner_counts_verified_frames_out_of_progress():
     assert job.plan["frames_to_produce"] == 10, job.plan
     assert job.plan["frames_produced"] == 10, job.plan
     assert job.plan["pinned"] == 1, job.plan
-    ok("verified frames are input: progress reaches 100 % once the rest is produced")
 
 
-def test_a_verified_frame_the_run_never_visits_is_rejected():
+def test_a_verified_frame_the_run_never_visits_is_rejected(make_session, scratch):
     """A pin outside the planned range is an error, not a pin that does nothing."""
     from src.core.config import Settings
     from src.core.jobs import PropagationJob
@@ -531,6 +488,7 @@ def test_a_verified_frame_the_run_never_visits_is_rejected():
     job = PropagationJob(
         id="job-pin-range",
         session_id=session.id,
+        client_id=OWNER,
         anchor=6,
         direction=DIRECTION_FORWARD,
         first=0,
@@ -539,14 +497,9 @@ def test_a_verified_frame_the_run_never_visits_is_rejected():
         frame_count=16,
         pins={3: np.ones((HEIGHT, WIDTH), dtype=bool)},
     )
-    try:
-        PropagationRunner(engine, Settings(temp_dir=ROOT))(job)
-    except Exception as exc:
-        assert "outside the frames" in str(exc), str(exc)
-    else:
-        raise AssertionError("a pin the run cannot visit must be an error")
+    with pytest.raises(PropagateError, match="outside the frames"):
+        PropagationRunner(engine, Settings(temp_dir=scratch))(job)
     assert predictor.sessions == {}, "nothing was loaded before the request was refused"
-    ok("a verified frame outside the run's range is refused, not silently dropped")
 
 
 def test_pin_validation_rejects_unusable_frames():
@@ -563,62 +516,197 @@ def test_pin_validation_rejects_unusable_frames():
     decoded = _decode_pins([pin], anchor=0, width=WIDTH, height=HEIGHT)
     assert set(decoded) == {4} and np.array_equal(decoded[4], mask)
 
-    def refuses(label, pins, **kwargs):
-        options = {"anchor": 0, "width": WIDTH, "height": HEIGHT}
-        options.update(kwargs)
-        try:
-            _decode_pins(pins, **options)
-        except Exception as exc:  # InvalidRequest / PropagateError
-            assert "frame" in str(exc).lower(), str(exc)
-            ok(label)
-            return
-        raise AssertionError(f"{label}: expected a rejection")
+    empty = encode_rle(np.zeros((HEIGHT, WIDTH), dtype=bool))[1]
+    cases = [
+        (
+            [PinnedMask(frame_index=0, mask={"size": size, "counts": counts})],
+            WIDTH,
+            "anchor frame",
+        ),
+        ([pin, pin], WIDTH, "more than once"),
+        (
+            [PinnedMask(frame_index=9, mask={"size": size, "counts": empty})],
+            WIDTH,
+            "is empty",
+        ),
+        ([pin], WIDTH + 4, "but the frames are"),
+    ]
+    # Named cases rather than four copies of the same try/except, and each asserts
+    # *which* rejection it got: an empty pin and a wrong-sized one used to be
+    # indistinguishable from any other refusal.
+    for pins, width, reason in cases:
+        with pytest.raises(InvalidRequest, match=reason):
+            _decode_pins(pins, anchor=0, width=width, height=HEIGHT)
 
-    refuses(
-        "a pin on the anchor frame",
-        [PinnedMask(frame_index=0, mask={"size": size, "counts": counts})],
+
+def test_the_gate_is_released_between_windows(make_session):
+    """A prompt must get in while a run is between windows, not only after it.
+
+    The run holds the model gate per window rather than for its whole length,
+    which is what stops one long propagation from blocking every other user's
+    click until the clip is finished.
+    """
+    session = make_session(24, "gate")
+    predictor = StubPredictor()
+    engine = propagator(predictor)
+    gate = engine._manager.gate
+    busy_between_windows = []
+
+    def on_window(_index, _total):
+        busy_between_windows.append(gate.busy)
+
+    _engine, plan, _produced = run(
+        session,
+        predictor,
+        anchor=0,
+        mask=ANCHOR_MASK,
+        engine=engine,
+        on_window=on_window,
     )
-    refuses("a duplicated pin", [pin, pin])
-    refuses(
-        "an empty pin (that is a cleared frame, not a pin)",
-        [
-            PinnedMask(
-                frame_index=9,
-                mask={
-                    "size": size,
-                    "counts": encode_rle(np.zeros((HEIGHT, WIDTH), dtype=bool))[1],
-                },
-            )
-        ],
+    assert plan.windows_total > 1, "the test needs several windows"
+    assert len(busy_between_windows) == plan.windows_total, busy_between_windows
+    assert not any(busy_between_windows), (
+        "the gate was still held between windows, so a prompt would have queued "
+        "behind the whole run"
     )
-    refuses("a mask of the wrong size", [pin], width=WIDTH + 4)
 
 
-def main():
-    print("windowed propagation")
+def test_the_job_registry_scopes_reads_to_the_owner():
+    """A job is invisible to a client that did not submit it.
+
+    The queue is global — one GPU runs one job at a time — but a client may only
+    see, poll and cancel its own runs, or the job list becomes a way to read
+    someone else's masks and stop their work.
+    """
+    alice, bob = "a" * 32, "b" * 32
+    registry = JobRegistry(lambda _job: None, clock=lambda: 0.0)
+    mine = registry.submit(
+        session_id="s-mine",
+        client_id=alice,
+        anchor=0,
+        direction=DIRECTION_FORWARD,
+        first=0,
+        last=4,
+    )
+    theirs = registry.submit(
+        session_id="s-theirs",
+        client_id=bob,
+        anchor=0,
+        direction=DIRECTION_FORWARD,
+        first=0,
+        last=4,
+    )
     try:
-        test_windows_are_used_and_everything_is_covered()
-        test_stitching_prefers_the_most_interior_window()
-        test_the_anchor_frame_is_never_overwritten()
-        test_later_windows_are_conditioned_on_the_overlap()
-        test_tracking_is_forced_and_follows_the_window_direction()
-        test_progress_callbacks_report_frames_and_windows()
-        test_cancelling_stops_the_run_and_keeps_what_was_produced()
-        test_backward_runs_are_planned_the_other_way()
-        test_anchor_mask_shape()
-        test_predictor_failures_are_not_swallowed()
-        test_missing_frames_are_reported()
-        test_propagation_runner_resolves_the_session_and_plans()
-        test_verified_frames_anchor_and_are_never_overwritten()
-        test_strict_chaining_stops_where_verification_ends()
-        test_an_unknown_chaining_mode_is_rejected()
-        test_the_runner_counts_verified_frames_out_of_progress()
-        test_a_verified_frame_the_run_never_visits_is_rejected()
-        test_pin_validation_rejects_unusable_frames()
+        assert [job.id for job in registry.list(client_id=alice)] == [mine.id]
+        assert [job.id for job in registry.list(client_id=bob)] == [theirs.id]
+        assert registry.get(mine.id, client_id=alice).id == mine.id
+
+        # Both a different client and an empty one: a job must not become readable
+        # just because the caller stopped claiming an identity.
+        for intruder in (bob, ""):
+            with pytest.raises(NotFound):
+                registry.get(mine.id, client_id=intruder)
+            with pytest.raises(NotFound):
+                registry.cancel(mine.id, client_id=intruder)
     finally:
-        shutil.rmtree(ROOT, ignore_errors=True)
-    print(f"\n{checks} checks passed")
+        registry.shutdown()
 
 
-if __name__ == "__main__":
-    main()
+class _Hold:
+    """A runner that parks every job until released.
+
+    The queue caps only count jobs that are *in flight*, so a runner that returns
+    immediately leaves nothing for them to observe. This holds each job in the
+    worker until the test says otherwise.
+    """
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, _job) -> None:
+        self.entered.set()
+        self.release.wait(timeout=10)
+
+
+def submit(registry, client_id):
+    """One placeholder propagation job for `client_id`."""
+    return registry.submit(
+        session_id="s-in-flight",
+        client_id=client_id,
+        anchor=0,
+        direction=DIRECTION_FORWARD,
+        first=0,
+        last=4,
+    )
+
+
+def wait_finished(job, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not job.state.finished:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"job {job.id} never finished")
+        time.sleep(0.01)
+
+
+def test_one_client_cannot_fill_the_queue():
+    """A reviewer is held to their own share, however empty the queue is.
+
+    The global ceiling alone lets one client take every slot, so every other
+    reviewer is told the queue is full while the GPU sits idle behind work that
+    only that one client asked for.
+    """
+    alice, bob = "a" * 32, "b" * 32
+    hold = _Hold()
+    registry = JobRegistry(
+        hold, max_jobs=6, max_jobs_per_client=2, ttl_seconds=1800
+    )
+    try:
+        submit(registry, alice)
+        submit(registry, alice)
+        with pytest.raises(InvalidRequest, match="per client"):
+            submit(registry, alice)
+
+        # Bob's own share is untouched by Alice filling hers.
+        submit(registry, bob)
+        assert registry.counts()["running"] + registry.counts()["queued"] == 3
+    finally:
+        hold.release.set()
+        registry.shutdown()
+
+
+def test_a_finished_job_does_not_hold_a_place():
+    """Retained results are history, not capacity.
+
+    A finished run is kept for the TTL so the reviewer can still read it. If that
+    counted against the caps, a client who used their share once could not start
+    another run until the TTL expired, and the queue would refuse work because of
+    history rather than load.
+    """
+    alice = "a" * 32
+    registry = JobRegistry(
+        lambda _job: None, max_jobs=2, max_jobs_per_client=1, ttl_seconds=1800
+    )
+    try:
+        for _ in range(3):
+            wait_finished(submit(registry, alice))
+    finally:
+        registry.shutdown()
+
+
+def test_the_registry_reports_the_shared_queue():
+    """`counts()` describes the one GPU everybody shares, in flight only."""
+    hold = _Hold()
+    registry = JobRegistry(
+        hold, max_jobs=8, max_jobs_per_client=4, ttl_seconds=1800
+    )
+    try:
+        assert registry.counts() == {"queued": 0, "running": 0}
+
+        submit(registry, "a" * 32)
+        assert hold.entered.wait(timeout=5), "the worker never picked the job up"
+        submit(registry, "a" * 32)
+        assert registry.counts() == {"queued": 1, "running": 1}
+    finally:
+        hold.release.set()
+        registry.shutdown()

@@ -1,62 +1,33 @@
 """HTTP checks for `/api/sam3`, with a stub segmentation service.
 
-Run from the backend root::
-
-    python test/test_sam3_api.py
-
 The model is replaced by a stub through FastAPI's dependency override, so this
 covers what the *route* is responsible for: prompt validation, session lookup,
 and the shape of the response. No GPU and no `sam3` install are needed.
 
-Settings are forced to a throwaway temp dir before the app is imported, because
-`get_settings` is cached and `main` resolves settings while being imported.
+The environment is configured by the shared `conftest` before the app is imported
+(`get_settings` is cached and `main` resolves settings while being imported), and
+`api_client` supplies a client already carrying the `X-Vsr-Client` header every
+endpoint under test requires.
 """
 
 import os
-import shutil
-import sys
-import tempfile
 
 import numpy as np
+import pytest
 from PIL import Image
 
-BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BACKEND_ROOT)
+from src.core.config import Settings, get_settings
+from src.core.sessions import create_session, frame_name
+from src.domain.prompts import InstanceMask, SegmentResult
+from src.domain.rle import decode_rle
+from src.inference.registry import get_sam3_service
+from src.main import app
 
-ROOT = tempfile.mkdtemp(prefix="vsr-sam3-api-")
-TEMP_DIR = os.path.join(ROOT, "tmp")
-os.environ["VSR_TEMP_DIR"] = TEMP_DIR
-os.environ["VSR_LOG_DIR"] = os.path.join(ROOT, "logs")
-os.environ["VSR_PROJECTS_DIR"] = os.path.join(ROOT, "projects")
-os.environ["SAM3_ENABLED"] = "1"
-
-from fastapi.testclient import TestClient  # noqa: E402
-
-from src.core.config import Settings, get_settings  # noqa: E402
-from src.core.sessions import create_session, frame_name  # noqa: E402
-from src.domain.prompts import (  # noqa: E402
-    KIND_BOX,
-    KIND_POINT,
-    KIND_TEXT,
-    InstanceMask,
-    SegmentResult,
-)
-from src.domain.rle import decode_rle  # noqa: E402
-from src.inference.registry import get_sam3_service  # noqa: E402
-from src.main import app  # noqa: E402
-
-checks = 0
 HEIGHT, WIDTH = 12, 20
 
 #: Where the stub paints its mask, so the response can be checked against it.
 MASK = np.zeros((HEIGHT, WIDTH), dtype=bool)
 MASK[3:7, 4:11] = True
-
-
-def ok(label):
-    global checks
-    checks += 1
-    print("  ok:", label)
 
 
 class StubImageService:
@@ -95,11 +66,28 @@ class StubImageService:
         )
 
 
-STUB = StubImageService()
+@pytest.fixture
+def stub():
+    """The fake service, installed as the app's SAM 3 dependency for one test.
+
+    Installed as a dependency override rather than by monkeypatching, so the route
+    exercises its real wiring. Cleared afterwards, so a later test cannot inherit
+    the stub and quietly pass against it instead of the code under test.
+    """
+    service = StubImageService()
+    app.dependency_overrides[get_sam3_service] = lambda: service
+    yield service
+    app.dependency_overrides.clear()
 
 
-def make_session():
-    session = create_session(TEMP_DIR)
+@pytest.fixture
+def session(client_id):
+    """A three-frame session the app can actually find.
+
+    Created in the *configured* temp dir rather than a per-test one: the route
+    opens the session through settings, so a session made anywhere else is a 404.
+    """
+    session = create_session(get_settings().temp_dir, owner=client_id)
     for index in range(3):
         Image.new("RGB", (WIDTH, HEIGHT), (40, 80 + index * 20, 160)).save(
             os.path.join(session.frames_dir, frame_name(index)), format="JPEG"
@@ -107,195 +95,150 @@ def make_session():
     return session
 
 
-def check(label, condition, detail=""):
-    assert condition, f"{label} {detail}"
-    ok(label)
+def segment(api_client, session_id, prompt, *, frame_index=0, **options):
+    """POST one prompt, with any extra top-level options, and return the response."""
+    body = {"session_id": session_id, "frame_index": frame_index, "prompt": prompt}
+    body.update(options)
+    return api_client.post("/api/sam3/segment", json=body)
 
 
-def main():
-    print("sam3 api")
-    client = TestClient(app)
-    app.dependency_overrides[get_sam3_service] = lambda: STUB
-    session = make_session()
+def test_status_reports_the_model(api_client, stub):
+    response = api_client.get("/api/sam3/status")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["model"] == "stub-sam3", body
+    assert body["point_prompts"] is True, body
 
+
+def test_a_point_prompt_round_trips(api_client, stub, session):
+    """The click path: a prompt in, the mask and its alternatives out."""
+    response = segment(
+        api_client,
+        session.id,
+        {"kind": "point", "points": [{"x": 4, "y": 5}, {"x": 9, "y": 3, "label": 0}]},
+        frame_index=1,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    decoded = decode_rle(body["rle"]["size"], body["rle"]["counts"])
+    assert np.array_equal(decoded, MASK), decoded.sum()
+    assert body["runs"], "runs are sent so the browser can paint without decoding"
+    assert body["bbox"] == [4, 3, 7, 4], body["bbox"]
+    assert body["area"] == int(MASK.sum()), body["area"]
+    assert body["decoder_ms"] == 3.2, body
+    assert body["embedding_reused"] is True
+    assert "point" in body["prompt"], body["prompt"]
+    assert len(body["instances"]) == 2, body["instances"]
+    assert body["instance_scores"] == [0.91, 0.42], body["instance_scores"]
+
+    # The route must hand the service what the caller actually sent.
+    sent = stub.calls[-1][2]
+    assert [point.label for point in sent.points] == [1, 0], sent.points
+    assert stub.calls[-1][1] == 1, "the frame index reaches the service"
+
+
+def test_max_instances_caps_the_alternatives(api_client, stub, session):
+    response = segment(
+        api_client,
+        session.id,
+        {"kind": "point", "points": [{"x": 5, "y": 5}]},
+        max_instances=1,
+    )
+    assert response.status_code == 200, response.text
+    returned = response.json()["instances"]
+    assert returned == [] or len(returned) == 1, returned
+
+
+def test_a_box_prompt_is_converted(api_client, stub, session):
+    response = segment(
+        api_client,
+        session.id,
+        {"kind": "box", "boxes": [{"x0": 2, "y0": 2, "x1": 12, "y1": 9}]},
+    )
+    assert response.status_code == 200, response.text
+    box = stub.calls[-1][2].primary_box
+    assert (box.x1, box.y1) == (12.0, 9.0), box
+    # The model wants normalised cxcywh, which the prompt converts to on demand.
+    assert len(box.to_cxcywh_normalized(WIDTH, HEIGHT)) == 4
+
+
+def test_a_text_prompt_is_trimmed(api_client, stub, session):
+    response = segment(
+        api_client, session.id, {"kind": "text", "text": "  shark "}, frame_index=2
+    )
+    assert response.status_code == 200, response.text
+    assert stub.calls[-1][2].text == "shark"
+
+
+def test_a_frame_past_the_end_is_404(api_client, stub, session):
+    response = segment(
+        api_client,
+        session.id,
+        {"kind": "point", "points": [{"x": 1, "y": 1}]},
+        frame_index=99,
+    )
+    assert response.status_code == 404, response.text
+
+
+def test_an_unknown_session_is_404(api_client, stub):
+    response = segment(
+        api_client,
+        "deadbeefdeadbeef",
+        {"kind": "point", "points": [{"x": 1, "y": 1}]},
+    )
+    assert response.status_code == 404, response.text
+
+
+#: Each of these is a request a reviewer could plausibly produce, and every one of
+#: them must be refused as a bad request rather than reaching a model.
+BAD_PROMPTS = [
+    ("a point prompt with no click", {"kind": "point", "points": []}),
+    ("a click outside the frame", {"kind": "point", "points": [{"x": 99, "y": 3}]}),
+    ("a negative coordinate", {"kind": "point", "points": [{"x": -2, "y": 3}]}),
+    ("a box prompt with no box", {"kind": "box", "boxes": []}),
+    (
+        "a degenerate box",
+        {"kind": "box", "boxes": [{"x0": 2, "y0": 2, "x1": 2.5, "y1": 9}]},
+    ),
+    ("a box leaving the frame", {"kind": "box", "boxes": [[0, 0, 500, 500]]}),
+    ("an empty text prompt", {"kind": "text", "text": "   "}),
+    ("an unknown prompt kind", {"kind": "scribble", "text": "x"}),
+    (
+        "text mixed with clicks",
+        {"kind": "text", "points": [{"x": 1, "y": 1}], "text": "shark"},
+    ),
+    (
+        "clicks mixed with text",
+        {"kind": "point", "points": [{"x": 1, "y": 1}], "text": "shark"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [prompt for _label, prompt in BAD_PROMPTS],
+    ids=[label for label, _prompt in BAD_PROMPTS],
+)
+def test_a_bad_prompt_is_rejected(api_client, stub, session, prompt):
+    response = segment(api_client, session.id, prompt)
+    assert response.status_code == 422, response.text
+
+
+def test_a_disabled_backend_answers_503(api_client, session):
+    """`SAM3_ENABLED=0` must say so and refuse, not reach for a model."""
+    disabled = Settings(temp_dir=get_settings().temp_dir, enable_sam3=False)
+    app.dependency_overrides[get_settings] = lambda: disabled
     try:
-        # -- status -------------------------------------------------------
-        response = client.get("/api/sam3/status")
-        check("status is 200", response.status_code == 200, response.text)
-        body = response.json()
-        check("status reports the model", body["model"] == "stub-sam3", body)
-        check("status reports the threshold", body["threshold"] == 0.5, body)
-        check("status reports point prompts", body["point_prompts"] is True, body)
+        body = api_client.get("/api/sam3/status").json()
+        assert body["available"] is False, body
+        assert "disabled" in (body["error"] or ""), body
 
-        # -- a point prompt ----------------------------------------------
-        STUB.calls.clear()
-        response = client.post(
-            "/api/sam3/segment",
-            json={
-                "session_id": session.id,
-                "frame_index": 1,
-                "prompt": {
-                    "kind": "point",
-                    "points": [{"x": 4, "y": 5}, {"x": 9, "y": 3, "label": 0}],
-                },
-            },
+        response = segment(
+            api_client,
+            session.id,
+            {"kind": "point", "points": [{"x": 4, "y": 4}]},
         )
-        check("point prompt is 200", response.status_code == 200, response.text)
-        body = response.json()
-        decoded = decode_rle(body["rle"]["size"], body["rle"]["counts"])
-        check("the mask round-trips", np.array_equal(decoded, MASK), decoded.sum())
-        check("runs are sent for immediate painting", len(body["runs"]) > 0, body["runs"])
-        check("the extent is reported", body["bbox"] == [4, 3, 7, 4], body["bbox"])
-        check("area is reported", body["area"] == int(MASK.sum()), body["area"])
-        check("timings are reported", body["decoder_ms"] == 3.2, body)
-        check("the embedding cache is reported", body["embedding_reused"] is True)
-        check("the prompt is echoed", "point" in body["prompt"], body["prompt"])
-        check("both candidates come back", len(body["instances"]) == 2, body["instances"])
-        check(
-            "instance scores are ordered by the model's own verdict",
-            body["instance_scores"] == [0.91, 0.42],
-            body["instance_scores"],
-        )
-        check(
-            "negative clicks reach the service",
-            [p.label for p in STUB.calls[-1][2].points] == [1, 0],
-            STUB.calls[-1][2].points,
-        )
-        check("the frame index reaches the service", STUB.calls[-1][1] == 1)
-
-        # -- max_instances trims the alternatives -------------------------
-        response = client.post(
-            "/api/sam3/segment",
-            json={
-                "session_id": session.id,
-                "frame_index": 0,
-                "prompt": {"kind": "point", "points": [{"x": 5, "y": 5}]},
-                "max_instances": 1,
-            },
-        )
-        check("max_instances caps the alternatives", response.json()["instances"] == [] or
-              len(response.json()["instances"]) == 1, response.json()["instances"])
-
-        # -- a box prompt -------------------------------------------------
-        response = client.post(
-            "/api/sam3/segment",
-            json={
-                "session_id": session.id,
-                "frame_index": 0,
-                "prompt": {
-                    "kind": "box",
-                    "boxes": [{"x0": 2, "y0": 2, "x1": 12, "y1": 9}],
-                },
-            },
-        )
-        check("box prompt is 200", response.status_code == 200, response.text)
-        prompt = STUB.calls[-1][2]
-        check(
-            "the box is parsed",
-            (prompt.primary_box.x1, prompt.primary_box.y1) == (12.0, 9.0),
-            prompt.primary_box,
-        )
-        check(
-            "the box is converted to the normalised cxcywh the model wants",
-            len(prompt.primary_box.to_cxcywh_normalized(WIDTH, HEIGHT)) == 4,
-        )
-
-        # -- a text prompt ------------------------------------------------
-        response = client.post(
-            "/api/sam3/segment",
-            json={
-                "session_id": session.id,
-                "frame_index": 2,
-                "prompt": {"kind": "text", "text": "  shark "},
-            },
-        )
-        check("text prompt is 200", response.status_code == 200, response.text)
-        check("text is trimmed", STUB.calls[-1][2].text == "shark", STUB.calls[-1][2].text)
-
-        # -- prompt validation --------------------------------------------
-        def post(prompt, frame_index=0, session_id=None):
-            return client.post(
-                "/api/sam3/segment",
-                json={
-                    "session_id": session_id or session.id,
-                    "frame_index": frame_index,
-                    "prompt": prompt,
-                },
-            )
-
-        check(
-            "a point prompt with no click is rejected",
-            post({"kind": "point", "points": []}).status_code == 422,
-        )
-        check(
-            "a click outside the frame is rejected",
-            post({"kind": "point", "points": [{"x": 99, "y": 3}]}).status_code == 422,
-        )
-        check(
-            "a negative coordinate is rejected",
-            post({"kind": "point", "points": [{"x": -2, "y": 3}]}).status_code == 422,
-        )
-        check(
-            "a box prompt with no box is rejected",
-            post({"kind": "box", "boxes": []}).status_code == 422,
-        )
-        check(
-            "a degenerate box is rejected",
-            post({"kind": "box", "boxes": [{"x0": 2, "y0": 2, "x1": 2.5, "y1": 9}]}).status_code
-            == 422,
-        )
-        check(
-            "a box leaving the frame is rejected",
-            post({"kind": "box", "boxes": [[0, 0, 500, 500]]}).status_code == 422,
-        )
-        check(
-            "an empty text prompt is rejected",
-            post({"kind": "text", "text": "   "}).status_code == 422,
-        )
-        check(
-            "an unknown prompt kind is rejected",
-            post({"kind": "scribble", "text": "x"}).status_code == 422,
-        )
-        response = post({"kind": "text", "points": [{"x": 1, "y": 1}], "text": "shark"})
-        check("text mixed with clicks is rejected", response.status_code == 422, response.text)
-        response = post({"kind": "point", "points": [{"x": 1, "y": 1}], "text": "shark"})
-        check("clicks mixed with text is rejected", response.status_code == 422, response.text)
-
-        # -- session handling ---------------------------------------------
-        response = post({"kind": "point", "points": [{"x": 1, "y": 1}]}, frame_index=99)
-        check("a frame past the end is 404", response.status_code == 404, response.text)
-        response = post(
-            {"kind": "point", "points": [{"x": 1, "y": 1}]}, session_id="deadbeefdeadbeef"
-        )
-        check("an unknown session is 404", response.status_code == 404, response.text)
-
-        # -- the disabled switch ------------------------------------------
-        app.dependency_overrides[get_settings] = lambda: Settings(
-            temp_dir=TEMP_DIR, enable_sam3=False
-        )
-        response = client.get("/api/sam3/status")
-        body = response.json()
-        check(
-            "a disabled backend says so in status",
-            body["available"] is False and "disabled" in (body["error"] or ""),
-            body,
-        )
-        response = client.post(
-            "/api/sam3/segment",
-            json={
-                "session_id": session.id,
-                "frame_index": 0,
-                "prompt": {"kind": "point", "points": [{"x": 4, "y": 4}]},
-            },
-        )
-        check("a disabled backend answers 503", response.status_code == 503, response.text)
+        assert response.status_code == 503, response.text
     finally:
-        app.dependency_overrides.clear()
-        client.close()
-        shutil.rmtree(ROOT, ignore_errors=True)
-
-    print(f"\n{checks} checks passed")
-
-
-if __name__ == "__main__":
-    main()
+        app.dependency_overrides.pop(get_settings, None)

@@ -36,11 +36,12 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_TEMP_DIR = "tmp"
 DEFAULT_PROJECTS_DIR = "projects"
 
-# Frame rate assumed when a new project does not ask for one.
+# Frame rate a new project falls back to when the caller does not ask for one.
+# Read by the batch builder and the CLI (`projects.builder.create_project`), not
+# by `Settings`: the interactive path is the browser, which picks its own rate.
 DEFAULT_TARGET_FPS = 6.0
 
-DEFAULT_MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB source video
-DEFAULT_MAX_FRAME_BYTES = 32 * 1024**2  # 32 MiB single frame
+DEFAULT_MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GiB project archive
 
 # Frames one SAM 3 session may hold while propagating, how many of them are
 # shared with the next window (the re-anchoring stretch), and how many of those
@@ -52,10 +53,16 @@ DEFAULT_PROPAGATE_OVERLAP = 8
 DEFAULT_PROPAGATE_ANCHOR_MAX = 3
 DEFAULT_PROPAGATE_CHAINING = "derived"
 DEFAULT_PROPAGATE_MAX_JOBS = 32
+#: How many of those jobs one client may hold at once.
+#:
+#: The global ceiling alone lets a single reviewer fill the whole queue and leave
+#: everyone else unable to start a run. That is a fairness problem rather than a
+#: capacity one: the GPU runs one job at a time either way, and every queued job
+#: is holding its masks in host memory. Clamped to `max_jobs` by the registry, so
+#: a small deployment cannot end up with an allowance larger than the queue.
+DEFAULT_PROPAGATE_MAX_JOBS_PER_CLIENT = 8
 DEFAULT_PROPAGATE_JOB_TTL_SECONDS = 1800
 
-#: Detection threshold for text (concept) prompts.
-DEFAULT_SAM3_THRESHOLD = 0.5
 #: Run inference under bf16 autocast on CUDA (see `Sam3Config.autocast_enabled`).
 DEFAULT_SAM3_AUTOCAST = True
 #: Models kept resident at once. 2 holds both the image model and the video
@@ -65,12 +72,22 @@ DEFAULT_SAM3_AUTOCAST = True
 DEFAULT_SAM3_MAX_RESIDENT_MODELS = 2
 #: Frames whose vision embeddings stay cached for click-by-click prompting.
 DEFAULT_SAM3_IMAGE_CACHE_SIZE = 2
+#: How many reviewers keep such a cache. The budget is per client rather than
+#: shared, because a single flat LRU lets one reviewer's clicks evict another's
+#: and every eviction costs a full vision-backbone pass; the client count is what
+#: keeps that fair *and* bounded. Start here: 1 reproduces the old single-cache
+#: behaviour, and raising it multiplies peak host memory by the same factor.
+DEFAULT_SAM3_IMAGE_CACHE_CLIENTS = 4
 
 # A session is a disposable frame working copy under `temp_dir/sessions/<uuid>/`.
 # It is a cache of something the archive can always regenerate, so an idle one
 # may be swept at any time; the byte cap bounds how much disk all of them hold.
 DEFAULT_SESSION_TTL_SECONDS = 6 * 60 * 60  # 6 hours idle
 DEFAULT_SESSION_MAX_BYTES = 64 * 1024**3  # 64 GiB across every session
+#: One client's share of that disk: an owner over this loses its own oldest
+#: sessions and never another owner's, so one reviewer's large upload cannot
+#: evict a colleague's open clip. Four reviewers fit inside the global cap.
+DEFAULT_SESSION_MAX_BYTES_PER_CLIENT = 16 * 1024**3  # 16 GiB per client
 DEFAULT_FRAMES_JPEG_QUALITY = 95
 DEFAULT_FFMPEG_BIN = "ffmpeg"
 DEFAULT_FFPROBE_BIN = "ffprobe"
@@ -86,16 +103,6 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
-
-
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -183,17 +190,6 @@ def _file_int(section: Mapping[str, Any], key: str, default: int, *, label: str)
     return value
 
 
-def _file_float(
-    section: Mapping[str, Any], key: str, default: float, *, label: str
-) -> float:
-    value = section.get(key)
-    if value is None:
-        return default
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{label} must be a number, got {value!r}.")
-    return float(value)
-
-
 def _file_bool(
     section: Mapping[str, Any], key: str, default: bool, *, label: str
 ) -> bool:
@@ -233,7 +229,8 @@ class Settings:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
 
-    # Logging
+    # Logging: `log_level` applies to the `vsr` logger; `log_dir` is where its
+    # rotating file handler writes. An empty `log_dir` keeps logging on stderr.
     log_dir: str = DEFAULT_LOG_DIR
     log_level: str = DEFAULT_LOG_LEVEL
 
@@ -243,11 +240,7 @@ class Settings:
 
     # HTTP limits
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
-    max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES
     cors_origins: Tuple[str, ...] = ("*",)
-
-    # New projects: frame rate used when the caller does not choose one
-    default_fps: float = DEFAULT_TARGET_FPS
 
     # SAM 3
     # `enable_sam3=False` keeps the process free of torch and sam3: no model is
@@ -259,8 +252,6 @@ class Settings:
     #: Tokenizer vocabulary for a local checkpoint (the package asset otherwise).
     sam3_bpe_path: Optional[str] = None
     sam3_device: str = "auto"
-    #: Detection threshold for text prompts.
-    sam3_threshold: float = DEFAULT_SAM3_THRESHOLD
     #: How many of the two models may be loaded at once (LRU).
     sam3_max_resident_models: int = DEFAULT_SAM3_MAX_RESIDENT_MODELS
     #: Instance interactivity is what makes point and box prompts possible.
@@ -268,6 +259,7 @@ class Settings:
     #: Wrap every model call in one bf16 autocast context (CUDA only).
     sam3_autocast: bool = DEFAULT_SAM3_AUTOCAST
     sam3_image_cache_size: int = DEFAULT_SAM3_IMAGE_CACHE_SIZE
+    sam3_image_cache_clients: int = DEFAULT_SAM3_IMAGE_CACHE_CLIENTS
     sam3_eager: bool = False
 
     # Propagation
@@ -278,24 +270,33 @@ class Settings:
     #: may be seeded from the previous window's output. See `domain.windows`.
     propagate_chaining: str = DEFAULT_PROPAGATE_CHAINING
     propagate_max_jobs: int = DEFAULT_PROPAGATE_MAX_JOBS
+    #: How many of those one client may hold (see the constant for why).
+    propagate_max_jobs_per_client: int = DEFAULT_PROPAGATE_MAX_JOBS_PER_CLIENT
     propagate_job_ttl_seconds: int = DEFAULT_PROPAGATE_JOB_TTL_SECONDS
 
     # Sessions: the frame working copy every reader shares
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     session_max_bytes: int = DEFAULT_SESSION_MAX_BYTES
+    session_max_bytes_per_client: int = DEFAULT_SESSION_MAX_BYTES_PER_CLIENT
     frames_jpeg_quality: int = DEFAULT_FRAMES_JPEG_QUALITY
     ffmpeg_bin: str = DEFAULT_FFMPEG_BIN
     ffprobe_bin: str = DEFAULT_FFPROBE_BIN
 
     def __post_init__(self) -> None:
-        """Reject window settings that could never produce a plan.
+        """Reject settings that could never work, before the service starts.
 
         A propagation window chain needs a positive stride, and the stride is
         `window_frames - overlap`, so an overlap that reaches the window size
         would leave the planner with nowhere to step. The image cache and the job
-        ceiling are likewise meaningless at zero. Failing here means a bad
+        ceiling are likewise meaningless at zero.
+
+        The session and frame settings are checked here for a sharper reason than
+        "it would not work": a TTL or a byte cap of zero would make the sweeper
+        delete the very frames a reviewer is looking at, and a JPEG quality
+        outside 1..100 would only fail later, inside ffmpeg's `-q:v` mapping,
+        long after the value was read. Failing here means a bad
         `config/server.json` stops the service at startup instead of surfacing as
-        a confusing error on the first propagation.
+        a confusing error on the first request that happens to need the value.
         """
         if self.propagate_window_frames < 2:
             raise ValueError(
@@ -321,6 +322,11 @@ class Settings:
             raise ValueError(
                 f"propagate.max_jobs must be at least 1, got {self.propagate_max_jobs}."
             )
+        if self.propagate_max_jobs_per_client < 1:
+            raise ValueError(
+                "propagate.max_jobs_per_client must be at least 1, got "
+                f"{self.propagate_max_jobs_per_client}."
+            )
         if self.sam3_max_resident_models < 1:
             raise ValueError(
                 "sam3.max_resident_models must be at least 1, got "
@@ -330,6 +336,39 @@ class Settings:
             raise ValueError(
                 "sam3.image_cache_size must be at least 1, got "
                 f"{self.sam3_image_cache_size}."
+            )
+        if self.sam3_image_cache_clients < 1:
+            raise ValueError(
+                "sam3.image_cache_clients must be at least 1, got "
+                f"{self.sam3_image_cache_clients}."
+            )
+        if not 1 <= self.frames_jpeg_quality <= 100:
+            raise ValueError(
+                "frames_jpeg_quality must be within 1..100, got "
+                f"{self.frames_jpeg_quality}."
+            )
+        if self.session_ttl_seconds < 1:
+            raise ValueError(
+                "session_ttl_seconds must be at least 1, got "
+                f"{self.session_ttl_seconds}; zero would make every session "
+                "sweepable the moment it is created."
+            )
+        if self.session_max_bytes < 1:
+            raise ValueError(
+                "session_max_bytes must be at least 1, got "
+                f"{self.session_max_bytes}; zero would make the sweeper delete "
+                "sessions to get back under the cap."
+            )
+        if self.session_max_bytes_per_client < 1:
+            raise ValueError(
+                "session_max_bytes_per_client must be at least 1, got "
+                f"{self.session_max_bytes_per_client}; zero would make the "
+                "sweeper delete every session its owner has."
+            )
+        if self.max_upload_bytes < 0:
+            raise ValueError(
+                "max_upload_bytes must be 0 (no limit) or greater, got "
+                f"{self.max_upload_bytes}."
             )
 
 
@@ -346,7 +385,6 @@ def get_settings() -> Settings:
     logging_section = _section(config, "logging")
     http = _section(config, "http")
     sam3 = _section(config, "sam3")
-    video = _section(config, "video")
     propagate = _section(config, "propagate")
     sessions = _section(config, "sessions")
 
@@ -391,24 +429,9 @@ def get_settings() -> Settings:
                 label="http.max_upload_bytes",
             ),
         ),
-        max_frame_bytes=_int_env(
-            "VSR_MAX_FRAME_BYTES",
-            _file_int(
-                http,
-                "max_frame_bytes",
-                DEFAULT_MAX_FRAME_BYTES,
-                label="http.max_frame_bytes",
-            ),
-        ),
         cors_origins=_list_env(
             "VSR_CORS_ORIGINS",
             _file_str_list(server, "cors_origins", ("*",), label="server.cors_origins"),
-        ),
-        default_fps=_float_env(
-            "VSR_DEFAULT_FPS",
-            _file_float(
-                video, "default_fps", DEFAULT_TARGET_FPS, label="video.default_fps"
-            ),
         ),
         sam3_checkpoint=_str_env(
             "SAM3_CHECKPOINT",
@@ -420,12 +443,6 @@ def get_settings() -> Settings:
         ),
         sam3_device=_str_env(
             "SAM3_DEVICE", _file_str(sam3, "device", "auto", label="sam3.device")
-        ),
-        sam3_threshold=_float_env(
-            "SAM3_THRESHOLD",
-            _file_float(
-                sam3, "threshold", DEFAULT_SAM3_THRESHOLD, label="sam3.threshold"
-            ),
         ),
         sam3_max_resident_models=_int_env(
             "SAM3_MAX_RESIDENT_MODELS",
@@ -456,6 +473,15 @@ def get_settings() -> Settings:
                 "image_cache_size",
                 DEFAULT_SAM3_IMAGE_CACHE_SIZE,
                 label="sam3.image_cache_size",
+            ),
+        ),
+        sam3_image_cache_clients=_int_env(
+            "SAM3_IMAGE_CACHE_CLIENTS",
+            _file_int(
+                sam3,
+                "image_cache_clients",
+                DEFAULT_SAM3_IMAGE_CACHE_CLIENTS,
+                label="sam3.image_cache_clients",
             ),
         ),
         sam3_eager=_bool_env(
@@ -511,6 +537,15 @@ def get_settings() -> Settings:
                 label="propagate.max_jobs",
             ),
         ),
+        propagate_max_jobs_per_client=_int_env(
+            "PROPAGATE_MAX_JOBS_PER_CLIENT",
+            _file_int(
+                propagate,
+                "max_jobs_per_client",
+                DEFAULT_PROPAGATE_MAX_JOBS_PER_CLIENT,
+                label="propagate.max_jobs_per_client",
+            ),
+        ),
         propagate_job_ttl_seconds=_int_env(
             "PROPAGATE_JOB_TTL_SECONDS",
             _file_int(
@@ -536,6 +571,15 @@ def get_settings() -> Settings:
                 "max_bytes",
                 DEFAULT_SESSION_MAX_BYTES,
                 label="sessions.max_bytes",
+            ),
+        ),
+        session_max_bytes_per_client=_int_env(
+            "VSR_SESSION_MAX_BYTES_PER_CLIENT",
+            _file_int(
+                sessions,
+                "max_bytes_per_client",
+                DEFAULT_SESSION_MAX_BYTES_PER_CLIENT,
+                label="sessions.max_bytes_per_client",
             ),
         ),
         frames_jpeg_quality=_int_env(

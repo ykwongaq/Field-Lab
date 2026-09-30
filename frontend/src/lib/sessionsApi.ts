@@ -1,4 +1,4 @@
-import { API_BASE } from "./apiBase";
+import { API_BASE, apiFetch } from "./apiBase";
 
 /**
  * Client for `/api/sessions`.
@@ -61,7 +61,7 @@ export async function openProject(
 
     let response: Response;
     try {
-        response = await fetch(SESSIONS_ENDPOINT, {
+        response = await apiFetch(SESSIONS_ENDPOINT, {
             method: "POST",
             body: form,
             signal,
@@ -120,7 +120,7 @@ export async function openProject(
  * is going away, so `keepalive` is what lets the request outlive the page.
  */
 export function closeProject(sessionId: string): void {
-    void fetch(`${SESSIONS_ENDPOINT}/${encodeURIComponent(sessionId)}`, {
+    void apiFetch(`${SESSIONS_ENDPOINT}/${encodeURIComponent(sessionId)}`, {
         method: "DELETE",
         keepalive: true,
     }).catch(() => {

@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from src.api.deps import SAM3_DISABLED_MESSAGE, Sam3Dep, SettingsDep, require_sam3
+from src.api.deps import (
+    SAM3_DISABLED_MESSAGE,
+    ClientDep,
+    Sam3Dep,
+    SettingsDep,
+    require_sam3,
+)
 from src.api.serializers import segment_response
 from src.core.sessions import open_session
 from src.domain.prompts import SegmentPrompt
@@ -33,7 +39,6 @@ def sam3_status(settings: SettingsDep, service: Sam3Dep) -> Sam3Status:
             loaded=False,
             model="SAM 3",
             device=settings.sam3_device,
-            threshold=settings.sam3_threshold,
             error=SAM3_DISABLED_MESSAGE,
         )
     status = service.status()
@@ -43,7 +48,6 @@ def sam3_status(settings: SettingsDep, service: Sam3Dep) -> Sam3Status:
         model=str(status["model"]),
         device=str(status["device"]),
         error=status.get("error"),
-        threshold=settings.sam3_threshold,
         loaded_models=list(status.get("loaded_models") or []),
         cache_entries=int(status.get("cache_entries") or 0),
         point_prompts=bool(status.get("point_prompts", True)),
@@ -52,7 +56,10 @@ def sam3_status(settings: SettingsDep, service: Sam3Dep) -> Sam3Status:
 
 @router.post("/segment", response_model=SegmentResponse)
 def sam3_segment(
-    request: SegmentRequest, settings: SettingsDep, service: Sam3Dep
+    request: SegmentRequest,
+    settings: SettingsDep,
+    service: Sam3Dep,
+    client_id: ClientDep,
 ) -> SegmentResponse:
     """Turn one prompt on one frame into a mask.
 
@@ -61,7 +68,7 @@ def sam3_segment(
     project can split them instead of gluing them into one object.
     """
     require_sam3(settings)
-    session = open_session(settings.temp_dir, request.session_id)
+    session = open_session(settings.temp_dir, request.session_id, owner=client_id)
     prompt = SegmentPrompt.from_wire(
         request.prompt.kind,
         points=[point.model_dump() for point in request.prompt.points],

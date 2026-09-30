@@ -28,4 +28,28 @@ def register_exception_handlers(app: FastAPI) -> None:
             logger.warning("Unavailable: %s", exc.message)
         elif exc.status_code >= 500:
             logger.error("Backend error: %s", exc.message)
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+        return JSONResponse(
+            status_code=exc.status_code, content={"detail": exc.message}
+        )
+
+    @app.exception_handler(Exception)
+    async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
+        """Log an unhandled failure with its traceback, and answer 500.
+
+        Without this the traceback reaches only uvicorn's stderr — not the app's
+        own log, which is where an operator looks when `log_dir` is configured.
+        A 500 from inside a model call is exactly the case where the traceback is
+        the only clue, and it is worth having it next to the requests that led to
+        it. The response body stays generic on purpose: a stack trace in a
+        response is an information leak, so the detail lives in the log.
+        """
+        logger.error(
+            "Unhandled %s while serving %s %s",
+            type(exc).__name__,
+            request.method,
+            request.url.path,
+            exc_info=exc,
+        )
+        return JSONResponse(
+            status_code=500, content={"detail": "Internal Server Error"}
+        )

@@ -9,32 +9,20 @@ window size is the only thing that decides how much memory a run costs.
 
 from __future__ import annotations
 
-import os
 from typing import Iterable, List, Sequence
 
 from PIL import Image
 
-from src.core.errors import InvalidRequest, NotFound
+from src.core.errors import InvalidRequest
 from src.core.sessions import Session
 
 #: Guard against loading a frame whose header is absurd, in pixels.
 MAX_PIXELS = 64_000_000
 
 
-def frame_path(session: Session, index: int) -> str:
-    """Where frame `index` of `session` lives, with the name sanitised."""
-    if index < 0:
-        raise InvalidRequest(f"A frame index cannot be negative, got {index}.")
-    name = os.path.basename(session.frame_name_at(index))
-    path = os.path.join(session.frames_dir, name)
-    if not os.path.isfile(path):
-        raise NotFound(f"Frame {index} is not part of session {session.id}.")
-    return path
-
-
 def load_frame(session: Session, index: int) -> Image.Image:
     """One frame as RGB, ready for a model."""
-    return decode(frame_path(session, index), index)
+    return decode(session.resolve_frame(index), index)
 
 
 def load_frames(session: Session, indices: Iterable[int]) -> List[Image.Image]:
@@ -44,7 +32,7 @@ def load_frames(session: Session, indices: Iterable[int]) -> List[Image.Image]:
 
 def frame_size(session: Session, index: int = 0) -> tuple:
     """`(width, height)` of a frame, read from its header."""
-    path = frame_path(session, index)
+    path = session.resolve_frame(index)
     try:
         with Image.open(path) as image:
             return image.size

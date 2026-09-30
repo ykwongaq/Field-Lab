@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import Depends, UploadFile
+from fastapi import Depends, Header, UploadFile
 
 from src.core.config import Settings, get_settings
 from src.core.errors import InvalidRequest, PayloadTooLarge, Unavailable
+from src.core.identity import CLIENT_HEADER, validate_client_id
 from src.core.jobs import JobRegistry
 from src.inference.registry import get_job_registry, get_propagator, get_sam3_service
 from src.inference.sam3_image import Sam3ImageService
@@ -63,7 +64,21 @@ def require_sam3(settings: Settings) -> None:
         raise Unavailable(SAM3_DISABLED_MESSAGE)
 
 
+def client_id(
+    x_vsr_client: Annotated[Optional[str], Header(alias=CLIENT_HEADER)] = None,
+) -> str:
+    """The caller's partition key, from the `X-Vsr-Client` header.
+
+    Required on every endpoint that touches a session, a prompt or a job, because
+    that is the only thing that says whose frames, masks and runs a request is
+    allowed to see. See `core.identity` for what it does and, more importantly,
+    what it does not do.
+    """
+    return validate_client_id(x_vsr_client)
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+ClientDep = Annotated[str, Depends(client_id)]
 Sam3Dep = Annotated[Sam3ImageService, Depends(get_sam3_service)]
 PropagateDep = Annotated[Sam3VideoPropagator, Depends(get_propagator)]
 JobsDep = Annotated[JobRegistry, Depends(get_job_registry)]

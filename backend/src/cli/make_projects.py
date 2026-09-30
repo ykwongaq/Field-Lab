@@ -6,16 +6,14 @@ import os
 import zipfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-import cv2
-
-from src.projects.builder import (
+from src.core.errors import InvalidRequest
+from src.projects.builder import MODES, build_annotation_dataset, write_json_entry
+from src.projects.layout import (
     ANNOTATION_ENTRY,
     FRAMES_DIR,
-    MODES,
     VIDEO_DIR,
     VIDEO_EXTENSIONS,
-    build_annotation_dataset,
-    write_json_entry,
+    select_frame_files,
 )
 
 # Compression name -> (zipfile constant, compresslevel).
@@ -61,11 +59,19 @@ def create_clip_zip(task):
     compression, compresslevel = COMPRESSION_OPTIONS[compression_name]
     clip_name = os.path.basename(frame_dir)
 
-    frames = []
-    for name in sorted(os.listdir(frame_dir)):
-        path = os.path.join(frame_dir, name)
-        if os.path.isfile(path):
-            frames.append((path, f"{FRAMES_DIR}/{name}"))
+    # The same listing the reader uses: images only, in natural order. A bare
+    # `sorted(os.listdir(...))` would pick up stray non-image files and would
+    # order `frame_10.jpg` before `frame_2.jpg`, and the `file_names` recorded in
+    # the annotation would then disagree with what a reader reconstructs from the
+    # archive (which is also why a listing failure is this clip's error, not a
+    # crash for the whole run).
+    try:
+        frame_names = select_frame_files(frame_dir)
+    except InvalidRequest as exc:
+        return clip_name, False, str(exc)
+    frames = [
+        (os.path.join(frame_dir, name), f"{FRAMES_DIR}/{name}") for name in frame_names
+    ]
 
     has_annotation = annotation_file is not None and os.path.isfile(annotation_file)
     has_video = video_file is not None and os.path.isfile(video_file)
@@ -78,6 +84,13 @@ def create_clip_zip(task):
         width = record.get("width")
         height = record.get("height")
         if (not width or not height) and frames:
+            # Imported here rather than at module scope: OpenCV is only needed to
+            # size a clip whose annotation omitted the dimensions, and it is an
+            # optional dependency that the running service does not have. A
+            # module-level import made this CLI unimportable in the very
+            # environment that serves the app.
+            import cv2
+
             probe = cv2.imread(frames[0][0])
             if probe is not None:
                 height, width = probe.shape[:2]
@@ -182,7 +195,9 @@ def main(args):
         )
         return
 
-    workers = args.workers if args.workers and args.workers > 0 else (os.cpu_count() or 1)
+    workers = (
+        args.workers if args.workers and args.workers > 0 else (os.cpu_count() or 1)
+    )
     total = len(tasks)
     print(f"Found {len(frame_dirs)} clip folders ({skipped} already zipped).")
     print(

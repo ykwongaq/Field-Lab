@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from src.core.config import DEFAULT_PROPAGATE_MAX_JOBS_PER_CLIENT
 from src.core.errors import InvalidRequest, NotFound
 
 
@@ -74,6 +75,10 @@ class PropagationJob:
 
     id: str
     session_id: str
+    #: The client that asked for the run. Every read and cancel has to present the
+    #: same id, so one reviewer's jobs are invisible to another's. See
+    #: `core.identity`.
+    client_id: str
     anchor: int
     direction: str
     first: int
@@ -246,11 +251,15 @@ class JobRegistry:
         runner: JobRunner,
         *,
         max_jobs: int = 32,
+        max_jobs_per_client: int = DEFAULT_PROPAGATE_MAX_JOBS_PER_CLIENT,
         ttl_seconds: int = 1800,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._runner = runner
         self._max_jobs = max(1, max_jobs)
+        # Never larger than the queue itself: an allowance above the global
+        # ceiling permits nothing extra and would only mislead.
+        self._max_jobs_per_client = min(max(1, max_jobs_per_client), self._max_jobs)
         self._ttl_seconds = max(1, ttl_seconds)
         self._clock = clock
         self._jobs: Dict[str, PropagationJob] = {}
@@ -265,8 +274,14 @@ class JobRegistry:
     # ── public API ──────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Start the worker thread (idempotent)."""
-        if not self._worker.is_alive():
+        """Start the worker thread (idempotent).
+
+        Guarded by the registry lock: `submit()` is called from request threads,
+        so two requests arriving together must not each spawn a worker.
+        """
+        with self._lock:
+            if self._worker.is_alive():
+                return
             self._stopping.clear()
             self._worker = threading.Thread(
                 target=self._run_forever, name="propagation-jobs", daemon=True
@@ -277,6 +292,7 @@ class JobRegistry:
         self,
         *,
         session_id: str,
+        client_id: str,
         anchor: int,
         direction: str,
         first: int,
@@ -293,6 +309,7 @@ class JobRegistry:
         job = PropagationJob(
             id=str(uuid.uuid4()),
             session_id=session_id,
+            client_id=client_id,
             anchor=anchor,
             direction=direction,
             first=first,
@@ -307,9 +324,21 @@ class JobRegistry:
         )
         with self._lock:
             self._evict_locked()
-            if len(self._jobs) >= self._max_jobs:
+            # The client's own quota is checked first, so a reviewer who filled
+            # their share is told exactly that rather than being blamed on the
+            # shared queue being full.
+            mine = self._live_locked(client_id)
+            if mine >= self._max_jobs_per_client:
                 raise InvalidRequest(
-                    f"Too many propagation jobs ({self._max_jobs}); wait for one to "
+                    f"You already have {mine} propagation job(s) in flight; the "
+                    f"limit is {self._max_jobs_per_client} per client. Wait for one "
+                    "to finish, or cancel one."
+                )
+            in_flight = self._live_locked()
+            if in_flight >= self._max_jobs:
+                raise InvalidRequest(
+                    f"Too many propagation jobs in flight ({in_flight}, the limit "
+                    f"is {self._max_jobs}) across all clients; wait for one to "
                     "finish or close the clip."
                 )
             self._jobs[job.id] = job
@@ -320,33 +349,65 @@ class JobRegistry:
         self._queue.put(job)
         return job
 
-    def get(self, job_id: str) -> PropagationJob:
+    def get(self, job_id: str, *, client_id: str) -> PropagationJob:
+        """One client's job, or ``NotFound``.
+
+        A job that belongs to someone else is reported as unknown rather than as
+        forbidden, so a caller cannot probe for other clients' work.
+        """
         with self._lock:
             job = self._jobs.get(job_id)
-        if job is None:
+        if job is None or job.client_id != client_id:
             raise NotFound(f"Propagation job {job_id} is unknown or has expired.")
         return job
 
-    def cancel(self, job_id: str) -> PropagationJob:
-        job = self.get(job_id)
+    def cancel(self, job_id: str, *, client_id: str) -> PropagationJob:
+        job = self.get(job_id, client_id=client_id)
         job.request_cancel(self._clock)
         return job
 
-    def list(self) -> List[PropagationJob]:
-        """Every known job, oldest first (the queue order the reviewer shows)."""
+    def list(self, *, client_id: str) -> List[PropagationJob]:
+        """This client's jobs, oldest first (the queue order the reviewer shows)."""
         with self._lock:
             self._evict_locked()
             return [
-                self._jobs[job_id] for job_id in self._order if job_id in self._jobs
+                self._jobs[job_id]
+                for job_id in self._order
+                if job_id in self._jobs and self._jobs[job_id].client_id == client_id
             ]
+
+    def _all_locked(self) -> List[PropagationJob]:
+        """Every job, whatever its owner. The caller holds the lock.
+
+        The registry's own bookkeeping (eviction, shutdown) needs the whole set;
+        only the client-facing `list` is scoped.
+        """
+        return [self._jobs[job_id] for job_id in self._order if job_id in self._jobs]
 
     def queued_count(self) -> int:
         with self._lock:
             return self._queued_locked()
 
+    def counts(self) -> Dict[str, int]:
+        """How many jobs are waiting and how many are running, across all clients.
+
+        Global on purpose: it describes the one GPU everybody shares, so it is the
+        number that explains why a job just submitted has not started moving.
+        """
+        with self._lock:
+            self._evict_locked()
+            jobs = self._all_locked()
+        return {
+            "queued": sum(1 for job in jobs if job.state is JobState.QUEUED),
+            "running": sum(1 for job in jobs if job.state is JobState.RUNNING),
+        }
+
     def shutdown(self, timeout: float = 5.0) -> None:
         """Stop the worker, cancelling whatever it is doing."""
-        for job in self.list():
+        with self._lock:
+            self._evict_locked()
+            known = self._all_locked()
+        for job in known:
             if not job.state.finished:
                 job.request_cancel(self._clock)
         self._stopping.set()
@@ -361,6 +422,21 @@ class JobRegistry:
 
     def _queued_locked(self) -> int:
         return sum(1 for job in self._jobs.values() if job.state is JobState.QUEUED)
+
+    def _live_locked(self, client_id: Optional[str] = None) -> int:
+        """Jobs still queued or running — the ones holding a place in the queue.
+
+        Finished jobs are deliberately *not* counted, even though they are retained
+        so the reviewer can read the result. Counting them would mean a client who
+        once ran their share of jobs was locked out until the TTL expired, and the
+        queue would start refusing work because of history rather than load.
+        """
+        return sum(
+            1
+            for job in self._jobs.values()
+            if not job.state.finished
+            and (client_id is None or job.client_id == client_id)
+        )
 
     def _evict_locked(self) -> None:
         """Drop finished jobs that are past their TTL. Caller holds the lock."""

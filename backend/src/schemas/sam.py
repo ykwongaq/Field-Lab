@@ -27,7 +27,6 @@ class ModelStatus(BaseModel):
 class Sam3Status(ModelStatus):
     """SAM 3 status, plus what is resident and what prompting is possible."""
 
-    threshold: float
     loaded_models: List[str] = Field(default_factory=list)
     cache_entries: int = 0
     #: False when the model was loaded without instance interactivity, which is

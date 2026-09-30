@@ -16,9 +16,8 @@ from fastapi import APIRouter, File, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
-from src.api.deps import SettingsDep, stream_upload_to_path
+from src.api.deps import ClientDep, SettingsDep, stream_upload_to_path
 from src.api.serializers import session_response
-from src.core.errors import NotFound
 from src.core.sessions import (
     create_session,
     delete_session,
@@ -37,6 +36,7 @@ ARCHIVE_NAME = "archive.project"
 @router.post("", response_model=SessionResponse, status_code=201)
 async def open_project(
     settings: SettingsDep,
+    client_id: ClientDep,
     project: UploadFile = File(
         ..., description="The `.project` archive to open (a ZIP)"
     ),
@@ -47,7 +47,9 @@ async def open_project(
     the caller needs the frame list before it can show anything. A session that
     fails to build is deleted rather than left half-populated on disk.
     """
-    session = create_session(settings.temp_dir, meta={"archive": project.filename})
+    session = create_session(
+        settings.temp_dir, owner=client_id, meta={"archive": project.filename}
+    )
     try:
         archive_path = os.path.join(session.source_dir, ARCHIVE_NAME)
         await stream_upload_to_path(
@@ -67,26 +69,26 @@ async def open_project(
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
-def get_session(session_id: str, settings: SettingsDep) -> SessionResponse:
+def get_session(
+    session_id: str, settings: SettingsDep, client_id: ClientDep
+) -> SessionResponse:
     """Describe a session again, so a reloaded page can resume the review."""
-    session = open_session(settings.temp_dir, session_id)
+    session = open_session(settings.temp_dir, session_id, owner=client_id)
     session.touch()
     return session_response(session, settings)
 
 
 @router.get("/{session_id}/frames/{index}")
-def get_frame(session_id: str, index: int, settings: SettingsDep) -> FileResponse:
+def get_frame(
+    session_id: str, index: int, settings: SettingsDep, client_id: ClientDep
+) -> FileResponse:
     """One frame, exactly as the session stored it.
 
     A session's frames never change once it is built, so they are marked
     immutable and the browser can cache them for the life of the session.
     """
-    session = open_session(settings.temp_dir, session_id)
-    # `basename` so a recorded name can never reach outside `frames/`.
-    name = os.path.basename(session.frame_name_at(index))
-    path = os.path.join(session.frames_dir, name)
-    if not os.path.isfile(path):
-        raise NotFound(f"Frame {index} is not part of session {session_id}.")
+    session = open_session(settings.temp_dir, session_id, owner=client_id)
+    path = session.resolve_frame(index)
     session.touch()
     return FileResponse(
         path,
@@ -96,11 +98,13 @@ def get_frame(session_id: str, index: int, settings: SettingsDep) -> FileRespons
 
 
 @router.delete("/{session_id}", status_code=204)
-def close_session(session_id: str, settings: SettingsDep) -> Response:
+def close_session(
+    session_id: str, settings: SettingsDep, client_id: ClientDep
+) -> Response:
     """Drop a session and its frames.
 
     Idempotent on purpose: the sweeper may already have taken an idle session,
     and the usual caller is a page-unload beacon, which cannot retry or report.
     """
-    delete_session(settings.temp_dir, session_id)
+    delete_session(settings.temp_dir, session_id, owner=client_id)
     return Response(status_code=204)

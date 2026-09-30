@@ -18,13 +18,22 @@ from src.schemas.sam import ModelStatus
 
 
 class PropagateStatus(BaseModel):
-    """Tracker availability and the window sizing in force."""
+    """Tracker availability, the window sizing in force, and how busy the GPU is."""
 
     sam3: ModelStatus
     window_frames: int
     overlap: int
     anchor_max: int
     chaining: str = "derived"
+    #: Jobs waiting for the worker and jobs running (0 or 1). Global rather than
+    #: per caller: the queue belongs to the process, and it is the one GPU
+    #: everybody shares.
+    queued_jobs: int = 0
+    running_jobs: int = 0
+    #: A model call in flight right now, and how many callers are queued for it.
+    #: Process-wide, so it covers clicks as well as propagation runs.
+    gpu_busy: bool = False
+    gpu_waiting: int = 0
 
 
 class PinnedMask(BaseModel):

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import zipfile
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional
@@ -35,11 +34,18 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 from src.core.config import DEFAULT_TARGET_FPS
 from src.core.errors import InvalidRequest
 from src.core.storage import ensure_dir
-
-VIDEO_DIR = "video"
-FRAMES_DIR = "frames"
-ANNOTATION_ENTRY = "annotation.json"
-FRAME_NAME_PATTERN = "{:06d}.jpg"
+from src.projects.layout import (
+    ANNOTATION_ENTRY,
+    DEFAULT_FPS_FALLBACK,
+    DEFAULT_JPEG_QUALITY,
+    FRAMES_DIR,
+    METADATA_ENTRY,
+    PROJECT_EXTENSION,
+    VIDEO_DIR,
+    archive_frame_name,
+    project_name_for,
+    select_frame_files,
+)
 
 ProjectMode = Literal["instance", "semantic"]
 MODES: tuple[ProjectMode, ...] = ("instance", "semantic")
@@ -55,32 +61,7 @@ MODE_DESCRIPTIONS: Dict[str, str] = {
 }
 DEFAULT_MODE: ProjectMode = "instance"  # what archives without the field mean
 
-VIDEO_EXTENSIONS = (
-    ".mp4",
-    ".mov",
-    ".m4v",
-    ".avi",
-    ".mkv",
-    ".webm",
-    ".mpg",
-    ".mpeg",
-)
-
-# Images accepted when the source is a folder of frames rather than a video.
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
-
-# A project archive is a ZIP that is named `.project`, plus the entry that holds
-# the caller's free-form metadata.
-PROJECT_EXTENSION = ".project"
-METADATA_ENTRY = "metadata.json"
-
-DEFAULT_JPEG_QUALITY = 100
-DEFAULT_FPS_FALLBACK = 25.0
-
 ProgressCallback = Callable[[int, Optional[int]], None]
-
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
-_DIGITS = re.compile(r"(\d+)")
 
 
 def validate_mode(mode: str) -> ProjectMode:
@@ -89,26 +70,6 @@ def validate_mode(mode: str) -> ProjectMode:
             f"Unknown project mode {mode!r}; expected one of {', '.join(MODES)}."
         )
     return mode
-
-
-def sanitize_name(
-    raw: str, *, from_filename: bool = False, fallback: str = "project"
-) -> str:
-    text = raw or ""
-    if from_filename:
-        text = os.path.splitext(os.path.basename(text.replace("\\", "/")))[0]
-    cleaned = _SAFE_NAME.sub("_", text).strip("._-")
-    return cleaned or fallback
-
-
-def project_name_for(name: Optional[str], filename: str) -> str:
-    if name and name.strip():
-        return sanitize_name(name)
-    return sanitize_name(filename, from_filename=True)
-
-
-def frame_name(index: int) -> str:
-    return FRAME_NAME_PATTERN.format(index)
 
 
 def _video_record(
@@ -357,33 +318,6 @@ class _FramesWritten:
     height: int
 
 
-def natural_key(name: str) -> List[Any]:
-    """Sort key that orders `frame_2.jpg` before `frame_10.jpg`."""
-    return [
-        int(part) if part.isdigit() else part.lower()
-        for part in _DIGITS.split(name)
-    ]
-
-
-def select_frame_files(folder: str) -> List[str]:
-    """The image files of a frame folder, in natural name order."""
-    if not os.path.isdir(folder):
-        raise InvalidRequest(f"Frame folder not found: {folder!r}")
-    names = [
-        name
-        for name in os.listdir(folder)
-        if os.path.isfile(os.path.join(folder, name))
-        and os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS
-    ]
-    if not names:
-        raise InvalidRequest(
-            f"Frame folder {folder!r} holds no images "
-            f"({', '.join(IMAGE_EXTENSIONS)})."
-        )
-    names.sort(key=natural_key)
-    return names
-
-
 def probe_frame_folder(folder: str) -> tuple[int, int, int]:
     """Return (frame_count, width, height) for a folder of frames."""
     import cv2
@@ -467,7 +401,7 @@ def _write_frames_from_video(
                     raise RuntimeError(f"JPEG encoding failed at frame {decoded_index}")
                 if not file_names:
                     height, width = frame.shape[:2]
-                arc = frame_name(len(file_names))
+                arc = archive_frame_name(len(file_names))
                 zf.writestr(
                     f"{FRAMES_DIR}/{arc}",
                     buffer.tobytes(),
@@ -568,7 +502,9 @@ def create_project(
     `core.storage.scratch_dir`, which cleans up after itself).
     """
     if (video_path is None) == (frame_folder is None):
-        raise InvalidRequest("Provide exactly one source: `video_path` or `frame_folder`.")
+        raise InvalidRequest(
+            "Provide exactly one source: `video_path` or `frame_folder`."
+        )
     if frame_folder is not None and not os.path.isdir(frame_folder):
         raise InvalidRequest(f"Frame folder not found: {frame_folder!r}")
     if video_path is not None and not os.path.isfile(video_path):
@@ -623,9 +559,7 @@ def create_project(
 
     # 3. Resolve where the archive goes.
     if output_path is None:
-        output_path = os.path.join(
-            output_dir or ".", project_name + PROJECT_EXTENSION
-        )
+        output_path = os.path.join(output_dir or ".", project_name + PROJECT_EXTENSION)
     elif not os.path.splitext(output_path)[1]:
         output_path = output_path + PROJECT_EXTENSION
     if os.path.isdir(output_path):

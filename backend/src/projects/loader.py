@@ -27,7 +27,7 @@ from src.core.config import Settings
 from src.core.errors import InvalidRequest, UnsupportedMediaType
 from src.core.sessions import Session
 from src.domain.extract import extract_frames, frame_dimensions, probe_video
-from src.projects.builder import (
+from src.projects.layout import (
     ANNOTATION_ENTRY,
     DEFAULT_FPS_FALLBACK,
     FRAMES_DIR,

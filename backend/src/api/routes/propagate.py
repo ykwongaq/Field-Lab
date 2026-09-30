@@ -18,7 +18,7 @@ from typing import Dict, Sequence
 import numpy as np
 from fastapi import APIRouter
 
-from src.api.deps import JobsDep, PropagateDep, SettingsDep, require_sam3
+from src.api.deps import ClientDep, JobsDep, PropagateDep, SettingsDep, require_sam3
 from src.api.serializers import job_is_active, job_response
 from src.core.errors import InvalidRequest
 from src.core.sessions import open_session
@@ -76,8 +76,16 @@ def _decode_pins(
 
 
 @router.get("/status", response_model=PropagateStatus)
-def propagate_status(settings: SettingsDep, service: PropagateDep) -> PropagateStatus:
-    """Report tracker availability and the window sizing in force."""
+def propagate_status(
+    settings: SettingsDep, service: PropagateDep, jobs: JobsDep
+) -> PropagateStatus:
+    """Report tracker availability, the window sizing, and how busy the GPU is.
+
+    The queue and gate numbers are global rather than scoped to the caller: they
+    describe the one GPU everybody shares, which is what explains why a run that
+    was just accepted has not started moving yet. None of this is user data, so
+    the endpoint stays open like `/api/sam3/status`.
+    """
     service_status = service.status()
     sam3 = ModelStatus(
         available=bool(service_status["available"]),
@@ -86,12 +94,17 @@ def propagate_status(settings: SettingsDep, service: PropagateDep) -> PropagateS
         device=str(service_status["device"]),
         error=service_status.get("error"),
     )
+    counts = jobs.counts()
     return PropagateStatus(
         sam3=sam3,
         window_frames=int(service_status["window_frames"]),
         overlap=int(service_status["overlap"]),
         anchor_max=int(service_status["anchor_max"]),
         chaining=str(service_status.get("chaining", "derived")),
+        queued_jobs=int(counts["queued"]),
+        running_jobs=int(counts["running"]),
+        gpu_busy=bool(service_status.get("gpu_busy", False)),
+        gpu_waiting=int(service_status.get("gpu_waiting", 0)),
     )
 
 
@@ -101,6 +114,7 @@ def start_job(
     settings: SettingsDep,
     service: PropagateDep,
     jobs: JobsDep,
+    client_id: ClientDep,
 ) -> JobResponse:
     """Queue a propagation run and return it straight away.
 
@@ -109,7 +123,7 @@ def start_job(
     is a 422 rather than a job that fails a minute later.
     """
     require_sam3(settings)
-    session = open_session(settings.temp_dir, request.session_id)
+    session = open_session(settings.temp_dir, request.session_id, owner=client_id)
     frame_count = session.frame_count()
     if frame_count == 0:
         raise InvalidRequest(
@@ -167,6 +181,7 @@ def start_job(
         )
     job = jobs.submit(
         session_id=session.id,
+        client_id=client_id,
         anchor=request.anchor_frame,
         direction=plan.direction,
         first=plan.first,
@@ -182,9 +197,14 @@ def start_job(
 
 
 @router.get("/jobs", response_model=JobListResponse)
-def list_jobs(jobs: JobsDep) -> JobListResponse:
-    """The queue, oldest first, so the reviewer can show what is waiting."""
-    known = jobs.list()
+def list_jobs(jobs: JobsDep, client_id: ClientDep) -> JobListResponse:
+    """This client's queue, oldest first, so the reviewer can show what is waiting.
+
+    Scoped to the caller on purpose: the queue itself is global (one GPU runs one
+    job at a time), but a client sees only its own runs, so another reviewer's
+    work is neither listed nor countable.
+    """
+    known = jobs.list(client_id=client_id)
     running = next((job.id for job in known if job_is_active(job)), None)
     return JobListResponse(
         jobs=[job_response(job, include_masks=False) for job in known],
@@ -196,6 +216,7 @@ def list_jobs(jobs: JobsDep) -> JobListResponse:
 def get_job(
     job_id: str,
     jobs: JobsDep,
+    client_id: ClientDep,
     since: int = -1,
     include_masks: bool = True,
 ) -> JobResponse:
@@ -205,16 +226,16 @@ def get_job(
     keeps a poll's payload proportional to the new frames rather than to the
     whole run.
     """
-    job = jobs.get(job_id)
+    job = jobs.get(job_id, client_id=client_id)
     return job_response(job, since=since, include_masks=include_masks)
 
 
 @router.delete("/jobs/{job_id}", response_model=JobResponse)
-def cancel_job(job_id: str, jobs: JobsDep) -> JobResponse:
+def cancel_job(job_id: str, jobs: JobsDep, client_id: ClientDep) -> JobResponse:
     """Ask a job to stop; a queued job never starts, a running one stops soon.
 
     Whatever it has already produced is kept, so the caller can still accept the
     frames that were computed before the cancel.
     """
-    job = jobs.cancel(job_id)
+    job = jobs.cancel(job_id, client_id=client_id)
     return job_response(job, include_masks=False)

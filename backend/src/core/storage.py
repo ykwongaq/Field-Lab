@@ -44,20 +44,3 @@ def scratch_dir(root: str, prefix: str = "vsr-") -> Iterator[str]:
         yield path
     finally:
         remove_tree(path)
-
-
-def unique_path(directory: str, name: str) -> str:
-    """Return a path in `directory` that does not exist yet.
-
-    Two uploads can carry the same basename (e.g. the same frame name from two
-    sub-folders), so collisions get a numeric suffix instead of overwriting.
-    """
-    candidate = os.path.join(directory, name)
-    if not os.path.exists(candidate):
-        return candidate
-    stem, ext = os.path.splitext(name)
-    for index in range(1, 1000):
-        candidate = os.path.join(directory, f"{stem}~{index}{ext}")
-        if not os.path.exists(candidate):
-            return candidate
-    raise FileExistsError(f"Could not find a free name for {name!r} in {directory!r}")

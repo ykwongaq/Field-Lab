@@ -1,5 +1,5 @@
 import type { DecodedMask, PromptPoint, RawRle } from "../types";
-import { API_BASE } from "./apiBase";
+import { API_BASE, apiFetch } from "./apiBase";
 
 /**
  * Client for SAM 3 prompts on one frame of an open session.
@@ -15,8 +15,6 @@ export interface Sam3Status {
     loaded: boolean;
     model: string;
     device: string;
-    /** Detection threshold applied to text prompts. */
-    threshold: number;
     /** Which models are currently resident ("image", "video"). */
     loadedModels: string[];
     /** False when point and box prompts are unavailable. */
@@ -121,7 +119,7 @@ export async function fetchSam3Status(
     signal?: AbortSignal,
 ): Promise<Sam3Status> {
     try {
-        const response = await fetch(STATUS_ENDPOINT, { signal });
+        const response = await apiFetch(STATUS_ENDPOINT, { signal });
         if (!response.ok) {
             return unavailable(
                 `Backend answered ${response.status} for the SAM 3 status.`,
@@ -136,7 +134,6 @@ export async function fetchSam3Status(
             loaded: Boolean(payload.loaded),
             model: payload.model ?? "SAM 3",
             device: payload.device ?? "?",
-            threshold: payload.threshold ?? 0.5,
             loadedModels: payload.loadedModels ?? payload.loaded_models ?? [],
             pointPrompts: payload.pointPrompts ?? payload.point_prompts ?? true,
             error: payload.error ?? null,
@@ -156,7 +153,6 @@ function unavailable(error: string): Sam3Status {
         loaded: false,
         model: "SAM 3",
         device: "?",
-        threshold: 0.5,
         loadedModels: [],
         pointPrompts: false,
         error,
@@ -193,7 +189,7 @@ export async function segmentFrame(
     };
     if (options.maxInstances) body.max_instances = options.maxInstances;
 
-    const response = await fetch(SEGMENT_ENDPOINT, {
+    const response = await apiFetch(SEGMENT_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

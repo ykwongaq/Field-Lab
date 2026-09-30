@@ -31,7 +31,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
 
+from src.core.config import DEFAULT_SAM3_MAX_RESIDENT_MODELS
 from src.core.errors import Unavailable
+from src.inference.gate import ModelGate
 
 logger = logging.getLogger("vsr")
 
@@ -76,7 +78,9 @@ class Sam3Config:
     checkpoint: Optional[str] = None
     bpe_path: Optional[str] = None
     device: str = "auto"
-    max_resident: int = 1
+    #: Defaulted from `sam3.max_resident_models`, so a manager built without
+    #: settings cannot disagree with the documented configuration.
+    max_resident: int = DEFAULT_SAM3_MAX_RESIDENT_MODELS
     enable_inst_interactivity: bool = True
     #: Run inference under bf16 autocast (see `autocast_enabled`).
     autocast: bool = True
@@ -172,10 +176,17 @@ class _Resident:
 
 
 class ModelManager:
-    """Owns the SAM 3 models for the process, loading them on first use."""
+    """Owns the SAM 3 models for the process, loading them on first use.
+
+    Also owns `gate`, the admission lock for the accelerator. Callers hold it for
+    the duration of a model call, because loading one model can otherwise evict —
+    or shut down — another one that is mid-request. See `inference.gate`.
+    """
 
     def __init__(self, config: Optional[Sam3Config] = None) -> None:
         self.config = config or Sam3Config()
+        #: Every service drawing on this manager shares this one gate.
+        self.gate = ModelGate()
         self._lock = threading.RLock()
         self._resident: Dict[ModelKind, _Resident] = {}
         self._error: Optional[str] = None

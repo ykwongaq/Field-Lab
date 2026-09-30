@@ -13,6 +13,11 @@ Layout::
         source/<name>           the uploaded archive, kept as provenance
         session.json            what the session was built from
 
+A session also records the client that asked for it, and every lookup presents
+one (see `core.identity`). That is what keeps one reviewer's clip out of another
+reviewer's reach, and the frames on disk are the only user data the backend
+holds.
+
 A session is a cache, not a record. The frame sequence can always be rebuilt
 from the archive, so an idle session may be swept at any moment without losing
 anything a caller cannot regenerate — which is what makes sweeping safe to do
@@ -87,7 +92,7 @@ def list_frame_names(frames_dir: str) -> List[str]:
     return names
 
 
-def write_json_atomic(path: str, payload: Any) -> None:
+def _write_json_atomic(path: str, payload: Any) -> None:
     """Write JSON so a reader never sees a half-written file."""
     tmp = path + ".part"
     with open(tmp, "w", encoding="utf-8") as handle:
@@ -126,6 +131,15 @@ class Session:
     def meta_path(self) -> str:
         return os.path.join(self.root, SESSION_META)
 
+    @property
+    def owner(self) -> str:
+        """The client this session belongs to.
+
+        Empty for a session written before ownership existed; nothing can open
+        such a session, so it simply ages out (see `open_session`).
+        """
+        return str(self.read_meta().get("owner") or "")
+
     def frame_path(self, index: int) -> str:
         """Where frame ``index`` would live, whether or not it exists yet."""
         if index < 0:
@@ -161,6 +175,22 @@ class Session:
             return str(recorded[index])
         return frame_name(index)
 
+    def resolve_frame(self, index: int) -> str:
+        """Absolute path of frame ``index``, or ``NotFound`` when it is absent.
+
+        Unlike ``frame_path`` (which names where a frame *would* live, using the
+        canonical pattern), this resolves the name the session actually recorded.
+        The name is reduced to its basename before it is joined to ``frames/``,
+        so a name carried in from an archive can never reach outside the
+        session's own frame directory — this is the only place that guard lives,
+        so every reader shares it.
+        """
+        name = os.path.basename(self.frame_name_at(index))
+        path = os.path.join(self.frames_dir, name)
+        if not os.path.isfile(path):
+            raise NotFound(f"Frame {index} is not part of session {self.id}.")
+        return path
+
     def update_meta(self, **fields: Any) -> None:
         """Merge fields into the session's provenance file."""
         meta = self.read_meta()
@@ -185,7 +215,7 @@ class Session:
         return data if isinstance(data, dict) else {}
 
     def write_meta(self, meta: Mapping[str, Any]) -> None:
-        write_json_atomic(self.meta_path, dict(meta))
+        _write_json_atomic(self.meta_path, dict(meta))
 
     def size_bytes(self) -> int:
         return directory_size(self.root)
@@ -198,41 +228,58 @@ class Session:
 def create_session(
     temp_dir: str,
     *,
+    owner: str,
     meta: Optional[Mapping[str, Any]] = None,
 ) -> Session:
-    """Make a fresh session directory and write its provenance file."""
+    """Make a fresh session directory owned by `owner`, and write its file.
+
+    `owner` is keyword-only and required: a session nobody owns could not be
+    opened by anyone, so there is no useful default to give it.
+    """
     root = sessions_root(temp_dir)
     os.makedirs(root, exist_ok=True)
     session_id = uuid.uuid4().hex
     session = Session(id=session_id, root=os.path.join(root, session_id))
     os.makedirs(session.frames_dir, exist_ok=True)
     os.makedirs(session.source_dir, exist_ok=True)
-    session.write_meta(meta or {"id": session_id})
+    # The authoritative keys go last, so a caller cannot displace them by passing
+    # `id` or `owner` in `meta`.
+    session.write_meta({**(meta or {}), "id": session_id, "owner": owner})
     return session
 
 
-def open_session(temp_dir: str, session_id: str) -> Session:
-    """Find an existing session, or raise ``NotFound``.
+def open_session(temp_dir: str, session_id: str, *, owner: str) -> Session:
+    """Find a session owned by `owner`, or raise ``NotFound``.
 
     The id is checked against ``SESSION_ID_PATTERN`` before it is joined to a
-    path, so a caller cannot escape ``temp_dir`` with ``..`` or a separator.
+    path, so a caller cannot escape ``temp_dir`` with ``..`` or a separator. A
+    session belonging to someone else is reported as *unknown* rather than as
+    forbidden: a non-owner must not learn that it exists.
     """
     if not SESSION_ID_PATTERN.match(session_id):
         raise NotFound(f"No such session: {session_id!r}.")
     root = os.path.join(sessions_root(temp_dir), session_id)
     if not os.path.isdir(root):
         raise NotFound(f"No such session: {session_id!r}.")
-    return Session(id=session_id, root=root)
+    session = Session(id=session_id, root=root)
+    if session.owner != owner:
+        raise NotFound(f"No such session: {session_id!r}.")
+    return session
 
 
-def delete_session(temp_dir: str, session_id: str) -> bool:
-    """Delete a session; ``False`` when it was already gone."""
+def delete_session(temp_dir: str, session_id: str, *, owner: str) -> bool:
+    """Delete a session owned by `owner`; ``False`` when it was already gone."""
     try:
-        session = open_session(temp_dir, session_id)
+        session = open_session(temp_dir, session_id, owner=owner)
     except NotFound:
         return False
     session.delete()
     return True
+
+
+def _owner_of(path: str) -> str:
+    """The owner recorded for the session directory at `path`."""
+    return Session(id=os.path.basename(path), root=path).owner
 
 
 def sweep_sessions(
@@ -240,13 +287,22 @@ def sweep_sessions(
     ttl_seconds: int,
     *,
     max_bytes: Optional[int] = None,
+    max_bytes_per_owner: Optional[int] = None,
     now: Optional[float] = None,
 ) -> List[str]:
-    """Delete idle sessions, then the oldest ones while over ``max_bytes``.
+    """Reap idle sessions, then over-quota ones, cheapest to lose first.
 
-    Idleness is the session directory's mtime, which ``Session.touch`` refreshes
-    on every use. Ordering by the same stamp for the quota pass means the
-    least-recently-used session is the first to go.
+    Three passes, and the difference between them is what makes this safe for
+    more than one client:
+
+    1. **Idle** (per session) — the stamp is the session directory's mtime, which
+       `Session.touch` refreshes on every use. Global, because idleness is each
+       session's own business.
+    2. **Per owner** — an owner over its own budget loses its own
+       least-recently-used sessions. Without this pass one client uploading a
+       large project could evict another client's *active* session, and that
+       session's frames would start failing mid-review.
+    3. **Global** (`max_bytes`) — the disk backstop, over every owner alike.
     """
     root = sessions_root(temp_dir)
     if not os.path.isdir(root):
@@ -269,6 +325,22 @@ def sweep_sessions(
             removed.append(name)
         else:
             survivors.append((modified, name, path))
+
+    if max_bytes_per_owner is not None:
+        by_owner: Dict[str, List[tuple]] = {}
+        for entry in survivors:
+            by_owner.setdefault(_owner_of(entry[2]), []).append(entry)
+        survivors = []
+        for owned in by_owner.values():
+            total = sum(directory_size(path) for _m, _n, path in owned)
+            for entry in sorted(owned):
+                if total <= max_bytes_per_owner:
+                    survivors.append(entry)
+                    continue
+                size = directory_size(entry[2])
+                shutil.rmtree(entry[2], ignore_errors=True)
+                removed.append(entry[1])
+                total -= size
 
     if max_bytes is not None:
         total = sum(directory_size(path) for _m, _n, path in survivors)

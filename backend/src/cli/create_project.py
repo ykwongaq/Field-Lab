@@ -10,17 +10,17 @@ from typing import Any, Dict, Optional
 
 from src.core.config import DEFAULT_TARGET_FPS, get_settings
 from src.core.storage import ensure_dir
-from src.projects.builder import (
+from src.projects.builder import MODE_DESCRIPTIONS, MODES, create_project
+from src.projects.layout import (
     DEFAULT_JPEG_QUALITY,
-    MODE_DESCRIPTIONS,
-    MODES,
     PROJECT_EXTENSION,
-    create_project,
     project_name_for,
 )
 
 
-def _read_metadata(raw: Optional[str], parser: argparse.ArgumentParser) -> Dict[str, Any]:
+def _read_metadata(
+    raw: Optional[str], parser: argparse.ArgumentParser
+) -> Dict[str, Any]:
     """Parse `--metadata`: either a JSON object or a path to a JSON file."""
     if not raw:
         return {}
