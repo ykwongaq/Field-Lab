@@ -5,8 +5,8 @@ import type {
     RawRle,
     RawVideo,
     Taxonomy,
+    TaxonomyOverrides,
     Tracklet,
-    TrackletReview,
 } from "../types";
 import type { ZipArchive } from "./zip";
 import { ZipWriter } from "./zipWriter";
@@ -140,7 +140,7 @@ function findAnnotationEntry(zip: ZipArchive): string {
 }
 
 /**
- * Parsed representation of one clip: its frames plus the tracklets to review.
+ * Parsed representation of one clip: its frames plus the tracklets to annotate.
  *
  * A `Clip` is immutable: the editing methods (`addTracklet`, `removeMask`,
  * `removeTracklet`) return a new `Clip` that shares the frame data, so React
@@ -686,13 +686,13 @@ export class Clip {
      */
     async exportProjectZip(
         zip: ZipArchive,
-        reviews: Record<number, TrackletReview> = {},
+        taxonomies: TaxonomyOverrides = {},
         onProgress?: LoadProgress,
     ): Promise<Blob> {
         if (this.mode !== "semantic") {
             throw new Error("exportProjectZip is for semantic projects only.");
         }
-        const dataset = this.toDataset(reviews);
+        const dataset = this.toDataset(taxonomies);
         const labelMaps = dataset.videos[0].label_maps ?? [];
         const writer = new ZipWriter();
         writer.addText(this.annotationEntry, JSON.stringify(dataset, null, 2));
@@ -741,9 +741,9 @@ export class Clip {
      *
      * Annotations for other videos in the file (if any) are kept untouched.
      * Categories created in the app (one per added tracklet) are filled from
-     * the reviewer's final taxonomy when `reviews` is given.
+     * the taxonomy overrides when `taxonomies` is given.
      */
-    toDataset(reviews: Record<number, TrackletReview> = {}): RawDataset {
+    toDataset(taxonomies: TaxonomyOverrides = {}): RawDataset {
         const video = this.raw.videos[0];
         const others = (this.raw.annotations ?? []).filter(
             (a) => a.video_id !== video.id,
@@ -767,8 +767,7 @@ export class Clip {
         for (const tracklet of this.tracklets) {
             if (tracklet.origin !== "created" || known.has(tracklet.categoryId))
                 continue;
-            const taxonomy =
-                reviews[tracklet.id]?.taxonomy ?? tracklet.taxonomy;
+            const taxonomy = taxonomies[tracklet.id] ?? tracklet.taxonomy;
             categories.push({
                 id: tracklet.categoryId,
                 ...(taxonomy.taxonId !== null

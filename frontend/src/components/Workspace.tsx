@@ -3,14 +3,8 @@ import type { Clip } from "../lib/clip";
 import type { FrameSource } from "../lib/frames";
 import { SessionFrameSource } from "../lib/frames";
 import type { ZipArchive } from "../lib/zip";
-import type {
-    MaskVerdict,
-    PromptPoint,
-    RawRle,
-    Taxonomy,
-    TaxonomyKey,
-} from "../types";
-import { ReviewStore } from "../lib/review";
+import type { PromptPoint, RawRle, Taxonomy, TaxonomyKey } from "../types";
+import { TaxonomyStore } from "../lib/taxonomyStore";
 import { downloadBlob } from "../lib/zipWriter";
 import {
     archiveFrameEntries,
@@ -66,7 +60,7 @@ import {
     type DrawMethod,
     type Tool,
 } from "./Toolbar";
-import { LockIcon } from "./LockIcon";
+import { Button, Chip, Icon } from "../ui";
 import { ExportMenu, type ExportOption } from "./ExportMenu";
 import styles from "./Workspace.module.css";
 
@@ -129,19 +123,6 @@ function entryToRun(
         windows: entry.windows,
         masks: entry.masks,
     };
-}
-
-/**
- * What a correction did to the frames after it.
- *
- * A correction is only consequential if something downstream becomes stale: on the
- * last frame of an object's run there is nothing to replace, and the edit simply
- * stands on its own.
- */
-function refineHint(invalidated: number[], frame: number): string {
-    if (invalidated.length === 0)
-        return " Nothing after it needed re-checking, so it stays a single-frame edit.";
-    return ` ${invalidated.length} frame${invalidated.length === 1 ? "" : "s"} after frame ${frame + 1} ${invalidated.length === 1 ? "is" : "are"} stale — re-propagate from here (Ctrl+Enter) to replace ${invalidated.length === 1 ? "it" : "them"}.`;
 }
 
 const DEFAULT_PROPAGATE_FORWARD = 10;
@@ -214,9 +195,10 @@ export function Workspace({
     const [selectedId, setSelectedId] = useState<number | null>(
         clip.tracklets[0]?.id ?? null,
     );
-    const [showAllMasks, setShowAllMasks] = useState(false);
     const [maskOpacity, setMaskOpacity] = useState(0.55);
-    const [tick, setTick] = useState(0);
+    // Bumped after a taxonomy edit so the (mutable) store's new value is read
+    // again on the next render; the counter's own value is not needed.
+    const [, setTick] = useState(0);
 
     const semantic = clip.mode === "semantic";
     // There is one model now: SAM 3 answers text, box and point prompts, and the
@@ -355,10 +337,10 @@ export function Workspace({
         return () => window.removeEventListener("beforeunload", onBeforeUnload);
     }, [clip.editCount, drafts.size]);
 
-    const storeRef = useRef<ReviewStore | null>(null);
+    const storeRef = useRef<TaxonomyStore | null>(null);
     let store = storeRef.current;
     if (!store) {
-        store = ReviewStore.load(clip.name);
+        store = TaxonomyStore.load(clip.name);
         storeRef.current = store;
     }
 
@@ -370,12 +352,6 @@ export function Workspace({
             null,
         [clip.tracklets, selectedId],
     );
-
-    const counts = useMemo(
-        () => store.counts(clip.tracklets),
-        [clip.tracklets, store, tick],
-    );
-    const missingFrames = useMemo(() => clip.missingFrames(zip), [clip, zip]);
 
     const stepFrame = useCallback(
         (delta: number) =>
@@ -406,73 +382,26 @@ export function Workspace({
 
     const setTaxonomyField = useCallback(
         (key: TaxonomyKey, value: string) => {
-            if (selectedId === null || !selected) return;
-            const current = store.get(selectedId);
-            const next = { ...(current.taxonomy ?? selected.taxonomy) };
+            if (!selected) return;
+            const next = { ...store.get(selected) };
             next[key] = value;
-            store.update(selectedId, {
-                taxonomy: next,
-                labelConfirmed: false,
-            });
+            store.set(selected.id, next);
             refresh();
         },
-        [selectedId, selected, store, refresh],
+        [selected, store, refresh],
     );
 
     const applyTaxonomy = useCallback(
         (taxonomy: Taxonomy) => {
-            if (selectedId === null) return;
-            store.update(selectedId, {
-                taxonomy,
-                labelConfirmed: false,
-            });
+            if (!selected) return;
+            store.set(selected.id, taxonomy);
             refresh();
         },
-        [selectedId, store, refresh],
+        [selected, store, refresh],
     );
 
-    const confirmLabel = useCallback(() => {
-        if (selectedId === null) return;
-        store.update(selectedId, { labelConfirmed: true });
-        refresh();
-    }, [selectedId, store, refresh]);
-
-    const setMaskVerdict = useCallback(
-        (verdict: MaskVerdict) => {
-            if (selectedId === null) return;
-            store.update(selectedId, { maskVerdict: verdict });
-            refresh();
-        },
-        [selectedId, store, refresh],
-    );
-
-    const setComment = useCallback(
-        (text: string) => {
-            if (selectedId === null) return;
-            store.update(selectedId, { comment: text });
-            refresh();
-        },
-        [selectedId, store, refresh],
-    );
-
-    const nextUnverified = useCallback(() => {
-        const tracklets = clip.tracklets;
-        const total = tracklets.length;
-        if (total === 0) return;
-        const start = tracklets.findIndex(
-            (tracklet) => tracklet.id === selectedId,
-        );
-        for (let k = 1; k <= total; k++) {
-            const tracklet = tracklets[(start + k) % total];
-            const review = store.get(tracklet.id);
-            if (!review.labelConfirmed || !review.maskVerdict) {
-                setSelectedId(tracklet.id);
-                if (tracklet.maskFrames.first >= 0)
-                    setFrameIndex(tracklet.maskFrames.first);
-                return;
-            }
-        }
-    }, [clip.tracklets, selectedId, store]);
+    /** The taxonomy in force for the selected object: edit, else the archive's. */
+    const selectedTaxonomy = selected ? store.get(selected) : null;
 
     const resetPrompt = useCallback(() => {
         segmentAbortRef.current?.abort();
@@ -738,12 +667,12 @@ export function Workspace({
         if (selected.maskFrames.count <= 1) {
             setLocalNotice({
                 kind: "info",
-                text: `Frame ${frameIndex + 1} is the only frame ${vocab.unit} #${selectedId} has a mask on, so there would be nothing left to correct. Redraw it instead, or delete the ${vocab.unit}.`,
+                text: `That is the only frame with a mask. Redraw it, or delete the ${vocab.unit}.`,
             });
             return;
         }
         setClip(clip.removeMask(selectedId, frameIndex));
-        const invalidated = markCorrected(selectedId, frameIndex);
+        markCorrected(selectedId, frameIndex);
         refresh();
         // Stay in Edit mask with an explicitly empty draft. The redraw then
         // *replaces* the mask on this frame; going through Add mask instead would
@@ -757,7 +686,7 @@ export function Workspace({
         setTool("editMask");
         setLocalNotice({
             kind: "info",
-            text: `Cleared frame ${frameIndex + 1} of ${vocab.unit} #${selectedId}. Draw the new mask now (${modelName} click, box, text or polygon) and press Enter, or leave it cleared — that is recorded as "the object is not here".${refineHint(invalidated, frameIndex)}`,
+            text: `Cleared frame ${frameIndex + 1}.`,
         });
     }, [
         selectedId,
@@ -1037,9 +966,9 @@ export function Workspace({
             setTool("review");
             setLocalNotice({
                 kind: "success",
-                text: `Added ${created.length} ${created.length === 1 ? vocab.unit : `${vocab.unit}s`} on frame ${frameIndex + 1}. Label ${
-                    created.length === 1 ? "it" : "them"
-                } in the inspector; use Export to save.`,
+                text: `Added ${created.length} ${
+                    created.length === 1 ? vocab.unit : `${vocab.unit}s`
+                }.`,
             });
         },
         [
@@ -1076,18 +1005,16 @@ export function Workspace({
             }
             setClip(next);
             refresh();
-            const invalidated = stillThere
-                ? markCorrected(selectedId, frameIndex)
-                : [];
+            if (stillThere) markCorrected(selectedId, frameIndex);
             discardDraft();
             setTool("review");
             setLocalNotice({
                 kind: finalMask ? "success" : "info",
                 text: finalMask
-                    ? `Corrected the mask of ${vocab.unit} "${selected.label}" (#${selectedId}) on frame ${frameIndex + 1}: ${rleArea(finalMask).toLocaleString()} px.${refineHint(invalidated, frameIndex)}`
+                    ? `Saved mask on frame ${frameIndex + 1}.`
                     : stillThere
-                      ? `Removed the mask of ${vocab.unit} #${selectedId} on frame ${frameIndex + 1}.${refineHint(invalidated, frameIndex)}`
-                      : `Removed ${vocab.unit} #${selectedId} (it had no other mask).`,
+                      ? `Removed the mask on frame ${frameIndex + 1}.`
+                      : `Removed ${vocab.unit} #${selectedId}.`,
             });
             return;
         }
@@ -1105,16 +1032,11 @@ export function Workspace({
             setTool("review");
             setLocalNotice({
                 kind: "success",
-                text: `Added ${vocab.unit} #${tracklet.id} on frame ${frameIndex + 1}. Label it in the inspector; use Export to save the updated annotation JSON.`,
+                text: `Added ${vocab.unit} #${tracklet.id}.`,
             });
             return;
         }
 
-        const regionCount = candidate?.instances.length ?? 0;
-        const regions =
-            method === "text" && regionCount > 0
-                ? `${regionCount} region${regionCount === 1 ? "" : "s"} merged`
-                : `${rleArea(finalMask).toLocaleString()} px`;
         const label = className.trim() || NEW_TRACKLET_LABEL;
         try {
             if (targetClass) {
@@ -1127,7 +1049,7 @@ export function Workspace({
                 setSelectedId(targetClass.id);
                 setLocalNotice({
                     kind: "success",
-                    text: `Added ${regions} to class "${targetClass.label}" on frame ${frameIndex + 1}. Use Export to save the updated project archive.`,
+                    text: `Added to class "${targetClass.label}".`,
                 });
             } else {
                 const { clip: next, tracklet } = clip.addClass(
@@ -1139,7 +1061,7 @@ export function Workspace({
                 setSelectedId(tracklet.id);
                 setLocalNotice({
                     kind: "success",
-                    text: `Created class "${label}" with ${regions} on frame ${frameIndex + 1}. Use Export to save the updated project archive.`,
+                    text: `Created class "${label}".`,
                 });
             }
         } catch (cause) {
@@ -1198,10 +1120,8 @@ export function Workspace({
             setLocalNotice({
                 kind: "info",
                 text: stillThere
-                    ? `Removed the mask of ${vocab.unit} #${selectedId} on frame ${frameIndex + 1}.`
-                    : `Removed ${vocab.unit} #${selectedId}${
-                          scope === "frame" ? " (it had no other mask)" : ""
-                      }.`,
+                    ? `Removed the mask on frame ${frameIndex + 1}.`
+                    : `Removed ${vocab.unit} #${selectedId}.`,
             });
         },
         [selectedId, clip, frameIndex, store, refresh, vocab.unit],
@@ -1209,11 +1129,9 @@ export function Workspace({
 
     const propagateModel = "SAM 3 tracker";
     const propagateAvailable = propStatus?.available ?? false;
-    const propagateNote = propStatus
-        ? propStatus.available
-            ? `Windows of ${propStatus.windowFrames} frames, ${propStatus.overlap} shared between them.`
-            : `The tracker is unavailable (${propStatus.error ?? "unknown reason"}).`
-        : null;
+    const propagateNote = propStatus?.available
+        ? null
+        : `The tracker is unavailable (${propStatus?.error ?? "unknown reason"}).`;
     const propDirectionLabel =
         propDirection === "both"
             ? "both ways"
@@ -1610,7 +1528,7 @@ export function Workspace({
             if (from >= last) {
                 setLocalNotice({
                     kind: "info",
-                    text: `Frame ${from + 1} is the last frame of the clip, so there is nothing after it to re-propagate.`,
+                    text: "Nothing after the last frame to re-propagate.",
                 });
                 return;
             }
@@ -1670,7 +1588,7 @@ export function Workspace({
         setPropError(null);
         setLocalNotice({
             kind: "info",
-            text: "Propagation cancelled. The frames produced so far are still here to review.",
+            text: "Propagation cancelled.",
         });
     }, []);
 
@@ -1760,7 +1678,6 @@ export function Workspace({
         setClip(next);
         refresh();
         const count = propSummary.accepted.length;
-        const skipped = propSummary.found - count;
         const stored = new Set(
             propSummary.accepted.map((item) => item.frameIndex),
         );
@@ -1774,7 +1691,6 @@ export function Workspace({
             return remaining;
         });
         const jobId = propRun.jobId;
-        const { anchor, first, last } = propRun;
         // Accepting one object must not disturb the rest of the batch, so only
         // the frames just stored are dropped from that run's entry.
         const remaining = propQueue.filter((entry) => entry.jobId !== jobId);
@@ -1804,20 +1720,8 @@ export function Workspace({
             kind: count > 0 ? "success" : "info",
             text:
                 count > 0
-                    ? `Propagated ${vocab.unit} "${tracklet.label}" (#${tracklet.id}) from frame ${anchor + 1} to ${count} frame${count === 1 ? "" : "s"} (${first + 1}–${last + 1}) with ${propRun.backend === "sam3" ? "SAM 3" : "SAM 2"}${
-                          skipped > 0
-                              ? `; ${skipped} frame${skipped === 1 ? "" : "s"} kept ${skipped === 1 ? "its" : "their"} existing mask`
-                              : ""
-                      }${
-                          propSummary.empty > 0
-                              ? `; nothing found on ${propSummary.empty}`
-                              : ""
-                      }.${
-                          nextEntry
-                              ? " The next queued object is on the canvas."
-                              : " Use Export to save."
-                      }`
-                    : "No mask was stored: every frame in the range already had one or the tracker found nothing.",
+                    ? `Tracked ${count} frame${count === 1 ? "" : "s"} for ${vocab.unit} #${tracklet.id}.`
+                    : "Nothing stored: the range already had masks.",
         });
     }, [
         propRun,
@@ -1953,26 +1857,12 @@ export function Workspace({
                     event.preventDefault();
                     stepFrame(1);
                     break;
-                case "3":
-                    setMaskVerdict("good");
-                    break;
-                case "4":
-                    setMaskVerdict("bad");
-                    break;
-                case "n":
-                    nextUnverified();
-                    break;
-                case "x":
-                    setShowAllMasks((value) => !value);
-                    break;
             }
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
     }, [
         stepFrame,
-        setMaskVerdict,
-        nextUnverified,
         tool,
         method,
         polygon.length,
@@ -2136,106 +2026,67 @@ export function Workspace({
     return (
         <div className={styles.workspace}>
             <header className={styles.header}>
-                <div>
+                <span className={styles.brand} title="Field Lab">
+                    <Icon name="leaf" size={18} />
+                </span>
+
+                <div className={styles.identity}>
                     <div className={styles.titleRow}>
                         <h1 className={styles.title}>{clip.name}</h1>
-                        <span
-                            className={`${styles.modeBadge} ${
-                                clip.mode === "semantic"
-                                    ? styles.modeSemantic
-                                    : styles.modeInstance
-                            }`}
-                            title={`${vocab.title} segmentation — ${vocab.description} The mode was fixed when the project was created and cannot be changed.${
-                                clip.modeAssumed
-                                    ? " (Older archive without segmentation_mode in its JSON: assumed instance.)"
-                                    : ""
-                            }`}
+                        <Chip
+                            tone={
+                                clip.mode === "semantic" ? "accent" : "neutral"
+                            }
+                            icon="lock"
+                            title={`${vocab.title} segmentation — ${vocab.description} Fixed when the project was created.`}
                         >
-                            <LockIcon size={11} />
                             {vocab.title}
-                            {clip.modeAssumed && (
-                                <span className={styles.modeLegacy}>
-                                    assumed
-                                </span>
-                            )}
-                        </span>
+                        </Chip>
                     </div>
                     <div className={styles.meta}>
-                        <span>{clip.frameCount} frames</span>
-                        <span>{clip.fps} fps</span>
-                        <span>
+                        <span className="num">
                             {clip.width}×{clip.height}
                         </span>
-                        <span>
+                        <span className={styles.sep} />
+                        <span className="num">{clip.frameCount} frames</span>
+                        <span className={styles.sep} />
+                        <span className="num">{clip.fps} fps</span>
+                        <span className={styles.sep} />
+                        <span className="num">
                             {clip.tracklets.length}{" "}
                             {clip.tracklets.length === 1
                                 ? vocab.unit
                                 : vocab.units}
                         </span>
-                        {clip.videoEntry && (
-                            <span title={clip.videoEntry}>
-                                source video embedded
-                            </span>
-                        )}
-                        {missingFrames.length > 0 && (
-                            <span className={styles.warning}>
-                                {missingFrames.length} frame(s) missing from
-                                archive
-                            </span>
-                        )}
-                        {clip.editCount > 0 && (
-                            <span
-                                className={styles.warning}
-                                title="Mask edits made in this session are not in the archive yet. Export writes the updated annotation JSON."
-                            >
-                                {clip.editCount} unsaved mask edit
-                                {clip.editCount === 1 ? "" : "s"}
-                            </span>
-                        )}
                     </div>
                 </div>
 
                 <div className={styles.spacer} />
 
-                <div className={styles.progress}>
-                    <span className={styles.progressText}>
-                        {counts.verified} / {counts.total} verified
-                    </span>
-                    <div className={styles.progressTrack}>
-                        <div
-                            className={styles.progressFill}
-                            style={{
-                                width: counts.total
-                                    ? `${Math.round((counts.verified / counts.total) * 100)}%`
-                                    : "0%",
-                            }}
-                        />
-                    </div>
-                </div>
-
-                <button
-                    type="button"
-                    className="btn btnPrimary"
+                <Button
+                    variant="ghost"
+                    icon="folder"
+                    aria-label="Open another project"
+                    title="Open another project"
                     onClick={() => {
-                        // Same §6.2 guard: leaving with drafts open prompts
-                        // once, before anything is written.
+                        if (confirmDraftsDiscarded()) onReset();
+                    }}
+                />
+
+                <Button
+                    variant="primary"
+                    icon="download"
+                    disabled={exportBusyId !== null}
+                    onClick={() => {
+                        // Leaving with drafts open prompts once, before
+                        // anything is written.
                         if (!confirmDraftsDiscarded()) return;
                         setExportError(null);
                         setExportOpen(true);
                     }}
-                    disabled={exportBusyId !== null}
                 >
                     {exportBusyId !== null ? "Exporting…" : "Export"}
-                </button>
-                <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                        if (confirmDraftsDiscarded()) onReset();
-                    }}
-                >
-                    Open another
-                </button>
+                </Button>
             </header>
 
             {notice && (
@@ -2282,19 +2133,14 @@ export function Workspace({
                                 from frame {propAnchor + 1}
                             </span>
                             <span className={styles.promptStatus}>
-                                Shift-click tracklets to queue several
+                                Shift-click to queue
                             </span>
 
                             {staleFrames.length > 0 && (
                                 <>
                                     <span className={styles.promptError}>
-                                        {staleFrames.length} frame
-                                        {staleFrames.length === 1
-                                            ? ""
-                                            : "s"}{" "}
-                                        {refineFrom !== null
-                                            ? `after the correction on frame ${refineFrom + 1} are stale`
-                                            : "are stale"}
+                                        {staleFrames.length} stale frame
+                                        {staleFrames.length === 1 ? "" : "s"}
                                     </span>
                                     <button
                                         type="button"
@@ -2315,7 +2161,7 @@ export function Workspace({
                                             setStale(new Map());
                                             setLocalNotice({
                                                 kind: "info",
-                                                text: `Dropped the stale marks on ${vocab.unit} #${selected.id}. The masks themselves are untouched.`,
+                                                text: "Cleared the stale marks.",
                                             });
                                         }}
                                         title="Drop the stale marks without re-propagating"
@@ -2866,25 +2712,16 @@ export function Workspace({
                                             <span
                                                 className={styles.promptError}
                                             >
-                                                Nothing was found — add clicks,
-                                                draw a box, or reword the text
-                                                prompt.
+                                                Nothing found.
                                             </span>
                                         ) : (
                                             <>
                                                 {isTextSplit
-                                                    ? `${candidate.instances.length} objects found · `
+                                                    ? `${candidate.instances.length} objects · `
                                                     : ""}
-                                                score{" "}
-                                                {candidate.score.toFixed(2)} ·{" "}
                                                 {candidate.area.toLocaleString()}{" "}
                                                 px
-                                                {candidate.embeddingReused
-                                                    ? ""
-                                                    : ` · encoder ${Math.round(candidate.encoderMs)} ms`}
-                                                {draft
-                                                    ? " · Apply keeps it in the draft"
-                                                    : ""}
+                                                {draft ? " · in draft" : ""}
                                                 {isTextSplit && (
                                                     <>
                                                         <button
@@ -2924,33 +2761,25 @@ export function Workspace({
                                         )}
                                     </>
                                 ) : draft ? (
-                                    `Draft ${draftArea.toLocaleString()} px${
-                                        tool === "editMask" && !draftChanged
-                                            ? " (unchanged)"
-                                            : ""
-                                    }`
+                                    `Draft ${draftArea.toLocaleString()} px`
                                 ) : tool === "editMask" ? (
                                     originalMask ? (
-                                        "Everything erased — “Remove mask on this frame” drops it from this " +
-                                        vocab.unit +
-                                        "; Undo brings it back."
+                                        "Erased — save to drop the mask."
                                     ) : (
-                                        "No mask on this frame yet — draw one to extend the " +
-                                        vocab.unit +
-                                        " here."
+                                        "No mask on this frame."
                                     )
                                 ) : method === "point" ||
                                   method === "box" ||
                                   method === "text" ? (
                                     semantic ? (
-                                        "Click a region of the class (Shift/right-click excludes), or type its name and press Enter."
+                                        "Click the class, or type its name."
                                     ) : (
-                                        "Click the object in the frame; Shift/right-click marks a region to exclude."
+                                        "Click the object · Shift-click to exclude."
                                     )
                                 ) : method === "polygon" ? (
-                                    "Click around the region; Enter, double-click or right-click closes the polygon."
+                                    "Click to add points · Enter closes."
                                 ) : (
-                                    "Paint with the mouse; Shift or right button erases."
+                                    "Drag to paint · Shift-drag erases."
                                 )}
                             </span>
                             <div className={styles.spacer} />
@@ -3050,7 +2879,6 @@ export function Workspace({
                         frameIndex={frameIndex}
                         playing={playing}
                         selectedTrackletId={selectedId}
-                        showAllMasks={showAllMasks}
                         maskOpacity={maskOpacity}
                         onFrameChange={setFrameIndex}
                         onPlayToggle={togglePlay}
@@ -3062,7 +2890,6 @@ export function Workspace({
                                 ? stepPropagated(delta >= 0 ? 1 : -1)
                                 : stepFrame(delta)
                         }
-                        onShowAllMasksChange={setShowAllMasks}
                         onMaskOpacityChange={setMaskOpacity}
                         tool={tool}
                         method={method}
@@ -3101,10 +2928,10 @@ export function Workspace({
                         promptHint={
                             tool === "propagate"
                                 ? propRun
-                                    ? "Reviewing the tracker's masks · ← → step frames · Enter accepts · Esc cancels"
-                                    : "Set the range above and press Propagate · Enter runs · Esc cancels"
+                                    ? "Enter accepts · Esc cancels"
+                                    : "Enter runs the tracker"
                                 : semantic
-                                  ? "Click a region of the class to find all of it · Shift-click or right-click to exclude · or type a class name above"
+                                  ? "Click the class to find all of it"
                                   : undefined
                         }
                     />
@@ -3114,7 +2941,6 @@ export function Workspace({
                     <TrackletList
                         clip={clip}
                         selectedId={selectedId}
-                        reviews={store.getRecord()}
                         onSelect={selectTracklet}
                         batch={propBatch}
                         onToggleBatch={
@@ -3124,14 +2950,9 @@ export function Workspace({
                     <Inspector
                         mode={clip.mode}
                         tracklet={selected}
-                        review={
-                            selectedId !== null ? store.get(selectedId) : null
-                        }
+                        taxonomy={selectedTaxonomy}
                         onTaxonomyField={setTaxonomyField}
                         onApplyTaxonomy={applyTaxonomy}
-                        onConfirmLabel={confirmLabel}
-                        onMaskVerdict={setMaskVerdict}
-                        onComment={setComment}
                     />
                 </aside>
             </div>

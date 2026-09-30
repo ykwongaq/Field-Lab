@@ -1,149 +1,113 @@
-.list {
-  flex: 0 0 30%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+/*
+ * The objects panel fills the top share of the right sidebar. It is a fixed
+ * fraction of the column so the inspector below it always has room, and only
+ * the row list scrolls.
+ */
+.panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 42%;
+    border-bottom: 1px solid var(--line);
 }
 
-.listHeader {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
+.head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+    padding: 10px 12px 6px;
+}
+
+.count {
+    margin-left: auto;
+    padding: 0 7px;
+    border-radius: var(--r-full);
+    background: var(--surface-3);
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+}
+
+.searchWrap {
+    position: relative;
+    flex: 0 0 auto;
+    padding: 0 12px 8px;
+}
+
+.searchIcon {
+    position: absolute;
+    top: 50%;
+    left: 21px;
+    transform: translateY(-50%);
+    color: var(--faint);
+    pointer-events: none;
 }
 
 .search {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  font: inherit;
-  font-size: 0.85rem;
+    padding-left: 30px;
+    font-size: var(--fs-sm);
 }
 
-.filters {
-  display: flex;
-  gap: 6px;
+.search::-webkit-search-cancel-button {
+    appearance: none;
 }
 
-.filterBtn {
-  flex: 1;
-  border: 1px solid var(--line);
-  background: #fff;
-  color: var(--muted);
-  font-size: 0.72rem;
-  padding: 4px 6px;
-  border-radius: 999px;
-}
-
-.filterBtn:hover {
-  background: var(--bg);
-}
-
-.filterActive {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
-
-.listScroll {
-  flex: 1;
-  overflow-y: auto;
-}
-
-.empty {
-  color: var(--muted);
-  text-align: center;
-  padding: 20px 12px;
-  margin: 0;
-  font-size: 0.85rem;
+.list {
+    flex: 1 1 auto;
+    padding-bottom: var(--s-2);
 }
 
 .item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 12px;
+    border: 0;
+    border-left: 2px solid transparent;
+    background: transparent;
+    text-align: left;
+    transition: background var(--t-fast);
 }
 
 .item:hover {
-  background: var(--bg);
+    background: var(--surface-2);
 }
 
-.selected {
-  background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--accent);
+.selected,
+.selected:hover {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
 }
 
 .swatch {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-  flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
-.itemBody {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
 }
 
-.itemLabel {
-  font-style: italic;
-  font-size: 0.92rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--ink);
+.label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-md);
+    font-style: italic;
+    color: var(--ink);
 }
 
-.itemMeta {
-  color: var(--muted);
-  font-size: 0.72rem;
-}
-
-.status {
-  flex: 0 0 auto;
-  font-size: 0.68rem;
-  padding: 2px 8px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-.statusDone {
-  background: var(--good-soft);
-  color: var(--good);
-}
-
-.statusPartial {
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-
-.statusTodo {
-  background: var(--line);
-  color: var(--muted);
-}
-
-.newTag {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--warn-soft);
-  color: var(--warn);
-  font-size: 0.66rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  vertical-align: middle;
+.meta {
+    font-size: var(--fs-xs);
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
 }

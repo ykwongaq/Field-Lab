@@ -194,8 +194,7 @@ The progress bar in the header updates as you go, e.g. `7 / 24 verified`.
 
 **Useful while working through the clip:**
 
-- **`x`** toggles **Show all masks**, handy when you want to see whether two objects' masks are being confused.
-- The **filter buttons** let you jump around: click **In progress** to find half-finished tracklets, or **Pending** to see what is left.
+- Every tracklet's mask is drawn at once, so you can see when two objects' masks are being confused. The selected object's mask is drawn in **white**.
 - If you need to re-check one later, use the **search box** to filter by label or ID.
 
 **✅ Checkpoint:** you have visited every tracklet. Tracklets you deliberately left as **In progress** are fine as long as you know why — just don't mistake them for finished ones.

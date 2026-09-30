@@ -5,6 +5,7 @@ import { closeProject, openProject } from "./lib/sessionsApi";
 import { ZipArchive } from "./lib/zip";
 import { UploadScreen } from "./components/UploadScreen";
 import { Workspace, type WorkspaceNotice } from "./components/Workspace";
+import { Button, Icon } from "./ui";
 import styles from "./App.module.css";
 
 /**
@@ -127,24 +128,27 @@ function App() {
 
             {phase === "loading" && (
                 <div className={styles.center}>
-                    <h1 className={styles.title}>Loading</h1>
+                    <span className={styles.brand}>
+                        <Icon name="leaf" size={24} />
+                    </span>
+                    <div className={styles.spinner} />
                     <p className={styles.subtitle}>
-                        Preparing the frames and reading the annotations…
+                        Preparing frames and reading annotations…
                     </p>
                 </div>
             )}
 
             {phase === "error" && (
                 <div className={styles.center}>
-                    <h1 className={styles.title}>Could not open project</h1>
-                    <p className={styles.error}>{error}</p>
-                    <button
-                        type="button"
-                        className="btn btnPrimary"
-                        onClick={handleReset}
-                    >
-                        Back to start
-                    </button>
+                    <div className={styles.errorCard}>
+                        <h1 className={styles.errorTitle}>
+                            Could not open project
+                        </h1>
+                        <p className={styles.error}>{error}</p>
+                        <Button variant="primary" onClick={handleReset}>
+                            Back to start
+                        </Button>
+                    </div>
                 </div>
             )}
 

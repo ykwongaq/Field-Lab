@@ -1,0 +1,363 @@
+/*
+ * Field Lab — shared component classes.
+ *
+ * The single definition site for buttons, inputs, chips, segmented controls and
+ * panels. Components compose these instead of re-declaring their own; that is
+ * what removes the six hand-rolled button variants the old stylesheet carried.
+ */
+
+/* ------------------------------------------------------------------ button */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    color: var(--ink);
+    font-family: inherit;
+    font-size: var(--fs-md);
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    transition:
+        background var(--t-fast),
+        border-color var(--t-fast),
+        color var(--t-fast);
+}
+
+.btn:hover:not(:disabled) {
+    background: var(--surface-4);
+    border-color: var(--line-focus);
+}
+
+.btn:active:not(:disabled) {
+    transform: translateY(0.5px);
+}
+
+.btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btnPrimary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 600;
+}
+
+.btnPrimary:hover:not(:disabled) {
+    background: var(--accent-hi);
+    border-color: var(--accent-hi);
+}
+
+.btnGhost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ink-2);
+}
+
+.btnGhost:hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--ink);
+}
+
+.btnDanger {
+    border-color: transparent;
+    background: transparent;
+    color: var(--bad);
+}
+
+.btnDanger:hover:not(:disabled) {
+    background: var(--bad-soft);
+    border-color: var(--bad);
+}
+
+.btnSmall {
+    height: 26px;
+    padding: 0 9px;
+    font-size: var(--fs-sm);
+}
+
+.btnIcon {
+    width: 30px;
+    padding: 0;
+}
+
+.btnIcon.btnSmall {
+    width: 26px;
+}
+
+.btnIcon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* ------------------------------------------------------------------- input */
+
+.input,
+.textarea,
+.select {
+    width: 100%;
+    min-width: 0;
+    padding: 6px 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--fs-md);
+    transition:
+        border-color var(--t-fast),
+        background var(--t-fast);
+}
+
+.textarea {
+    resize: vertical;
+    min-height: 52px;
+    line-height: 1.5;
+}
+
+.input::placeholder,
+.textarea::placeholder {
+    color: var(--faint);
+}
+
+.input:hover,
+.textarea:hover,
+.select:hover {
+    border-color: var(--line-strong);
+}
+
+.input:focus,
+.textarea:focus,
+.select:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface-2);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.input:disabled,
+.textarea:disabled,
+.select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.select {
+    appearance: none;
+    padding-right: 26px;
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+        linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position:
+        calc(100% - 14px) 50%,
+        calc(100% - 9px) 50%;
+    background-size:
+        5px 5px,
+        5px 5px;
+    background-repeat: no-repeat;
+    cursor: pointer;
+}
+
+/* A labelled field: caption above, control below. */
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+    min-width: 0;
+}
+
+.fieldLabel {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+/* -------------------------------------------------------- segmented control */
+
+.segmented {
+    display: inline-flex;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
+    gap: 2px;
+    flex: 0 0 auto;
+}
+
+.segment {
+    appearance: none;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    padding: 4px 10px;
+    line-height: 1.4;
+    white-space: nowrap;
+    transition:
+        background var(--t-fast),
+        color var(--t-fast);
+}
+
+.segment:hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--ink-2);
+}
+
+.segment:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.segmentActive,
+.segmentActive:hover:not(:disabled) {
+    background: var(--surface-4);
+    color: var(--ink);
+    box-shadow: var(--shadow-1);
+}
+
+/* -------------------------------------------------------------------- chip */
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.chipAccent {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+}
+
+.chipAmber {
+    border-color: var(--amber-line);
+    background: var(--amber-soft);
+    color: var(--amber-hi);
+}
+
+.chipGood {
+    border-color: var(--accent-line);
+    background: var(--good-soft);
+    color: var(--good);
+}
+
+.chipWarn {
+    border-color: var(--amber-line);
+    background: var(--warn-soft);
+    color: var(--warn);
+}
+
+.chipBad {
+    border-color: rgba(224, 112, 95, 0.4);
+    background: var(--bad-soft);
+    color: var(--bad);
+}
+
+/* ------------------------------------------------------------------ panels */
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-1);
+    overflow: hidden;
+}
+
+.panelHeader {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+}
+
+.panelTitle {
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ layout */
+
+.row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    min-width: 0;
+}
+
+.stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+    min-height: 0;
+}
+
+.spacer {
+    flex: 1 1 auto;
+}
+
+.divider {
+    height: 1px;
+    flex: 0 0 auto;
+    background: var(--line);
+}
+
+/* Small keycap hint, e.g. the shortcut shown beside a tool. */
+.kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-xs);
+    background: var(--surface-1);
+    color: var(--faint);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1;
+}
+
+/* Section caption used inside the right-hand panel. */
+.sectionLabel {
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}

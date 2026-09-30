@@ -1,39 +1,119 @@
+/*
+ * The create wizard is a single card that fills its column. It scrolls
+ * internally when a step is taller than the viewport, so the page itself never
+ * moves.
+ */
 .panel {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 18px 22px 16px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    text-align: left;
     min-height: 0;
+    padding: var(--s-4) var(--s-4) var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--surface-1);
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
+/* ------------------------------------------------------------------- steps */
+
+.steps {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    margin: 0 0 var(--s-3);
+    padding: 0;
+    list-style: none;
+}
+
+.step {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px 3px 4px;
+    border: 1px solid transparent;
+    border-radius: var(--r-full);
+    color: var(--faint);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.stepNumber {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--surface-3);
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.stepActive {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+}
+
+.stepActive .stepNumber {
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.stepDone {
+    color: var(--ink-2);
+}
+
+.stepDone .stepNumber {
+    background: var(--good-soft);
+    color: var(--good);
+}
+
+/* ---------------------------------------------------------------- headings */
+
 .heading {
-    margin: 0;
-    font-size: 1.05rem;
+    flex: 0 0 auto;
+    margin-bottom: 2px;
+    font-size: var(--fs-xl);
 }
 
 .lede {
-    margin: -8px 0 0;
+    flex: 0 0 auto;
+    max-width: 62ch;
+    margin-bottom: var(--s-3);
     color: var(--muted);
-    font-size: 0.88rem;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------- step one */
+
+.sourceGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s-3);
+    flex: 0 0 auto;
 }
 
 .videoDrop {
-    border: 1px dashed var(--line);
-    border-radius: 8px;
-    padding: 14px 14px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
     align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 132px;
+    padding: var(--s-4);
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
     text-align: center;
-    cursor: pointer;
     transition:
-        border-color 120ms ease,
-        background 120ms ease;
+        border-color var(--t-fast),
+        background var(--t-fast);
 }
 
 .videoDrop:hover,
@@ -44,169 +124,204 @@
 
 .hasFile {
     border-style: solid;
-    border-color: var(--good);
-    background: var(--good-soft);
-}
-
-.videoDrop[aria-disabled="true"] {
-    cursor: progress;
-    opacity: 0.7;
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
 }
 
 .dropTitle {
+    font-size: var(--fs-md);
     font-weight: 600;
+    color: var(--ink);
 }
 
 .fileName {
-    font-weight: 600;
-    font-family: var(--mono);
-    font-size: 0.9rem;
+    font-size: var(--fs-md);
+    color: var(--accent-hi);
     word-break: break-all;
 }
 
 .fileMeta {
     color: var(--muted);
-    font-size: 0.76rem;
+    font-size: var(--fs-xs);
+    line-height: 1.5;
 }
 
 .hiddenInput {
     display: none;
 }
 
-.modes {
-    border: 0;
-    margin: 0;
-    padding: 0;
+/* ---------------------------------------------------------------- step two */
+
+.detailsGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: var(--s-4);
+    min-height: 0;
+    flex: 0 0 auto;
+}
+
+.preview {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
     min-width: 0;
 }
 
-.legend {
-    padding: 0;
-    margin: 0 0 6px;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
+.previewMedia {
+    width: 100%;
+    max-height: 40vh;
+    min-height: 160px;
+    object-fit: contain;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--stage);
+}
+
+.previewNote {
+    padding: var(--s-2) 10px;
+    border: 1px solid var(--amber-line);
+    border-radius: var(--r-sm);
+    background: var(--amber-soft);
+    color: var(--amber-hi);
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+}
+
+.settings {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: var(--s-3);
+    min-width: 0;
+}
+
+.modes {
+    margin: 0;
+    padding: var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+}
+
+.legend {
+    display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--s-2);
+    padding: 0 4px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
 }
 
 .lockNote {
-    text-transform: none;
-    letter-spacing: 0;
-    font-size: 0.75rem;
-    color: var(--warn);
     display: inline-flex;
     align-items: center;
     gap: 4px;
-}
-
-.lockIcon {
-    flex: 0 0 auto;
+    font-size: var(--fs-xs);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--faint);
 }
 
 .modeGrid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: var(--s-2);
+    margin-top: var(--s-2);
 }
 
 .modeCard {
-    position: relative;
     display: flex;
     flex-direction: column;
     gap: 3px;
-    padding: 10px 12px;
+    padding: 10px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
     cursor: pointer;
-    background: #fff;
     transition:
-        border-color 120ms ease,
-        box-shadow 120ms ease;
+        border-color var(--t-fast),
+        background var(--t-fast);
 }
 
 .modeCard:hover {
-    border-color: var(--accent);
+    border-color: var(--line-strong);
 }
 
 .modeActive {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent-soft);
     background: var(--accent-soft);
 }
 
 .modeRadio {
     position: absolute;
-    inset: 0;
     opacity: 0;
-    margin: 0;
-    cursor: pointer;
-}
-
-.modeRadio:focus-visible + .modeTitle {
-    text-decoration: underline;
+    pointer-events: none;
 }
 
 .modeTitle {
+    font-size: var(--fs-md);
     font-weight: 600;
 }
 
 .modeDescription {
     color: var(--muted);
-    font-size: 0.78rem;
-    line-height: 1.3;
-}
-
-.optionRow {
-    display: flex;
-    gap: 12px;
-    align-items: flex-end;
+    font-size: var(--fs-xs);
+    line-height: 1.45;
 }
 
 .option {
-    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
     min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.optionSmall {
-    flex: 0 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
 }
 
 .optionLabel {
-    font-size: 0.68rem;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--muted);
 }
 
 .textInput,
 .numberInput {
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 6px 10px;
-    background: #fff;
-    color: var(--ink);
+    width: 100%;
     min-width: 0;
+    padding: 6px 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--fs-md);
 }
 
 .textInput:focus,
 .numberInput:focus {
-    outline: 2px solid var(--accent-soft);
+    outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.numberInput {
-    width: 64px;
-    text-align: right;
+.textInput::placeholder {
+    color: var(--faint);
+}
+
+.fpsBlock {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+}
+
+.fpsChoices {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2);
 }
 
 .stepGroup {
@@ -215,271 +330,92 @@
     gap: 6px;
 }
 
+.numberInput {
+    width: 72px;
+}
+
 .stepSuffix {
+    font-size: var(--fs-sm);
     color: var(--muted);
-    font-size: 0.85rem;
-    white-space: nowrap;
 }
 
-.actions {
+/* -------------------------------------------------------------- step three */
+
+.resultList {
     display: flex;
-    align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
-}
-
-.actions button:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-}
-
-.summary {
-    color: var(--muted);
-    font-size: 0.82rem;
-}
-
-/* --- wizard ------------------------------------------------------------- */
-
-.steps {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 16px;
-    list-style: none;
-    margin: 0;
+    flex-direction: column;
+    gap: 0;
+    margin: var(--s-3) 0;
     padding: 0;
+    list-style: none;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    overflow: hidden;
 }
 
-.step {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.74rem;
+.resultList li {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-3);
+    padding: 7px 12px;
+    font-size: var(--fs-sm);
+    border-bottom: 1px solid var(--line);
+}
+
+.resultList li:last-child {
+    border-bottom: 0;
+}
+
+.resultKey {
+    flex: 0 0 120px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--muted);
 }
 
-.stepNumber {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 1px solid var(--line);
-    font-size: 0.68rem;
-    letter-spacing: 0;
-}
-
-.stepActive {
-    color: var(--ink);
-    font-weight: 600;
-}
-
-.stepActive .stepNumber {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: #fff;
-}
-
-.stepDone .stepNumber {
-    border-color: var(--good);
-    color: var(--good);
-}
-
-.sourceGrid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-}
-
-.videoDrop[role="button"]:focus-visible {
-    outline: 2px solid var(--accent-soft);
-    border-color: var(--accent);
-}
-
-/*
- * Step 2: the preview owns the left half, the settings stack down the right.
- * Two flex columns — a grid with a row span for the preview would create
- * phantom rows (and their gaps) and end up far taller than its contents.
- */
-.detailsGrid {
-    display: flex;
-    align-items: flex-start;
-    gap: 22px;
-}
-
-.detailsGrid > .preview {
-    flex: 1 1 0;
-    min-width: 0;
-}
-
-.settings {
-    flex: 1 1 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.preview {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 10px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: #000;
-    min-height: 0;
-}
-
-/*
- * The media flexes to whatever height is left over, and the vh cap keeps a
- * tall clip from pushing the options past the bottom of the window.
- */
-.previewMedia {
-    width: 100%;
-    flex: 1 1 auto;
-    min-height: 0;
-    max-height: 40vh;
-    border-radius: 6px;
-    background: #000;
-    object-fit: contain;
-}
-
-.fpsBlock {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.fpsChoices {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-}
-
-.preview .fileMeta {
-    color: #cbd5e1;
-}
-
-.previewNote {
-    margin: 0;
-    color: #fbbf24;
-    font-size: 0.74rem;
-    line-height: 1.35;
-    text-align: center;
-}
+/* ------------------------------------------------------------- progress etc */
 
 .progressTrack {
-    height: 6px;
-    border-radius: 999px;
-    background: var(--line);
+    position: relative;
+    height: 4px;
+    flex: 0 0 auto;
+    margin: var(--s-3) 0;
+    border-radius: var(--r-full);
+    background: var(--surface-4);
     overflow: hidden;
 }
 
 .progressFill {
     height: 100%;
+    border-radius: var(--r-full);
     background: var(--accent);
-    transition: width 120ms ease;
+    transition: width 160ms ease;
 }
 
 .error {
-    margin: 0;
-    color: var(--warn);
-    font-size: 0.85rem;
+    margin: var(--s-2) 0;
+    color: var(--bad);
+    font-size: var(--fs-sm);
 }
 
-.resultList {
-    display: grid;
-    gap: 6px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-}
-
-.resultList li {
+.actions {
     display: flex;
-    gap: 12px;
-    align-items: baseline;
-    font-size: 0.88rem;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+    padding-top: var(--s-4);
 }
 
-.resultKey {
-    flex: 0 0 92px;
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+.summary {
     color: var(--muted);
+    font-size: var(--fs-sm);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1000px) {
     .detailsGrid {
-        flex-direction: column;
-    }
-    .detailsGrid > .preview,
-    .settings {
-        flex: 1 1 auto;
-        width: 100%;
-    }
-}
-
-/* Short windows (laptops, split screens): tighten everything a notch more. */
-@media (max-height: 760px) {
-    .panel {
-        padding: 14px 18px 12px;
-        gap: 10px;
-    }
-    .detailsGrid {
-        gap: 18px;
-    }
-    .previewMedia {
-        max-height: 34vh;
-    }
-    .modeCard {
-        padding: 8px 10px;
-    }
-    .modeDescription {
-        font-size: 0.74rem;
-    }
-    .settings {
-        gap: 8px;
-    }
-}
-
-/* Short *and* narrow: a last notch so even a 600px-tall window needs no scroll. */
-@media (max-height: 660px) {
-    .panel {
-        padding: 12px 16px 10px;
-        gap: 9px;
-    }
-    .previewMedia {
-        max-height: 30vh;
-    }
-    .modeCard {
-        padding: 8px 10px;
-    }
-    .settings {
-        gap: 8px;
-    }
-}
-
-@media (max-width: 560px) {
-    .modeGrid {
-        grid-template-columns: 1fr;
-    }
-    .optionRow {
-        flex-direction: column;
-        align-items: stretch;
-    }
-    .sourceGrid {
-        grid-template-columns: 1fr;
-    }
-    .resultList li {
-        flex-direction: column;
-        gap: 2px;
+        grid-template-columns: minmax(0, 1fr);
     }
 }

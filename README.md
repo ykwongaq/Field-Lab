@@ -252,7 +252,7 @@ Request / response shapes (mirrored by `frontend/src/lib/maskApi.ts` and the pyd
 }
 ```
 
-Batch decoding is important for performance: when "Show all masks" is enabled, the UI sends every visible tracklet's mask for the current frame in **one** request, then caches the results.
+Batch decoding is important for performance: the UI sends every visible tracklet's mask for the current frame in **one** request, then caches the results.
 
 CORS is intentionally wide open (`allow_origins=["*"]`) because the frontend is served from the Vite dev origin (or a hosted static origin) and no credentials are exchanged. If this service is ever deployed publicly, tighten this to the specific frontend origin(s).
 
@@ -316,10 +316,10 @@ The most performance-sensitive part. Each paint:
 
 1. **Sizes the canvas** to the container via a `ResizeObserver`, multiplied by `devicePixelRatio` for crisp rendering.
 2. **Loads the frame** through the `FrameCache` (decode-on-demand + LRU), computes a letterboxed draw rect, and paints the `ImageBitmap`.
-3. **Resolves masks** for the current frame: if "Show all masks" is off, only the selected tracklet's mask is drawn; otherwise all tracklets. Cache hits come from `MaskCache`; misses are decoded in one batched `POST /api/decode/masks`.
-4. **Composites the overlay** — draws the current frame to the main canvas, then draws the `MaskRenderer`'s offscreen mask canvas on top with `globalAlpha = maskOpacity`.
+3. **Resolves masks** for the current frame: every tracklet's mask is drawn; the selected one is painted on top in a reserved colour (`SELECTED_COLOR`, deliberately kept out of the tracklet palette so it can only ever mean "the object you are working on"). While the Track tool is open, only the object in hand is drawn. Cache hits come from `MaskCache`; misses are decoded in one batched `POST /api/decode/masks`.
+4. **Composites the overlay** — draws the current frame to the main canvas, then draws the `MaskRenderer`'s offscreen mask canvas on top with `globalAlpha = maskOpacity` (the selected mask uses a stronger alpha so it reads as the focus).
 
-Controls: play/pause, ◀/▶ step, a frame scrubber with `m:ss.cc` timecode, an overlay-opacity slider, and a "Show all masks" toggle.
+Controls: play/pause, step, a frame scrubber with `m:ss.cc` timecode, an overlay-opacity slider, and zoom controls.
 
 ### `TrackletList`
 
@@ -367,7 +367,7 @@ The browser never materialises a full mask bitmap. Decoded masks are stored as *
 | Cache        | What                            | Capacity   | Why                                                                                                                                                                                                                                    |
 | ------------ | ------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FrameCache` | Decoded `ImageBitmap` per frame | ~40 (LRU)  | JPEG decode to a full-res bitmap is the expensive step; a small LRU plus preloading (±15 frames around the playhead) keeps scrubbing smooth while bounding memory. Bitmaps are `close()`d on eviction to free GPU/CPU memory promptly. |
-| `MaskCache`  | Decoded foreground runs         | ~512 (LRU) | Bounded so "show all masks" on long clips cannot grow unbounded.                                                                                                                                                                       |
+| `MaskCache`  | Decoded foreground runs         | ~512 (LRU) | Bounded so a clip with hundreds of tracklets cannot grow unbounded.                                                                                                                                                                       |
 
 Preloading is fire-and-forget (`void this.get(index).catch(...)`), so a missing/corrupt frame degrades gracefully instead of blocking the UI.
 
@@ -464,16 +464,17 @@ Recommended review loop:
 
 ### Keyboard shortcuts
 
-| Key       | Action                           |
-| --------- | -------------------------------- |
-| `Space`   | Play / pause                     |
-| `←` / `→` | Step one frame back / forward    |
-| `3`       | Verdict mask: **Accurate**       |
-| `4`       | Verdict mask: **Inaccurate**     |
-| `n`       | Jump to next unverified tracklet |
-| `x`       | Toggle "Show all masks"          |
+| Key       | Action                            |
+| --------- | --------------------------------- |
+| `Space`   | Play / pause                      |
+| `←` / `→` | Step one frame back / forward     |
+| `A`       | Add mask tool                     |
+| `E`       | Edit mask tool                    |
+| `T`       | Track (propagate) tool            |
+| `Esc`     | Back to Select / cancel           |
+| `Enter`   | Confirm the current step          |
 
-> "Unsure" has no hotkey — use the Inspector button. Shortcuts are disabled while typing in an input/textarea/select.
+> Shortcuts are disabled while typing in an input/textarea/select.
 
 ---
 

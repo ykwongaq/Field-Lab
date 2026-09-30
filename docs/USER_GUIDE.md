@@ -85,7 +85,7 @@ Use the controls beneath the video:
 - **Frame slider** — drag to scrub quickly to any frame.
 - **Timecode** — reads `frame / total frames · mm:ss`, so you always know where you are.
 - **Overlay** — adjusts the mask transparency from 0% (invisible) to 100% (solid). Lower it to check that the mask still sits on the animal; raise it to see the mask shape clearly.
-- **Show all masks** — shows every tracklet's mask at once, each in its own colour. Turn this off to focus on a single object.
+- **Masks** — every tracklet's mask is drawn at once, each in its own colour, so you can see whether two objects are being confused. The **selected** tracklet's mask is drawn in **white**, so the object you are working on is always unmistakable.
 
 > 💡 **Tip:** The canvas scales the video to fit the window while preserving aspect ratio. It will never crop or distort your frames.
 
@@ -98,11 +98,6 @@ The **tracklet list** on the right is your work queue.
 ![image-20260910132437202](images/4_tracklet.png)
 
 - **Search** — type part of a label, tracklet ID, or object ID to filter the list (for example `Ateles` or `17`).
-- **Filter buttons** — narrow the list to the ones you still need:
-    - **All** — every tracklet.
-    - **Pending** — not reviewed yet.
-    - **In progress** — you have confirmed the label _or_ given a mask verdict, but not both.
-    - **Verified** — label confirmed **and** mask verdict recorded.
 - **Click a row** to select that tracklet. Each row shows the colour swatch, the object's label, its IDs, and how many frames it appears in.
 
 > 💡 **Tip:** Selecting a tracklet automatically jumps the video to the **first frame where that object is visible**, so you start in the right place.
@@ -116,7 +111,7 @@ With a tracklet selected, only **its** mask is drawn (unless you enabled **Show 
 For each tracklet, step through the frames where it appears and ask:
 
 - Does the mask **tightly follow the animal's outline** on every frame?
-- Does it **include background** (too large) or **cut off part of the animal** (too small)?
+Every tracklet's mask is drawn. The selected one is highlighted in **white**; the rest keep their own colours
 - Does it **drift, flicker, or jump** between neighbouring frames?
 - Does the object stay **consistent** through motion, occlusion, and lighting changes?
 
@@ -172,25 +167,26 @@ A tracklet is **Verified** when **both** the label is confirmed **and** a mask v
 
 These shortcuts let you review quickly without reaching for the mouse.
 
-| Key     | Action                                   |
-| ------- | ---------------------------------------- |
-| `Space` | Play / pause                             |
-| `←`     | Step one frame back                      |
-| `→`     | Step one frame forward                   |
-| `3`     | Verdict mask: **Accurate**               |
-| `4`     | Verdict mask: **Inaccurate**             |
-| `n`     | Jump to the **next unverified** tracklet |
-| `x`     | Toggle **Show all masks**                |
+| Key     | Action                                       |
+| ------- | -------------------------------------------- |
+| `Space` | Play / pause                                 |
+| `←`     | Step one frame back                          |
+| `→`     | Step one frame forward                       |
+| `A`     | **Add mask** tool                            |
+| `E`     | **Edit mask** tool (needs a selected object) |
+| `T`     | **Track** tool (needs a mask on this frame)  |
+| `Esc`   | Back to **Select** / cancel the current step |
+| `Enter` | Confirm the current step                     |
 
-> ℹ️ **Note:** Shortcuts are paused while you are typing in a text field, so you can safely type labels and comments. "Unsure" has no shortcut by design — click the button in the Inspector.
+> ℹ️ **Note:** Shortcuts are paused while you are typing in a text field, so you can safely type labels and taxonomy names.
 
-**Recommended review loop:**
+**Recommended loop:**
 
-1. Press `n` to jump to the next unverified tracklet.
-2. Press `Space` to play, or `←` / `→` to step through the frames.
-3. Check the mask, then press `3` or `4` (or click **Unsure**).
-4. Confirm or correct the label in the Inspector, then click **Confirm label**.
-5. Repeat from step 1.
+1. Pick a tracklet in the list, or click its mask on the frame.
+2. Step through the frames with `←` / `→`, or press `Space` to play.
+3. Correct the mask with `E`, or draw a new one with `A`.
+4. Press `T` to carry the mask across frames, then accept the result.
+5. Fill in the taxonomy in the Inspector, then **Export**.
 
 ---
 

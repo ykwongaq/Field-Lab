@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import type { Sam3Status } from "../lib/sam3Api";
 import type { ProjectMode } from "../lib/project";
 import { MODE_VOCABULARY } from "../lib/project";
+import { Icon, type IconName } from "../ui";
 import styles from "./Toolbar.module.css";
 
 export type Tool = "review" | "addMask" | "editMask" | "propagate";
@@ -27,6 +27,13 @@ interface ToolbarProps {
     onRefreshStatus: () => void;
 }
 
+/**
+ * The tool rail.
+ *
+ * One column, one tool at a time, with the shortcut printed under each label.
+ * The footer reports the segmentation model so its availability is visible
+ * without opening anything.
+ */
 export function Toolbar(props: ToolbarProps) {
     const vocab = MODE_VOCABULARY[props.mode];
     const [deleteOpen, setDeleteOpen] = useState(false);
@@ -51,77 +58,74 @@ export function Toolbar(props: ToolbarProps) {
     }, [deleteOpen]);
 
     const model = props.modelName;
-    const samNote = !props.sam
+    const samReady = props.sam?.available ?? false;
+
+    const tool = (
+        value: Tool,
+        label: string,
+        icon: IconName,
+        shortcut: string | undefined,
+        enabled: boolean,
+        title: string,
+    ) => (
+        <ToolButton
+            label={label}
+            icon={icon}
+            shortcut={shortcut}
+            active={props.tool === value}
+            disabled={!enabled}
+            title={title}
+            onClick={() => props.onToolChange(value)}
+        />
+    );
+
+    const statusLabel = !props.sam
         ? `Checking ${model}…`
-        : props.sam.available
-          ? `${model} clicks, polygon or brush.`
-          : `${model} is unavailable (${props.sam.error ?? "unknown reason"}); polygon and brush still work.`;
-    const addHelp =
-        props.mode === "semantic"
-            ? `Draw a mask for a class on the current frame — ${samNote} Adds to an existing class or creates a new one.`
-            : `Draw a new ${vocab.unit} on the current frame — ${samNote}`;
-    const editHelp = props.canEdit
-        ? `Change the selected ${vocab.unit}'s mask on this frame with ${model} clicks, polygon or brush (add or erase).`
-        : `Select a ${vocab.unit} first (click its mask on the frame or pick it in the list).`;
-    const propagateHelp = props.canPropagate
-        ? `Carry the selected ${vocab.unit}'s mask from this frame over a bounded range of frames before and after it with the ${props.propagateModel} tracker, then review and accept the result.`
-        : props.canDeleteTracklet
-          ? `The selected ${vocab.unit} has no mask on this frame — go to a frame where it does.`
-          : `Select a ${vocab.unit} with a mask on this frame first.`;
+        : samReady
+          ? `${model} ready${props.sam.loaded ? "" : " (loads on first use)"}`
+          : `${model} unavailable${props.sam.error ? ` — ${props.sam.error}` : ""}`;
 
     return (
-        <nav className={styles.bar} aria-label="Tools">
-            <ToolButton
-                label="Add mask"
-                shortcut="A"
-                active={props.tool === "addMask"}
-                title={addHelp}
-                onClick={() =>
-                    props.onToolChange(
-                        props.tool === "addMask" ? "review" : "addMask",
-                    )
-                }
-                icon={
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 5v14M5 12h14" />
-                    </svg>
-                }
-            />
-
-            <ToolButton
-                label="Edit mask"
-                shortcut="E"
-                active={props.tool === "editMask"}
-                disabled={!props.canEdit}
-                title={editHelp}
-                onClick={() =>
-                    props.onToolChange(
-                        props.tool === "editMask" ? "review" : "editMask",
-                    )
-                }
-                icon={
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M4 20h4l10-10-4-4L4 16v4zM13 7l4 4" />
-                    </svg>
-                }
-            />
+        <nav className={styles.rail} aria-label="Tools">
+            {tool(
+                "review",
+                "Select",
+                "select",
+                "Esc",
+                true,
+                `Browse and inspect masks without editing (Esc)`,
+            )}
+            {tool(
+                "addMask",
+                "Add",
+                "plus",
+                "A",
+                true,
+                `Draw a new ${vocab.unit} on this frame (A)`,
+            )}
+            {tool(
+                "editMask",
+                "Edit",
+                "pencil",
+                "E",
+                props.canEdit,
+                props.canEdit
+                    ? `Correct the selected ${vocab.unit}'s mask on this frame (E)`
+                    : `Select a ${vocab.unit} first`,
+            )}
 
             <div ref={deleteRef} className={styles.menuAnchor}>
                 <ToolButton
-                    label="Delete mask"
+                    label="Delete"
+                    icon="trash"
                     active={deleteOpen}
                     disabled={!props.canDeleteTracklet}
                     title={
                         props.canDeleteTracklet
-                            ? `Remove the selected ${vocab.unit}'s mask on this frame, or the whole ${vocab.unit}.`
-                            : `Select a ${vocab.unit} first.`
+                            ? `Remove a mask or the whole ${vocab.unit}`
+                            : `Select a ${vocab.unit} first`
                     }
                     onClick={() => setDeleteOpen((open) => !open)}
-                    icon={
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
-                        </svg>
-                    }
                 />
                 {deleteOpen && (
                     <div className={styles.menu} role="menu">
@@ -140,7 +144,7 @@ export function Toolbar(props: ToolbarProps) {
                                 {props.canDeleteFrame
                                     ? props.selectedMaskCount <= 1
                                         ? `Last mask — removes the ${vocab.unit}`
-                                        : `${props.selectedMaskCount - 1} frame(s) keep their mask`
+                                        : `${props.selectedMaskCount - 1} frames keep their mask`
                                     : "No mask on this frame"}
                             </span>
                         </button>
@@ -155,44 +159,26 @@ export function Toolbar(props: ToolbarProps) {
                         >
                             <span>Whole {vocab.unit}</span>
                             <span className={styles.menuHint}>
-                                All {props.selectedMaskCount} mask(s) and its
-                                review
+                                All {props.selectedMaskCount} mask
+                                {props.selectedMaskCount === 1 ? "" : "s"}
                             </span>
                         </button>
                     </div>
                 )}
             </div>
 
-            <div className={styles.separator} />
+            <div className={styles.divider} />
 
-            <ToolButton
-                label="Propagate"
-                shortcut="T"
-                active={props.tool === "propagate"}
-                disabled={!props.canPropagate && props.tool !== "propagate"}
-                title={propagateHelp}
-                onClick={() =>
-                    props.onToolChange(
-                        props.tool === "propagate" ? "review" : "propagate",
-                    )
-                }
-                icon={
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M4 12h12M12 6l6 6-6 6" />
-                    </svg>
-                }
-            />
-            <ToolButton
-                label="Run model"
-                disabled
-                title="Coming later: run the segmentation pipeline on the whole clip."
-                onClick={() => {}}
-                icon={
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M7 5v14l11-7z" />
-                    </svg>
-                }
-            />
+            {tool(
+                "propagate",
+                "Track",
+                "propagate",
+                "T",
+                props.canPropagate || props.tool === "propagate",
+                props.canPropagate
+                    ? `Carry this mask across frames with ${props.propagateModel} (T)`
+                    : `Select a ${vocab.unit} with a mask on this frame first`,
+            )}
 
             <div className={styles.spacer} />
 
@@ -200,28 +186,21 @@ export function Toolbar(props: ToolbarProps) {
                 type="button"
                 className={styles.status}
                 onClick={props.onRefreshStatus}
-                title={
-                    props.sam
-                        ? props.sam.available
-                            ? `${model} ready — ${props.sam.model} on ${props.sam.device}${
-                                  props.sam.loaded
-                                      ? ""
-                                      : " (loads on first use)"
-                              }. Click to re-check.`
-                            : `${model} unavailable — ${props.sam.error ?? "unknown reason"}. Click to re-check.`
-                        : `Checking ${model}…`
-                }
+                title={`${statusLabel}. Click to re-check.`}
+                aria-label={statusLabel}
             >
                 <span
                     className={`${styles.dot} ${
                         !props.sam
                             ? styles.dotPending
-                            : props.sam.available
+                            : samReady
                               ? styles.dotOk
                               : styles.dotBad
                     }`}
                 />
-                <span className={styles.statusText}>{model}</span>
+                <span className={styles.statusText}>
+                    {props.sam ? (samReady ? "Model" : "Offline") : "…"}
+                </span>
             </button>
         </nav>
     );
@@ -229,7 +208,7 @@ export function Toolbar(props: ToolbarProps) {
 
 interface ToolButtonProps {
     label: string;
-    icon: ReactNode;
+    icon: IconName;
     title: string;
     onClick: () => void;
     active?: boolean;
@@ -246,12 +225,12 @@ function ToolButton(props: ToolButtonProps) {
             aria-pressed={props.active}
             title={
                 props.shortcut
-                    ? `${props.title} (${props.shortcut})`
+                    ? `${props.title} · ${props.shortcut}`
                     : props.title
             }
             onClick={props.onClick}
         >
-            <span className={styles.icon}>{props.icon}</span>
+            <Icon name={props.icon} size={19} />
             <span className={styles.label}>{props.label}</span>
         </button>
     );

@@ -1,20 +1,23 @@
+/*
+ * The video stage.
+ *
+ * The panel is the flexible remainder of the centre column: it never declares a
+ * minimum height that could push the page past the viewport, so the canvas
+ * always fills exactly what is left after the tool bar and timeline.
+ */
 .panel {
-    flex: 1;
-    /* Never let the frame area be squeezed out of existence by whatever the tool
-     puts above it; the video column scrolls instead. */
-    min-height: 320px;
     display: flex;
     flex-direction: column;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
+    flex: 1 1 auto;
+    min-height: 0;
+    background: var(--stage);
     overflow: hidden;
 }
 
 .canvasWrap {
     position: relative;
-    flex: 1;
-    min-height: 200px;
+    flex: 1 1 auto;
+    min-height: 0;
     background: #000;
 }
 
@@ -26,84 +29,114 @@
     display: block;
 }
 
-/* "Add mask" tool: the frame is a prompt target. */
+/* "Add mask" / "Edit mask": the frame is a prompt target. */
 .prompting .canvas {
     cursor: crosshair;
 }
 
 .prompting {
-    outline: 2px solid #ffcc33;
-    outline-offset: -2px;
+    box-shadow: inset 0 0 0 2px var(--amber-line);
 }
 
 .promptHint {
     position: absolute;
-    top: 10px;
-    left: 10px;
-    padding: 4px 10px;
-    border-radius: 999px;
-    background: rgba(20, 24, 30, 0.78);
-    color: #fff;
-    font-size: 0.75rem;
+    top: 12px;
+    left: 12px;
+    max-width: min(560px, calc(100% - 24px));
+    padding: 5px 11px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--r-full);
+    background: rgba(10, 14, 13, 0.82);
+    color: var(--ink-2);
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+    backdrop-filter: blur(6px);
     pointer-events: none;
 }
+
+/* ------------------------------------------------------------- playback bar */
 
 .controls {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+    min-height: 42px;
+    padding: 6px 12px;
     border-top: 1px solid var(--line);
-    flex-wrap: wrap;
+    background: var(--surface-1);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+
+.controls::-webkit-scrollbar {
+    display: none;
+}
+
+.controls > * {
+    flex: 0 0 auto;
+}
+
+.play {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+}
+
+.play:hover:not(:disabled) {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
 }
 
 .slider {
-    flex: 1;
+    flex: 1 1 160px;
     min-width: 120px;
+    height: 4px;
+    accent-color: var(--accent);
+    cursor: pointer;
 }
 
 .timecode {
-    font-family: var(--mono);
-    font-size: 0.8rem;
+    padding: 0 2px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
     color: var(--muted);
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 .opacityGroup {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    font-size: 0.78rem;
+    gap: 7px;
+    font-size: var(--fs-xs);
     color: var(--muted);
     white-space: nowrap;
 }
 
-.opacityGroup input {
-    width: 90px;
-}
-
-.check {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.78rem;
-    color: var(--muted);
-    white-space: nowrap;
+.opacityGroup input[type="range"] {
+    width: 84px;
+    height: 4px;
+    accent-color: var(--accent);
 }
 
 .zoomGroup {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     margin-left: auto;
+    padding-left: var(--s-3);
 }
 
 .zoomValue {
-    font-family: var(--mono);
-    font-size: 0.78rem;
-    color: var(--muted);
     min-width: 4ch;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--muted);
     text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 /* Brush tool: the SVG circle below is the cursor. */
@@ -111,7 +144,7 @@
     cursor: none;
 }
 
-/* Review/propagate: the frame is a pannable surface, not a target. */
+/* Review/track: the frame is a pannable surface, not a target. */
 .pannable .canvas {
     cursor: grab;
 }
@@ -122,7 +155,8 @@
     cursor: grabbing;
 }
 
-/* Vector overlay for the polygon in progress and the brush cursor. */
+/* ------------------------------------------------------- vector overlay layer */
+
 .overlay {
     position: absolute;
     inset: 0;
@@ -130,39 +164,39 @@
 }
 
 .polygonLine {
-    fill: rgba(255, 204, 51, 0.18);
-    stroke: #ffcc33;
+    fill: rgba(217, 164, 65, 0.18);
+    stroke: var(--amber);
     stroke-width: 2;
     stroke-linejoin: round;
 }
 
 .rubberBand {
-    stroke: #ffcc33;
+    stroke: var(--amber);
     stroke-width: 1.5;
     stroke-dasharray: 6 4;
 }
 
 .vertex {
-    fill: #ffcc33;
+    fill: var(--amber);
     stroke: #fff;
     stroke-width: 1.5;
 }
 
 .vertexFirst {
     fill: #fff;
-    stroke: #ffcc33;
+    stroke: var(--amber);
     stroke-width: 2.5;
 }
 
 .brushCursor {
-    fill: rgba(255, 204, 51, 0.15);
-    stroke: #ffcc33;
+    fill: rgba(217, 164, 65, 0.15);
+    stroke: var(--amber);
     stroke-width: 1.5;
 }
 
 .brushCursorErase {
-    fill: rgba(255, 95, 95, 0.15);
-    stroke: #ff5f5f;
+    fill: rgba(224, 112, 95, 0.15);
+    stroke: var(--bad);
     stroke-width: 1.5;
     stroke-dasharray: 4 3;
 }

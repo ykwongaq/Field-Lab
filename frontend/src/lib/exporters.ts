@@ -22,7 +22,7 @@
  * owns the download and the packing logic can be exercised on its own.
  */
 
-import type { TrackletReview } from "../types";
+import type { TaxonomyOverrides } from "../types";
 import type { Clip } from "./clip";
 import type { FrameSource } from "./frames";
 import { naturalCompare } from "./projectWriter";
@@ -170,14 +170,14 @@ export async function exportSampledFrames(
  */
 export function exportAnnotation(
     clip: Clip,
-    reviews: Record<number, TrackletReview>,
+    taxonomies: TaxonomyOverrides,
 ): ExportedFile {
     if (clip.mode === "semantic") {
         throw new Error(
             "A semantic project exports its label maps as a project archive.",
         );
     }
-    const json = JSON.stringify(clip.toDataset(reviews), null, 2);
+    const json = JSON.stringify(clip.toDataset(taxonomies), null, 2);
     return {
         fileName: `${clip.name}_annotation.json`,
         blob: new Blob([json], { type: "application/json" }),
@@ -185,7 +185,7 @@ export function exportAnnotation(
 }
 
 /**
- * Build a complete project archive from the current review.
+ * Build a complete project archive from the current state.
  *
  * This is what a semantic project exports: its masks are label-map PNGs that
  * `annotation.json` refers to by entry name, so only a full archive (frames,
@@ -195,9 +195,9 @@ export function exportAnnotation(
 export async function exportProjectArchive(
     clip: Clip,
     zip: ZipArchive,
-    reviews: Record<number, TrackletReview>,
+    taxonomies: TaxonomyOverrides,
     onProgress?: ExportProgress,
 ): Promise<ExportedFile> {
-    const blob = await clip.exportProjectZip(zip, reviews, onProgress);
+    const blob = await clip.exportProjectZip(zip, taxonomies, onProgress);
     return { fileName: `${clip.name}.project`, blob };
 }

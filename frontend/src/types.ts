@@ -108,11 +108,12 @@ export interface PromptPoint {
     label: 0 | 1;
 }
 
-export type MaskVerdict = "good" | "bad" | "unsure";
-
-export interface TrackletReview {
-    labelConfirmed: boolean;
-    taxonomy: Taxonomy | null;
-    maskVerdict: MaskVerdict | null;
-    comment: string;
-}
+/**
+ * Taxonomy corrections made in the workspace, keyed by tracklet id.
+ *
+ * A tracklet absent from the map keeps the taxonomy the archive gave it, so an
+ * empty map means "nothing was relabelled". This is the only annotation state
+ * that lives outside the `Clip`, because it is keyed by hand and written on
+ * export rather than affecting the masks.
+ */
+export type TaxonomyOverrides = Record<number, Taxonomy>;

@@ -1,153 +1,168 @@
-.bar {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  width: 84px;
-  padding: 10px 6px;
-  background: var(--panel);
-  border-right: 1px solid var(--line);
+/*
+ * The tool rail: a fixed-width column of icon+label tools. It is the app's
+ * primary mode switch, so the active tool is the strongest colour on the rail.
+ */
+.rail {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    width: var(--rail-w);
+    min-height: 0;
+    padding: 8px 7px;
+    border-right: 1px solid var(--line);
+    background: var(--surface-1);
 }
 
 .tool {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 8px 4px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--ink);
-  font-size: 0.7rem;
-  line-height: 1.2;
-  text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 8px 2px 6px;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--muted);
+    transition:
+        background var(--t-fast),
+        color var(--t-fast),
+        border-color var(--t-fast);
 }
 
 .tool:hover:not(:disabled) {
-  background: var(--accent-soft);
-  border-color: #cddcea;
+    background: var(--surface-3);
+    color: var(--ink);
 }
 
 .tool:disabled {
-  color: var(--muted);
-  opacity: 0.55;
-  cursor: not-allowed;
+    opacity: 0.35;
+    cursor: not-allowed;
 }
 
 .toolActive,
 .toolActive:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.icon svg {
-  width: 22px;
-  height: 22px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent-hi);
 }
 
 .label {
-  white-space: nowrap;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    white-space: nowrap;
 }
 
-.separator {
-  height: 1px;
-  margin: 4px 6px;
-  background: var(--line);
+.divider {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--line);
 }
 
 .spacer {
-  flex: 1;
+    flex: 1 1 auto;
+    min-height: var(--s-2);
 }
 
+/* ------------------------------------------------------------ delete menu */
+
 .menuAnchor {
-  position: relative;
+    position: relative;
+    display: flex;
 }
 
 .menu {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 8px);
-  z-index: 20;
-  min-width: 220px;
-  padding: 4px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: 0 6px 20px rgba(32, 42, 54, 0.14);
+    position: absolute;
+    top: -4px;
+    left: calc(100% + 8px);
+    z-index: 40;
+    min-width: 216px;
+    padding: 5px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-md);
+    background: var(--surface-3);
+    box-shadow: var(--shadow-2);
 }
 
 .menuItem {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink);
-  font-size: 0.85rem;
-  text-align: left;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--ink);
+    font-size: var(--fs-md);
+    text-align: left;
 }
 
 .menuItem:hover:not(:disabled) {
-  background: var(--accent-soft);
+    background: var(--surface-4);
 }
 
 .menuItem:disabled {
-  color: var(--muted);
-  cursor: not-allowed;
+    color: var(--faint);
+    cursor: not-allowed;
 }
 
 .menuDanger:hover:not(:disabled) {
-  background: var(--bad-soft);
-  color: var(--bad);
+    background: var(--bad-soft);
+    color: var(--bad);
 }
 
 .menuHint {
-  font-size: 0.72rem;
-  color: var(--muted);
+    font-size: var(--fs-xs);
+    color: var(--muted);
 }
 
+/* ----------------------------------------------------------- model status */
+
 .status {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 6px 2px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.66rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 7px 2px;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--faint);
+}
+
+.status:hover {
+    background: var(--surface-3);
 }
 
 .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--line);
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--line-strong);
 }
 
 .dotOk {
-  background: var(--good);
+    background: var(--good);
+    box-shadow: 0 0 0 3px var(--good-soft);
 }
 
 .dotBad {
-  background: var(--bad);
+    background: var(--bad);
+    box-shadow: 0 0 0 3px var(--bad-soft);
 }
 
 .dotPending {
-  background: var(--warn);
+    background: var(--amber);
 }
 
 .statusText {
-  white-space: nowrap;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
 }

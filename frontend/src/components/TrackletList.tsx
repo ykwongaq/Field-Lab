@@ -1,22 +1,12 @@
 import { useMemo, useState } from "react";
 import type { Clip } from "../lib/clip";
-import type { TrackletReview } from "../types";
 import { MODE_VOCABULARY } from "../lib/project";
+import { EmptyState, Icon } from "../ui";
 import styles from "./TrackletList.module.css";
-
-type Status = "done" | "partial" | "todo";
-type Filter = "all" | "todo" | "partial" | "done";
-
-const STATUS_LABEL: Record<Status, string> = {
-    done: "Verified",
-    partial: "In progress",
-    todo: "Pending",
-};
 
 interface TrackletListProps {
     clip: Clip;
     selectedId: number | null;
-    reviews: Record<number, TrackletReview>;
     onSelect: (id: number) => void;
     /** Ids queued for propagation. */
     batch?: number[];
@@ -29,153 +19,115 @@ interface TrackletListProps {
     onToggleBatch?: (id: number) => void;
 }
 
-function statusOf(review: TrackletReview | undefined): Status {
-    if (!review) return "todo";
-    const hasLabel = review.labelConfirmed;
-    const hasMask = review.maskVerdict !== null;
-    if (hasLabel && hasMask) return "done";
-    if (hasLabel || hasMask) return "partial";
-    return "todo";
-}
-
+/**
+ * The object list: every tracklet in the clip, searchable.
+ *
+ * It is the workspace's index — selecting a row decides which mask the canvas
+ * draws and which taxonomy the inspector edits.
+ */
 export function TrackletList({
     clip,
     selectedId,
-    reviews,
     onSelect,
     batch = [],
     onToggleBatch,
 }: TrackletListProps) {
     const [query, setQuery] = useState("");
-    const [filter, setFilter] = useState<Filter>("all");
     const vocab = MODE_VOCABULARY[clip.mode];
 
     const items = useMemo(() => {
         const needle = query.trim().toLowerCase();
-        return clip.tracklets.filter((tracklet) => {
-            if (filter !== "all" && statusOf(reviews[tracklet.id]) !== filter)
-                return false;
-            if (!needle) return true;
-            return (
+        if (!needle) return clip.tracklets;
+        return clip.tracklets.filter(
+            (tracklet) =>
                 tracklet.label.toLowerCase().includes(needle) ||
                 String(tracklet.id).includes(needle) ||
-                String(tracklet.objectId).includes(needle)
-            );
-        });
-    }, [clip.tracklets, query, filter, reviews]);
+                String(tracklet.objectId).includes(needle),
+        );
+    }, [clip.tracklets, query]);
 
     return (
-        <div className={styles.list}>
-            <div className={styles.listHeader}>
+        <section className={styles.panel} aria-label={`${vocab.units} list`}>
+            <header className={styles.head}>
+                <span className="sectionLabel">{vocab.units}</span>
+                <span className={styles.count}>
+                    {query.trim()
+                        ? `${items.length} / ${clip.tracklets.length}`
+                        : clip.tracklets.length}
+                </span>
+            </header>
+
+            <div className={styles.searchWrap}>
+                <Icon name="search" size={14} className={styles.searchIcon} />
                 <input
                     type="search"
-                    className={styles.search}
-                    placeholder="Filter by label or id…"
+                    className={`input ${styles.search}`}
+                    placeholder={`Filter ${vocab.units}…`}
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
+                    aria-label={`Filter ${vocab.units}`}
                 />
-                <div className={styles.filters}>
-                    {(["all", "todo", "partial", "done"] as const).map(
-                        (option) => (
-                            <button
-                                key={option}
-                                type="button"
-                                className={`${styles.filterBtn} ${filter === option ? styles.filterActive : ""}`}
-                                onClick={() => setFilter(option)}
-                            >
-                                {option === "all"
-                                    ? "All"
-                                    : STATUS_LABEL[option]}
-                            </button>
-                        ),
-                    )}
-                </div>
             </div>
 
-            <div className={styles.listScroll}>
+            <div className={`scrollArea ${styles.list}`}>
                 {clip.tracklets.length === 0 ? (
-                    <p className={styles.empty}>
-                        This project has no annotations yet. Run the
-                        segmentation pipeline on the embedded video, write the
-                        results into the project's <code>annotation.json</code>,
-                        and re-open the archive.
-                    </p>
+                    <EmptyState icon="layers" title={`No ${vocab.units} yet`}>
+                        Draw a mask on a frame to create the first one.
+                    </EmptyState>
+                ) : items.length === 0 ? (
+                    <EmptyState icon="search" title="No matches">
+                        Nothing here matches “{query.trim()}”.
+                    </EmptyState>
                 ) : (
-                    items.length === 0 && (
-                        <p className={styles.empty}>No {vocab.units} match.</p>
-                    )
-                )}
-                {items.map((tracklet) => {
-                    const status = statusOf(reviews[tracklet.id]);
-                    const queued = batch.includes(tracklet.id);
-                    return (
-                        <button
-                            key={tracklet.id}
-                            type="button"
-                            className={`${styles.item} ${tracklet.id === selectedId ? styles.selected : ""}`}
-                            onClick={(event) =>
-                                event.shiftKey && onToggleBatch
-                                    ? onToggleBatch(tracklet.id)
-                                    : onSelect(tracklet.id)
-                            }
-                            title={
-                                onToggleBatch
-                                    ? "Shift-click to queue this one for propagation"
-                                    : undefined
-                            }
-                        >
-                            <span
-                                className={styles.swatch}
-                                style={{ background: tracklet.color }}
-                            />
-                            <span className={styles.itemBody}>
-                                <span className={styles.itemLabel}>
-                                    {tracklet.label}
-                                    {queued && (
-                                        <span
-                                            className={styles.newTag}
-                                            style={{
-                                                background:
-                                                    "rgba(74, 163, 255, 0.18)",
-                                                color: "#4aa3ff",
-                                            }}
-                                            title="Queued for propagation; Shift-click to remove from the queue"
-                                        >
-                                            queued
-                                        </span>
-                                    )}
-                                    {tracklet.origin === "created" && (
-                                        <span
-                                            className={styles.newTag}
-                                            title="Added in this session with the Add mask tool; not in the archive yet"
-                                        >
-                                            new
-                                        </span>
-                                    )}
-                                </span>
-                                <span className={styles.itemMeta}>
-                                    #{tracklet.id}
-                                    {vocab.hasObjectIdentity && (
-                                        <> · obj {tracklet.objectId}</>
-                                    )}{" "}
-                                    · {tracklet.maskFrames.count} frames
-                                </span>
-                            </span>
-                            <span
-                                className={`${styles.status} ${
-                                    status === "done"
-                                        ? styles.statusDone
-                                        : status === "partial"
-                                          ? styles.statusPartial
-                                          : styles.statusTodo
-                                }`}
+                    items.map((tracklet) => {
+                        const queued = batch.includes(tracklet.id);
+                        const active = tracklet.id === selectedId;
+                        return (
+                            <button
+                                key={tracklet.id}
+                                type="button"
+                                className={`${styles.item} ${active ? styles.selected : ""}`}
+                                onClick={(event) =>
+                                    event.shiftKey && onToggleBatch
+                                        ? onToggleBatch(tracklet.id)
+                                        : onSelect(tracklet.id)
+                                }
+                                aria-current={active ? "true" : undefined}
+                                title={
+                                    onToggleBatch
+                                        ? "Shift-click to queue this one for propagation"
+                                        : undefined
+                                }
                             >
-                                {STATUS_LABEL[status]}
-                            </span>
-                        </button>
-                    );
-                })}
+                                <span
+                                    className={styles.swatch}
+                                    style={{ background: tracklet.color }}
+                                />
+                                <span className={styles.body}>
+                                    <span className={styles.label}>
+                                        {tracklet.label}
+                                    </span>
+                                    <span className={styles.meta}>
+                                        #{tracklet.id}
+                                        {vocab.hasObjectIdentity
+                                            ? ` · obj ${tracklet.objectId}`
+                                            : ""}{" "}
+                                        · {tracklet.maskFrames.count} frames
+                                    </span>
+                                </span>
+                                {queued && (
+                                    <span
+                                        className="chip chipAccent"
+                                        title="Queued for propagation; Shift-click to remove from the queue"
+                                    >
+                                        queued
+                                    </span>
+                                )}
+                            </button>
+                        );
+                    })
+                )}
             </div>
-        </div>
+        </section>
     );
 }

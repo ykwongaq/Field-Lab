@@ -108,3 +108,13 @@ TypeError: can't convert cuda:0 device type tensor to numpy. Use Tensor.cpu() to
 2026-09-30 15:13:12,991 INFO    vsr: SAM 3 preloaded and held resident: image, video
 2026-09-30 15:13:50,273 INFO    vsr: SAM 3 preloaded and held resident: image, video
 2026-09-30 15:14:25,738 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-01 00:48:07,456 WARNING vsr: ffmpeg and ffprobe not found on PATH, so a project that needs its frames extracted cannot be opened. Install ffmpeg, or set VSR_FFMPEG_BIN / VSR_FFPROBE_BIN to the binary's absolute path and restart the service.
+2026-10-01 00:48:13,875 WARNING vsr: SAM 3 could not be preloaded: ModuleNotFoundError: No module named 'pkg_resources'
+2026-10-01 00:51:13,339 WARNING vsr: Unavailable: ffmpeg is not installed or not on PATH ('ffmpeg'). Install it, or point VSR_FFMPEG_BIN / VSR_FFPROBE_BIN at the binary.
+2026-10-01 00:51:29,779 WARNING vsr: Unavailable: ffmpeg is not installed or not on PATH ('ffmpeg'). Install it, or point VSR_FFMPEG_BIN / VSR_FFPROBE_BIN at the binary.
+2026-10-01 00:59:01,147 WARNING vsr: SAM 3 could not be preloaded: ModuleNotFoundError: No module named 'pkg_resources'
+2026-10-01 01:00:27,920 WARNING vsr: SAM 3 could not be preloaded: ModuleNotFoundError: No module named 'einops'
+2026-10-01 01:01:29,454 WARNING vsr: SAM 3 could not be preloaded: ModuleNotFoundError: No module named 'triton'
+2026-10-01 01:02:40,748 WARNING vsr: SAM 3 could not be preloaded: ModuleNotFoundError: No module named 'psutil'
+2026-10-01 01:04:20,998 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-01 01:28:01,853 INFO    vsr: SAM 3 preloaded and held resident: image, video

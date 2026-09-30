@@ -1,0 +1,85 @@
+/* ------------------------------------------------------------ progress bar */
+
+.progressWrap {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.track {
+    position: relative;
+    height: 4px;
+    border-radius: var(--r-full);
+    background: var(--surface-4);
+    overflow: hidden;
+}
+
+.fill {
+    height: 100%;
+    border-radius: var(--r-full);
+    background: var(--accent);
+    transition: width 160ms ease;
+}
+
+.amber .fill {
+    background: var(--amber);
+}
+
+.indeterminate {
+    width: 35%;
+    animation: slide 1.1s ease-in-out infinite;
+}
+
+.progressLabel {
+    font-size: var(--fs-xs);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+@keyframes slide {
+    0% {
+        margin-left: -35%;
+    }
+    100% {
+        margin-left: 100%;
+    }
+}
+
+/* ------------------------------------------------------------- empty state */
+
+.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    padding: var(--s-5) var(--s-4);
+    text-align: center;
+}
+
+.emptyIcon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    margin-bottom: var(--s-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    color: var(--faint);
+}
+
+.emptyTitle {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    color: var(--ink-2);
+}
+
+.emptyBody {
+    max-width: 34ch;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--faint);
+}

@@ -9,6 +9,8 @@ import { FrameCache } from "../lib/frameCache";
 import { MaskRenderer } from "../lib/mask";
 import { MaskCache, type MaskRequest } from "../lib/maskApi";
 import { formatTimecode } from "../lib/format";
+import { SELECTED_COLOR } from "../lib/palette";
+import { Icon } from "../ui";
 import {
     RasterCanvas,
     runsArea,
@@ -48,12 +50,10 @@ interface VideoPanelProps {
     frameIndex: number;
     playing: boolean;
     selectedTrackletId: number | null;
-    showAllMasks: boolean;
     maskOpacity: number;
     onFrameChange: (frame: number) => void;
     onPlayToggle: () => void;
     onStep: (delta: number) => void;
-    onShowAllMasksChange: (value: boolean) => void;
     onMaskOpacityChange: (value: number) => void;
     tool: Tool;
     method: DrawMethod;
@@ -156,6 +156,28 @@ export function VideoPanel(props: VideoPanelProps) {
     //: The box being dragged (box prompt): live while dragging, committed on release.
     const [boxRect, setBoxRect] = useState<PromptBox | null>(null);
     const boxStartRef = useRef<FramePoint | null>(null);
+
+    /**
+     * The objects whose masks the canvas draws.
+     *
+     * Every object is shown at once by default: seeing the neighbours is how you
+     * tell whether two animals' masks are being confused, and it is why there is
+     * no "show all masks" switch. While tracking, the run being reviewed is
+     * noise, so only the object in hand is drawn.
+     *
+     * The selected object is painted in `SELECTED_COLOR` on top of the rest (see
+     * the paint effect); every other mask keeps its own tracklet colour.
+     */
+    const maskTracklets = useCallback((): Tracklet[] => {
+        if (props.tool !== "propagate") return props.clip.tracklets;
+        const focus = props.editingTrackletId ?? props.selectedTrackletId;
+        return props.clip.tracklets.filter((t) => t.id === focus);
+    }, [
+        props.tool,
+        props.clip.tracklets,
+        props.editingTrackletId,
+        props.selectedTrackletId,
+    ]);
 
     const drawing = props.tool === "addMask" || props.tool === "editMask";
 
@@ -580,11 +602,7 @@ export function VideoPanel(props: VideoPanelProps) {
         const cache = maskCacheRef.current;
         if (!cache) return;
         const total = props.clip.frameCount;
-        const visible = props.showAllMasks
-            ? props.clip.tracklets
-            : props.clip.tracklets.filter(
-                  (t) => t.id === props.selectedTrackletId,
-              );
+        const visible = maskTracklets();
 
         const requests: MaskRequest[] = [];
         const MAX_PREFETCH_MASKS = 64;
@@ -604,12 +622,7 @@ export function VideoPanel(props: VideoPanelProps) {
         }
         if (requests.length === 0) return;
         void cache.resolveBatch(requests).catch(() => {});
-    }, [
-        props.frameIndex,
-        props.clip,
-        props.selectedTrackletId,
-        props.showAllMasks,
-    ]);
+    }, [props.frameIndex, props.clip, maskTracklets]);
 
     useEffect(() => {
         const cache = maskCacheRef.current;
@@ -771,11 +784,7 @@ export function VideoPanel(props: VideoPanelProps) {
             paintedFrameRef.current = props.frameIndex;
 
             const cache = maskCacheRef.current!;
-            const visible = props.showAllMasks
-                ? props.clip.tracklets
-                : props.clip.tracklets.filter(
-                      (t) => t.id === props.selectedTrackletId,
-                  );
+            const visible = maskTracklets();
 
             const requests: MaskRequest[] = [];
             const requestTracklets: Tracklet[] = [];
@@ -800,14 +809,32 @@ export function VideoPanel(props: VideoPanelProps) {
             if (cancelled || paintedFrameRef.current !== props.frameIndex)
                 return;
 
+            // Every object first, then the selected one on top in the reserved
+            // colour and at a stronger alpha: "the one you are working on" is
+            // unmistakable without hiding what surrounds it.
+            let selectedMask: DecodedMask | null = null;
             maskRenderer.clear();
             for (let i = 0; i < requestTracklets.length; i++) {
                 const decoded = decodedList[i];
                 if (!decoded) continue;
+                if (requestTracklets[i].id === props.selectedTrackletId) {
+                    selectedMask = decoded;
+                    continue;
+                }
                 maskRenderer.drawRuns(decoded.runs, requestTracklets[i].color);
             }
 
             blit(maskRenderer.canvasElement, props.maskOpacity, smooth);
+
+            if (selectedMask) {
+                maskRenderer.clear();
+                maskRenderer.drawRuns(selectedMask.runs, SELECTED_COLOR);
+                blit(
+                    maskRenderer.canvasElement,
+                    Math.max(0.8, props.maskOpacity),
+                    smooth,
+                );
+            }
 
             if (props.tool === "review") return;
 
@@ -870,7 +897,6 @@ export function VideoPanel(props: VideoPanelProps) {
         props.clip,
         props.frameIndex,
         props.selectedTrackletId,
-        props.showAllMasks,
         props.maskOpacity,
         props.tool,
         props.method,
@@ -879,6 +905,7 @@ export function VideoPanel(props: VideoPanelProps) {
         props.draft,
         props.candidate,
         props.editingTrackletId,
+        maskTracklets,
     ]);
 
     let hint: string | null = null;
@@ -888,25 +915,22 @@ export function VideoPanel(props: VideoPanelProps) {
         if (props.method === "point") {
             hint =
                 props.prompt.length === 0
-                    ? (props.promptHint ??
-                      "Click the object to segment it · Shift-click or right-click to exclude a region")
-                    : `${props.prompt.length} point${props.prompt.length === 1 ? "" : "s"} · keep clicking to refine`;
-            if (props.box)
-                hint +=
-                    " · the box prompt is still active (clear it to use clicks alone)";
+                    ? (props.promptHint ?? "Click the object")
+                    : `${props.prompt.length} point${props.prompt.length === 1 ? "" : "s"}`;
+            if (props.box) hint += " · box prompt active";
         } else if (props.method === "box") {
             hint = boxRect
                 ? `Release to segment inside the box (${Math.round(boxRect.x1 - boxRect.x0)}×${Math.round(boxRect.y1 - boxRect.y0)} px)`
                 : "Drag a box around the object";
         } else if (props.method === "text") {
-            hint = "Type a class name in the prompt bar and press Enter";
+            hint = "Type a class name and press Enter";
         } else if (props.method === "polygon") {
             hint =
                 props.polygon.length === 0
-                    ? "Click to place polygon vertices · double-click, right-click or Enter closes it"
-                    : `${props.polygon.length} vert${props.polygon.length === 1 ? "ex" : "ices"} · click the first vertex, double-click or press Enter to close`;
+                    ? "Click to place points · Enter closes"
+                    : `${props.polygon.length} point${props.polygon.length === 1 ? "" : "s"} · Enter closes`;
         } else {
-            hint = `Drag to paint${props.paintMode === "erase" ? " (erasing)" : ""} · Shift-drag or right-drag erases · [ and ] change the brush size`;
+            hint = `Drag to paint${props.paintMode === "erase" ? " (erasing)" : ""}`;
         }
     }
 
@@ -1075,27 +1099,30 @@ export function VideoPanel(props: VideoPanelProps) {
             <div className={styles.controls}>
                 <button
                     type="button"
-                    className="btn"
+                    className={`btn btnIcon ${styles.play}`}
                     onClick={props.onPlayToggle}
-                    title="Space"
+                    title={props.playing ? "Pause (Space)" : "Play (Space)"}
+                    aria-label={props.playing ? "Pause" : "Play"}
                 >
-                    {props.playing ? "Pause" : "Play"}
+                    <Icon name={props.playing ? "pause" : "play"} size={16} />
                 </button>
                 <button
                     type="button"
-                    className="btn"
+                    className="btn btnIcon"
                     onClick={() => props.onStep(-1)}
-                    title="←"
+                    title="Step back one frame (←)"
+                    aria-label="Step back one frame"
                 >
-                    ◀
+                    <Icon name="stepBack" size={16} />
                 </button>
                 <button
                     type="button"
-                    className="btn"
+                    className="btn btnIcon"
                     onClick={() => props.onStep(1)}
-                    title="→"
+                    title="Step forward one frame (→)"
+                    aria-label="Step forward one frame"
                 >
-                    ▶
+                    <Icon name="stepForward" size={16} />
                 </button>
 
                 <input
@@ -1132,46 +1159,38 @@ export function VideoPanel(props: VideoPanelProps) {
                     {Math.round(props.maskOpacity * 100)}%
                 </label>
 
-                <label className={styles.check}>
-                    <input
-                        type="checkbox"
-                        checked={props.showAllMasks}
-                        onChange={(event) =>
-                            props.onShowAllMasksChange(event.target.checked)
-                        }
-                    />
-                    Show all masks
-                </label>
-
                 <div className={styles.zoomGroup}>
                     <button
                         type="button"
-                        className="btn"
+                        className="btn btnIcon btnSmall"
                         onClick={() => zoomBy(1 / 1.5)}
                         disabled={view.zoom <= MIN_ZOOM}
                         title="Zoom out"
+                        aria-label="Zoom out"
                     >
-                        −
+                        <Icon name="zoomOut" size={14} />
                     </button>
                     <span className={styles.zoomValue}>
                         {Math.round(view.zoom * 100)}%
                     </span>
                     <button
                         type="button"
-                        className="btn"
+                        className="btn btnIcon btnSmall"
                         onClick={() => zoomBy(1.5)}
                         disabled={view.zoom >= MAX_ZOOM}
                         title="Zoom in"
+                        aria-label="Zoom in"
                     >
-                        +
+                        <Icon name="zoomIn" size={14} />
                     </button>
                     <button
                         type="button"
-                        className="btn"
+                        className="btn btnSmall"
                         onClick={resetView}
                         disabled={view.zoom === FIT_VIEW.zoom}
                         title="Fit the whole frame"
                     >
+                        <Icon name="fit" size={14} />
                         Fit
                     </button>
                 </div>

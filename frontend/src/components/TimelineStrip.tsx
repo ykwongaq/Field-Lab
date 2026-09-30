@@ -36,13 +36,13 @@ interface CellPaint {
     height: number;
 }
 
-const NEUTRAL = "#e9eef3";
-const OBJECT_FALLBACK = "#4a7fb5";
-const DRAFT = "#f0b429";
-const PREVIEW = "#f6cf6b";
-const STALE = "#8fa3b8";
-const LOST = "#7f8c8d";
-const BOUNDARY = "#5b6b7b";
+const NEUTRAL = "#20262d";
+const OBJECT_FALLBACK = "#5c8fc9";
+const DRAFT = "#c9a05a";
+const PREVIEW = "#dcb673";
+const STALE = "#5b6a7a";
+const LOST = "#47535e";
+const BOUNDARY = "#8b96a3";
 
 /** The paint for one state. `colour` is the selected object's own colour. */
 function paint(state: TimelineFrameState, colour: string): CellPaint {
@@ -258,6 +258,10 @@ export function TimelineStrip(props: TimelineStripProps) {
                 </svg>
                 <div
                     className={styles.playhead}
+                    style={{ left: `${playheadPercent}%` }}
+                />
+                <div
+                    className={styles.playheadHandle}
                     style={{ left: `${playheadPercent}%` }}
                 />
             </div>
