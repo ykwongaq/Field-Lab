@@ -66,6 +66,12 @@ export interface PropagationJob {
         elapsed_ms?: number;
         /** How many verified frames the run was seeded with (anchor excluded). */
         pinned?: number;
+        /**
+         * The windows the run was split into, in order. Each one is its own SAM 3
+         * session, and the boundary between two of them is where a track can
+         * drift, so the timeline draws a tick there.
+         */
+        windows?: { start: number; end: number; direction?: string }[];
     } | null;
     /** How many jobs were already waiting when this one was submitted. */
     queuePosition: number;

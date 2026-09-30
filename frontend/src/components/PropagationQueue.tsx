@@ -37,6 +37,13 @@ export interface PropQueueEntry {
     writePolicy: "skip-existing" | "replace-range";
     /** How many hand-verified frames seeded this run, the anchor excluded. */
     pinned: number;
+    /**
+     * Window boundaries of the run, as frame indices (the first window excluded).
+     *
+     * A long run is split into overlapping windows and the hand-off between two
+     * of them is where a track can drift, so the timeline marks them.
+     */
+    windows: number[];
     /** Frames produced so far, keyed by frame index. */
     masks: Map<number, PropagatedFrame>;
     /**

@@ -47,6 +47,7 @@ import {
     isLive,
     type PropQueueEntry,
 } from "./PropagationQueue";
+import { TimelineStrip, type TimelineFrameState } from "./TimelineStrip";
 import { TrackletList } from "./TrackletList";
 import { Inspector } from "./Inspector";
 import {
@@ -81,6 +82,10 @@ interface PropagateRun {
     writePolicy: "skip-existing" | "replace-range";
     /** Hand-verified frames that seeded this run, the anchor excluded. */
     pinned: number;
+    /** True while the backend is still working through this run. */
+    live: boolean;
+    /** Window boundaries of the run, as frame indices (first window excluded). */
+    windows: number[];
     masks: Map<number, PropagatedFrame>;
 }
 
@@ -109,6 +114,8 @@ function entryToRun(
         framesTotal: entry.framesTotal,
         writePolicy: entry.writePolicy,
         pinned: entry.pinned,
+        live: isLive(entry),
+        windows: entry.windows,
         masks: entry.masks,
     };
 }
@@ -127,6 +134,24 @@ function refineHint(invalidated: number[], frame: number): string {
 }
 
 const DEFAULT_PROPAGATE_FORWARD = 10;
+
+/**
+ * The key every per-frame piece of state is held under.
+ *
+ * Drafts, staleness and provenance are all about one object on one frame, so they
+ * share a single key shape and a single lookup.
+ */
+function frameKey(objectId: number, frame: number): string {
+    return `${objectId}:${frame}`;
+}
+
+/**
+ * The draft owner for a mask being *created* rather than edited.
+ *
+ * A new mask belongs to no object until it is accepted, so its drafts are keyed
+ * under this sentinel. Tracklet ids are positive, so it can never collide.
+ */
+const NEW_OBJECT_ID = -1;
 
 /** How often a running propagation is polled for newly produced masks. */
 const PROPAGATE_POLL_MS = 700;
@@ -190,8 +215,22 @@ export function Workspace({
     const [method, setMethod] = useState<DrawMethod>("point");
     const [paintMode, setPaintMode] = useState<PaintMode>("add");
     const [brushSize, setBrushSize] = useState(24);
-    const [draft, setDraft] = useState<RawRle | null>(null);
-    const [history, setHistory] = useState<(RawRle | null)[]>([]);
+    /**
+     * Uncommitted drafts, keyed by `objectId:frame`.
+     *
+     * A draft is per frame, not global: navigating away from a frame with unsaved
+     * work used to discard it silently, which is the one failure the interaction
+     * spec singles out (G3, §6.2). A value may be `null`, which is a real state —
+     * "everything was erased on this frame" — so `has()` is what distinguishes it
+     * from "nothing was drawn here".
+     */
+    const [drafts, setDrafts] = useState<Map<string, RawRle | null>>(
+        () => new Map(),
+    );
+    /** Undo stacks for those drafts, keyed the same way (depth 40 each). */
+    const [histories, setHistories] = useState<
+        Map<string, (RawRle | null)[]>
+    >(() => new Map());
     const [polygon, setPolygon] = useState<FramePoint[]>([]);
 
     const [prompt, setPrompt] = useState<PromptPoint[]>([]);
@@ -292,13 +331,14 @@ export function Workspace({
     }, [fetchStatus]);
 
     useEffect(() => {
-        if (clip.editCount === 0) return;
+        // An uncommitted draft is as worth guarding as a committed edit.
+        if (clip.editCount === 0 && drafts.size === 0) return;
         const onBeforeUnload = (event: BeforeUnloadEvent) => {
             event.preventDefault();
         };
         window.addEventListener("beforeunload", onBeforeUnload);
         return () => window.removeEventListener("beforeunload", onBeforeUnload);
-    }, [clip.editCount]);
+    }, [clip.editCount, drafts.size]);
 
     const storeRef = useRef<ReviewStore | null>(null);
     let store = storeRef.current;
@@ -432,6 +472,7 @@ export function Workspace({
         setPromptError(null);
     }, []);
 
+    /** The committed mask an edit started from, so a redraw reads as a change. */
     const originalMask = useMemo(
         () =>
             tool === "editMask" && selected
@@ -440,19 +481,80 @@ export function Workspace({
         [tool, selected, clip, frameIndex],
     );
 
-    const resetDraft = useCallback(
-        (forTool: Tool = tool) => {
-            resetPrompt();
-            setPolygon([]);
-            setHistory([]);
-            setDraft(
-                forTool === "editMask" && selected
-                    ? clip.rawMaskAt(selected, frameIndex)
-                    : null,
+    /**
+     * Which object the current frame's draft belongs to.
+     *
+     * Editing attaches to the selected object; creating a mask attaches to nothing
+     * yet, so it uses the sentinel until Accept gives it an id.
+     */
+    const draftOwnerId =
+        tool === "editMask" ? (selectedId ?? NEW_OBJECT_ID) : NEW_OBJECT_ID;
+    const draftKey = frameKey(draftOwnerId, frameIndex);
+    /**
+     * The draft to show for this frame.
+     *
+     * A stored draft wins. Failing that, Edit mask seeds itself from the mask
+     * already on the frame — seeded, not stored, so merely visiting a frame does
+     * not mark it as carrying unsaved work.
+     */
+    const draft = drafts.has(draftKey)
+        ? (drafts.get(draftKey) ?? null)
+        : tool === "editMask" && selected
+          ? clip.rawMaskAt(selected, frameIndex)
+          : null;
+    const draftHistory = histories.get(draftKey) ?? [];
+
+    // The draft callbacks stay stable across renders, so they read the live values
+    // through refs rather than closing over one render's snapshot.
+    const draftRef = useRef(draft);
+    draftRef.current = draft;
+    const draftKeyRef = useRef(draftKey);
+    draftKeyRef.current = draftKey;
+
+    /** Drop this frame's draft; its undo stack goes with it. */
+    const discardDraft = useCallback(() => {
+        const key = draftKeyRef.current;
+        setDrafts((current) => {
+            if (!current.has(key)) return current;
+            const next = new Map(current);
+            next.delete(key);
+            return next;
+        });
+        setHistories((current) => {
+            if (!current.has(key)) return current;
+            const next = new Map(current);
+            next.delete(key);
+            return next;
+        });
+        resetPrompt();
+        setPolygon([]);
+    }, [resetPrompt]);
+
+    /** Replace this frame's draft, pushing the old one onto its undo stack. */
+    const pushDraft = useCallback((next: RawRle | null) => {
+        const key = draftKeyRef.current;
+        setHistories((current) => {
+            const stack = [...(current.get(key) ?? []), draftRef.current].slice(
+                -40,
             );
-        },
-        [tool, selected, clip, frameIndex, resetPrompt],
-    );
+            const map = new Map(current);
+            map.set(key, stack);
+            return map;
+        });
+        setDrafts((current) => new Map(current).set(key, next));
+    }, []);
+
+    /**
+     * Clear the transient prompt state (clicks, polygon) without touching drafts.
+     *
+     * A prompt belongs to the frame and the tool it was made with; the drawn work
+     * does not. That split is what lets a tool switch or a frame change preserve the
+     * draft (§6.1) while still starting the next prompt clean.
+     */
+    const resetTransient = useCallback(() => {
+        resetPrompt();
+        setPolygon([]);
+    }, [resetPrompt]);
 
     const targetClass = useMemo(
         () => (semantic ? clip.findTrackletByLabel(className) : null),
@@ -462,10 +564,6 @@ export function Workspace({
         () => [...new Set(clip.tracklets.map((t) => t.label))].sort(),
         [clip.tracklets],
     );
-
-    /** The key every per-frame state (draft, staleness, provenance) is held under. */
-    const frameKey = (objectId: number, frame: number) =>
-        `${objectId}:${frame}`;
 
     /** True when a human drew, corrected or cleared this frame. */
     const isVerified = useCallback(
@@ -595,7 +693,9 @@ export function Workspace({
             discardPropagation(true);
             setTool(next);
             setPaintMode("add");
-            resetDraft(next);
+            // Drafts survive a tool switch (§6.1): the prompt is what is specific to
+            // a tool, not the work already drawn.
+            resetTransient();
         },
         [
             selected,
@@ -604,7 +704,7 @@ export function Workspace({
             method,
             propStatus,
             discardPropagation,
-            resetDraft,
+            resetTransient,
         ],
     );
 
@@ -630,10 +730,15 @@ export function Workspace({
         setClip(clip.removeMask(selectedId, frameIndex));
         const invalidated = markCorrected(selectedId, frameIndex);
         refresh();
-        // Stay in Edit mask with an empty draft. The redraw then *replaces* the
-        // mask on this frame; going through Add mask instead would create a second
-        // object for the same thing, which is not a correction.
-        resetDraft("review");
+        // Stay in Edit mask with an explicitly empty draft. The redraw then
+        // *replaces* the mask on this frame; going through Add mask instead would
+        // create a second object for the same thing, which is not a correction.
+        // Stored on purpose: "erased on this frame" is itself uncommitted work, and
+        // the redraw must compose onto nothing rather than onto the mask rejected.
+        setDrafts((current) =>
+            new Map(current).set(frameKey(selectedId, frameIndex), null),
+        );
+        resetTransient();
         setTool("editMask");
         setLocalNotice({
             kind: "info",
@@ -646,32 +751,27 @@ export function Workspace({
         frameIndex,
         markCorrected,
         refresh,
-        resetDraft,
+        resetTransient,
         vocab.unit,
     ]);
 
-    const resetDraftRef = useRef(resetDraft);
-    resetDraftRef.current = resetDraft;
     const toolRef = useRef(tool);
     toolRef.current = tool;
+    // Moving between frames keeps every draft (§6.2); only the prompt resets, since
+    // it is about the frame it was made on.
     useEffect(() => {
         if (toolRef.current !== "review" && toolRef.current !== "propagate")
-            resetDraftRef.current();
-    }, [frameIndex]);
+            resetTransient();
+    }, [frameIndex, resetTransient]);
     const discardPropagationRef = useRef(discardPropagation);
     discardPropagationRef.current = discardPropagation;
+    // Switching object keeps drafts — they are keyed per object — and drops the run
+    // that belonged to the old one. Edit mask also clears its prompt, which named
+    // the object being edited; a create prompt is left alone.
     useEffect(() => {
-        if (toolRef.current === "editMask") resetDraftRef.current();
+        if (toolRef.current === "editMask") resetTransient();
         if (toolRef.current === "propagate") discardPropagationRef.current();
-    }, [selectedId]);
-
-    const pushDraft = useCallback(
-        (next: RawRle | null) => {
-            setHistory((stack) => [...stack, draft].slice(-40));
-            setDraft(next);
-        },
-        [draft],
-    );
+    }, [selectedId, resetTransient]);
 
     const changeMethod = useCallback(
         (next: DrawMethod) => {
@@ -838,15 +938,26 @@ export function Workspace({
             setPolygon((current) => current.slice(0, -1));
             return;
         }
-        if (history.length === 0) return;
-        setDraft(history[history.length - 1]);
-        setHistory(history.slice(0, -1));
-    }, [method, prompt.length, undoPromptPoint, polygon.length, history]);
+        if (draftHistory.length === 0) return;
+        const key = draftKeyRef.current;
+        setDrafts((current) =>
+            new Map(current).set(key, draftHistory[draftHistory.length - 1]),
+        );
+        setHistories((current) =>
+            new Map(current).set(key, draftHistory.slice(0, -1)),
+        );
+    }, [
+        method,
+        prompt.length,
+        undoPromptPoint,
+        polygon.length,
+        draftHistory,
+    ]);
 
     const canUndo =
         ((method === "point" || method === "box") && prompt.length > 0) ||
         (method === "polygon" && polygon.length > 0) ||
-        history.length > 0;
+        draftHistory.length > 0;
 
     /**
      * A text prompt in an instance project that matched several objects.
@@ -879,6 +990,9 @@ export function Workspace({
         [draft],
     );
     const draftArea = useMemo(() => (draft ? rleArea(draft) : 0), [draft]);
+    // Identity against the committed mask is what "changed" means: undoing back to
+    // the mask an edit started from reads as no change, exactly as it did before
+    // drafts became per-frame.
     const draftChanged = draft !== originalMask || (candidate?.area ?? 0) > 0;
 
     /**
@@ -910,8 +1024,7 @@ export function Workspace({
             setClip(next);
             setSelectedId(created[created.length - 1] ?? null);
             refresh();
-            resetPrompt();
-            resetDraft("review");
+            discardDraft();
             setTool("review");
             setLocalNotice({
                 kind: "success",
@@ -928,8 +1041,7 @@ export function Workspace({
             frameIndex,
             className,
             refresh,
-            resetPrompt,
-            resetDraft,
+            discardDraft,
             vocab.unit,
         ],
     );
@@ -958,7 +1070,7 @@ export function Workspace({
             const invalidated = stillThere
                 ? markCorrected(selectedId, frameIndex)
                 : [];
-            resetDraft("review");
+            discardDraft();
             setTool("review");
             setLocalNotice({
                 kind: finalMask ? "success" : "info",
@@ -980,7 +1092,7 @@ export function Workspace({
             );
             setClip(next);
             setSelectedId(tracklet.id);
-            resetDraft("review");
+            discardDraft();
             setTool("review");
             setLocalNotice({
                 kind: "success",
@@ -1027,7 +1139,7 @@ export function Workspace({
             );
             return;
         }
-        resetDraft("review");
+        discardDraft();
         setTool("review");
     }, [
         tool,
@@ -1040,7 +1152,7 @@ export function Workspace({
         finalMask,
         store,
         refresh,
-        resetDraft,
+        discardDraft,
         markCorrected,
         vocab.unit,
         semantic,
@@ -1153,6 +1265,70 @@ export function Workspace({
         () => (propRun ? new Set(propRun.masks.keys()) : null),
         [propRun],
     );
+
+    /**
+     * The selected object's frame states, for the timeline strip.
+     *
+     * One state per frame, in the spec's §8.1 vocabulary. A stored draft wins over
+     * everything (it is the uncommitted thing on that frame), then staleness, then
+     * the committed mask — verified frames read as the stronger mark. Drafts being
+     * *created* have no object yet, so they fill only the frames with no other
+     * state: the point of showing them at all is that unsaved work is never
+     * invisible.
+     */
+    const timelineStates = useMemo<TimelineFrameState[]>(() => {
+        const count = clip.frameCount;
+        const states: TimelineFrameState[] = new Array(count).fill("none");
+        const applyCreateDrafts = () => {
+            for (const key of drafts.keys()) {
+                const separator = key.indexOf(":");
+                if (Number(key.slice(0, separator)) !== NEW_OBJECT_ID) continue;
+                const frame = Number(key.slice(separator + 1));
+                if (frame >= 0 && frame < count && states[frame] === "none")
+                    states[frame] = "draft";
+            }
+        };
+        if (!selected) {
+            applyCreateDrafts();
+            return states;
+        }
+        for (let frame = 0; frame < count; frame++) {
+            const key = frameKey(selected.id, frame);
+            if (drafts.has(key)) states[frame] = "draft";
+            else if (stale.has(key)) states[frame] = "stale";
+            else if (clip.rawMaskAt(selected, frame) !== null)
+                states[frame] = verifiedFrames.has(key)
+                    ? "verified"
+                    : "accepted";
+        }
+        if (propRun) {
+            // The run being reviewed is uncommitted too, whether or not its object
+            // is the one selected.
+            for (const frame of propRun.masks.keys()) {
+                if (frame < 0 || frame >= count) continue;
+                if (states[frame] === "none" || states[frame] === "stale")
+                    states[frame] = "preview";
+            }
+            // A finished run that produced nothing on a frame it covered did not
+            // find the object there (occlusion or off-screen).
+            if (!propRun.live) {
+                for (
+                    let frame = propRun.first;
+                    frame <= propRun.last && frame < count;
+                    frame++
+                ) {
+                    if (frame < 0 || frame === propRun.anchor) continue;
+                    if (propRun.masks.has(frame)) continue;
+                    if (states[frame] === "none") states[frame] = "lost";
+                }
+            }
+        }
+        applyCreateDrafts();
+        return states;
+    }, [clip, selected, drafts, stale, verifiedFrames, propRun]);
+
+    /** Window boundaries of the reviewed run, for the timeline's drift ticks. */
+    const timelineBoundaries = useMemo(() => propRun?.windows ?? [], [propRun]);
 
     /**
      * What a run would cover: the Shift-clicked batch, or just the selected
@@ -1271,6 +1447,7 @@ export function Workspace({
                     error: null,
                     writePolicy,
                     pinned: pins.size,
+                    windows: [],
                     masks: new Map(),
                     newest: null,
                 });
@@ -1316,6 +1493,10 @@ export function Workspace({
                     entry.framesTotal = state.progress.framesTotal;
                     entry.elapsedMs = Number(state.plan?.elapsed_ms ?? 0);
                     entry.error = state.error;
+                    // The run's windows only exist once the worker has planned it.
+                    entry.windows = (state.plan?.windows ?? [])
+                        .map((window) => window.start)
+                        .filter((frame) => frame > 0);
                 }
                 live = entries.filter(isLive).map((entry) => entry.jobId);
                 // Keep following a run that is still going, so its masks keep
@@ -1796,7 +1977,22 @@ export function Workspace({
         repropagateFrom,
     ]);
 
+    /**
+     * Ask once before uncommitted work is thrown away.
+     *
+     * The spec's §6.2 leave-guard: exporting or closing with drafts still open
+     * prompts, so navigating away cannot silently lose them.
+     */
+    const confirmDraftsDiscarded = useCallback(() => {
+        const count = drafts.size;
+        if (count === 0) return true;
+        return window.confirm(
+            `${count} frame${count === 1 ? " has" : "s have"} uncommitted ${vocab.unit} mask draft${count === 1 ? "" : "s"}. Discard ${count === 1 ? "it" : "them"} and continue?`,
+        );
+    }, [drafts.size, vocab.unit]);
+
     const handleExport = useCallback(async () => {
+        if (!confirmDraftsDiscarded()) return;
         const payload = ReviewStore.buildExport(clip, store.getRecord());
         downloadText(
             `${clip.name}.review.json`,
@@ -1833,7 +2029,7 @@ export function Workspace({
             JSON.stringify(clip.toDataset(store.getRecord()), null, 2),
             "application/json",
         );
-    }, [clip, store, semantic, zip]);
+    }, [clip, store, semantic, zip, confirmDraftsDiscarded]);
 
     return (
         <div className={styles.workspace}>
@@ -1923,7 +2119,13 @@ export function Workspace({
                 >
                     {exporting ? "Exporting…" : "Export"}
                 </button>
-                <button type="button" className="btn" onClick={onReset}>
+                <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                        if (confirmDraftsDiscarded()) onReset();
+                    }}
+                >
                     Open another
                 </button>
             </header>
@@ -2682,7 +2884,7 @@ export function Workspace({
                                 type="button"
                                 className="btn"
                                 disabled={!canUndo && !draftChanged}
-                                onClick={() => resetDraft()}
+                                onClick={discardDraft}
                                 title="Discard the draft and start over on this frame"
                             >
                                 Clear
@@ -2721,6 +2923,19 @@ export function Workspace({
                             </button>
                         </div>
                     )}
+                    <TimelineStrip
+                        frameCount={clip.frameCount}
+                        frameIndex={frameIndex}
+                        states={timelineStates}
+                        color={selected?.color}
+                        boundaries={timelineBoundaries}
+                        label={
+                            selected
+                                ? `${vocab.unit} #${selected.id} · ${selected.label}`
+                                : `No ${vocab.unit} selected`
+                        }
+                        onSeek={setFrameIndex}
+                    />
                     <VideoPanel
                         clip={clip}
                         frames={frames}
