@@ -94,15 +94,8 @@ export interface TimelineStripProps {
 }
 
 export function TimelineStrip(props: TimelineStripProps) {
-    const {
-        frameCount,
-        frameIndex,
-        states,
-        color,
-        boundaries,
-        label,
-        onSeek,
-    } = props;
+    const { frameCount, frameIndex, states, color, boundaries, label, onSeek } =
+        props;
     const trackRef = useRef<HTMLDivElement>(null);
     const [dragging, setDragging] = useState(false);
 

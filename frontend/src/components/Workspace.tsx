@@ -228,9 +228,9 @@ export function Workspace({
         () => new Map(),
     );
     /** Undo stacks for those drafts, keyed the same way (depth 40 each). */
-    const [histories, setHistories] = useState<
-        Map<string, (RawRle | null)[]>
-    >(() => new Map());
+    const [histories, setHistories] = useState<Map<string, (RawRle | null)[]>>(
+        () => new Map(),
+    );
     const [polygon, setPolygon] = useState<FramePoint[]>([]);
 
     const [prompt, setPrompt] = useState<PromptPoint[]>([]);
@@ -946,13 +946,7 @@ export function Workspace({
         setHistories((current) =>
             new Map(current).set(key, draftHistory.slice(0, -1)),
         );
-    }, [
-        method,
-        prompt.length,
-        undoPromptPoint,
-        polygon.length,
-        draftHistory,
-    ]);
+    }, [method, prompt.length, undoPromptPoint, polygon.length, draftHistory]);
 
     const canUndo =
         ((method === "point" || method === "box") && prompt.length > 0) ||
