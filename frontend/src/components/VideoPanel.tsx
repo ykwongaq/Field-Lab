@@ -18,16 +18,22 @@ import {
 } from "../lib/raster";
 import type { DecodedMask, PromptPoint, RawRle, Tracklet } from "../types";
 import type { PromptBox } from "../lib/sam3Api";
+import {
+    FIT_VIEW,
+    MAX_ZOOM,
+    MIN_ZOOM,
+    clampZoom,
+    frameLayout,
+    panBy,
+    screenToFrame,
+    wheelZoomFactor,
+    zoomAbout,
+    type FrameLayout,
+    type Size,
+    type View,
+} from "../lib/viewTransform";
 import type { DrawMethod, Tool } from "./Toolbar";
 import styles from "./VideoPanel.module.css";
-
-interface FrameLayout {
-    x: number;
-    y: number;
-    scale: number;
-    width: number;
-    height: number;
-}
 
 export const PREVIEW_COLOR = "#ffcc33";
 const CANDIDATE_ADD_COLOR = "#ff8c42";
@@ -107,6 +113,32 @@ export function VideoPanel(props: VideoPanelProps) {
     const layoutRef = useRef<FrameLayout | null>(null);
     const [layout, setLayout] = useState<FrameLayout | null>(null);
 
+    // Zoom + pan. The ref is what the pointer and wheel handlers read, so a fast
+    // drag never works from a layout a render behind; the state is what makes the
+    // paint effect run.
+    const viewRef = useRef<View>(FIT_VIEW);
+    const [view, setView] = useState<View>(FIT_VIEW);
+    const applyView = useCallback((next: View) => {
+        viewRef.current = next;
+        setView((current) =>
+            current.zoom === next.zoom &&
+            current.panX === next.panX &&
+            current.panY === next.panY
+                ? current
+                : next,
+        );
+    }, []);
+    const [panning, setPanning] = useState(false);
+    const panRef = useRef<{
+        pointerId: number;
+        button: number;
+        lastX: number;
+        lastY: number;
+        moved: boolean;
+    } | null>(null);
+    //: A right-drag that panned must not also land as a right-click.
+    const swallowRightClickRef = useRef(false);
+
     const rasterRef = useRef<RasterCanvas | null>(null);
     if (!rasterRef.current) {
         rasterRef.current = new RasterCanvas(
@@ -127,6 +159,53 @@ export function VideoPanel(props: VideoPanelProps) {
 
     const drawing = props.tool === "addMask" || props.tool === "editMask";
 
+    // Where the right button already means something on the canvas: a negative
+    // point, closing the polygon, erasing a brush stroke. Panning must not steal
+    // those, so right-drag only pans where the right button is otherwise free.
+    const rightHasDrawMeaning =
+        drawing &&
+        (props.method === "point" ||
+            props.method === "polygon" ||
+            props.method === "brush");
+
+    const containerSize = useCallback((): Size => {
+        const bounds = wrapRef.current?.getBoundingClientRect();
+        return { w: bounds?.width ?? 0, h: bounds?.height ?? 0 };
+    }, []);
+
+    const frameSize = useCallback((): Size => {
+        const layout = layoutRef.current;
+        return layout
+            ? { w: layout.width, h: layout.height }
+            : { w: props.clip.width, h: props.clip.height };
+    }, [props.clip.width, props.clip.height]);
+
+    const zoomBy = useCallback(
+        (factor: number) => {
+            const container = containerSize();
+            const layout = layoutRef.current;
+            if (!layout) return;
+            applyView(
+                zoomAbout(
+                    container,
+                    frameSize(),
+                    viewRef.current,
+                    clampZoom(viewRef.current.zoom * factor),
+                    { x: container.w / 2, y: container.h / 2 },
+                ),
+            );
+        },
+        [applyView, containerSize, frameSize],
+    );
+
+    const resetView = useCallback(() => applyView(FIT_VIEW), [applyView]);
+
+    // A new clip is a new frame size: start from fit rather than inheriting the
+    // previous clip's zoom and pan.
+    useEffect(() => {
+        applyView(FIT_VIEW);
+    }, [props.clip, applyView]);
+
     const toFrame = useCallback(
         (
             event: { clientX: number; clientY: number },
@@ -136,8 +215,11 @@ export function VideoPanel(props: VideoPanelProps) {
             const canvas = canvasRef.current;
             if (!layout || !canvas) return null;
             const rect = canvas.getBoundingClientRect();
-            const x = (event.clientX - rect.left - layout.x) / layout.scale;
-            const y = (event.clientY - rect.top - layout.y) / layout.scale;
+            const { x, y } = screenToFrame(
+                layout,
+                event.clientX - rect.left,
+                event.clientY - rect.top,
+            );
             if (x < 0 || y < 0 || x >= layout.width || y >= layout.height) {
                 if (!clamp) return null;
                 return {
@@ -261,6 +343,25 @@ export function VideoPanel(props: VideoPanelProps) {
 
     const handlePointerDown = useCallback(
         (event: ReactPointerEvent<HTMLCanvasElement>) => {
+            // Pan: middle-drag anywhere, right-drag where the right button has no
+            // drawing meaning (so a create-mode right-click stays a prompt).
+            if (
+                event.button === 1 ||
+                (event.button === 2 && !rightHasDrawMeaning)
+            ) {
+                event.preventDefault();
+                panRef.current = {
+                    pointerId: event.pointerId,
+                    button: event.button,
+                    lastX: event.clientX,
+                    lastY: event.clientY,
+                    moved: false,
+                };
+                setPanning(true);
+                setCursor(null);
+                event.currentTarget.setPointerCapture(event.pointerId);
+                return;
+            }
             // A box is a drag, not a click: start it here, commit it on release.
             if (drawing && props.method === "box") {
                 if (event.button !== 0) return;
@@ -296,6 +397,7 @@ export function VideoPanel(props: VideoPanelProps) {
         },
         [
             drawing,
+            rightHasDrawMeaning,
             props.method,
             props.paintMode,
             props.brushSize,
@@ -309,11 +411,36 @@ export function VideoPanel(props: VideoPanelProps) {
             const layout = layoutRef.current;
             const canvas = canvasRef.current;
             if (!layout || !canvas) return;
+
+            // Panning wins while a pan gesture is live: no cursor tracking, no
+            // box drag, no stroke should be feeding off the same pointer.
+            const pan = panRef.current;
+            if (pan && pan.pointerId === event.pointerId) {
+                const dx = event.clientX - pan.lastX;
+                const dy = event.clientY - pan.lastY;
+                pan.lastX = event.clientX;
+                pan.lastY = event.clientY;
+                pan.moved = true;
+                if (dx !== 0 || dy !== 0) {
+                    applyView(
+                        panBy(
+                            containerSize(),
+                            frameSize(),
+                            viewRef.current,
+                            dx,
+                            dy,
+                        ),
+                    );
+                }
+                return;
+            }
+
             const rect = canvas.getBoundingClientRect();
-            const raw: FramePoint = {
-                x: (event.clientX - rect.left - layout.x) / layout.scale,
-                y: (event.clientY - rect.top - layout.y) / layout.scale,
-            };
+            const raw: FramePoint = screenToFrame(
+                layout,
+                event.clientX - rect.left,
+                event.clientY - rect.top,
+            );
             if (drawing) setCursor(raw);
             if (boxStartRef.current) {
                 const start = boxStartRef.current;
@@ -343,11 +470,31 @@ export function VideoPanel(props: VideoPanelProps) {
             paintLiveSegment(stroke.last, point, stroke.mode);
             stroke.last = point;
         },
-        [drawing, props.brushSize, paintLiveSegment],
+        [
+            drawing,
+            applyView,
+            containerSize,
+            frameSize,
+            props.brushSize,
+            paintLiveSegment,
+        ],
     );
 
     const finishStroke = useCallback(
         (event: ReactPointerEvent<HTMLCanvasElement>) => {
+            const pan = panRef.current;
+            if (pan && pan.pointerId === event.pointerId) {
+                panRef.current = null;
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+                setPanning(false);
+                // A right-drag that actually panned is not also a right-click.
+                if (pan.moved && pan.button === 2) {
+                    swallowRightClickRef.current = true;
+                }
+                return;
+            }
             if (boxStartRef.current) {
                 boxStartRef.current = null;
                 const rect = boxRect;
@@ -381,6 +528,41 @@ export function VideoPanel(props: VideoPanelProps) {
         setViewport({ w: element.clientWidth, h: element.clientHeight });
         return () => observer.disconnect();
     }, []);
+
+    // Scroll to zoom, about whatever is under the cursor.
+    //
+    // This must be a native listener rather than an `onWheel` prop: React
+    // attaches `wheel` at the root as a passive listener, so `preventDefault()`
+    // from JSX is ignored and the page scrolls while you zoom.
+    useEffect(() => {
+        const element = wrapRef.current;
+        if (!element) return;
+        const onWheel = (event: WheelEvent) => {
+            const layout = layoutRef.current;
+            if (!layout) return;
+            event.preventDefault();
+            const bounds = element.getBoundingClientRect();
+            const container = { w: bounds.width, h: bounds.height };
+            const current = viewRef.current;
+            applyView(
+                zoomAbout(
+                    container,
+                    { w: layout.width, h: layout.height },
+                    current,
+                    clampZoom(
+                        current.zoom *
+                            wheelZoomFactor(event.deltaY, event.deltaMode),
+                    ),
+                    {
+                        x: event.clientX - bounds.left,
+                        y: event.clientY - bounds.top,
+                    },
+                ),
+            );
+        };
+        element.addEventListener("wheel", onWheel, { passive: false });
+        return () => element.removeEventListener("wheel", onWheel);
+    }, [applyView]);
 
     useEffect(() => {
         const cache = cacheRef.current;
@@ -513,18 +695,16 @@ export function VideoPanel(props: VideoPanelProps) {
 
             const frameWidth = frame ? frame.width : props.clip.width;
             const frameHeight = frame ? frame.height : props.clip.height;
-            const scale = Math.min(width / frameWidth, height / frameHeight);
+            const nextLayout = frameLayout(
+                { w: width, h: height },
+                { w: frameWidth, h: frameHeight },
+                view,
+            );
+            const scale = nextLayout.scale;
             const drawWidth = frameWidth * scale;
             const drawHeight = frameHeight * scale;
-            const drawX = (width - drawWidth) / 2;
-            const drawY = (height - drawHeight) / 2;
-            const nextLayout: FrameLayout = {
-                x: drawX,
-                y: drawY,
-                scale,
-                width: frameWidth,
-                height: frameHeight,
-            };
+            const drawX = nextLayout.x;
+            const drawY = nextLayout.y;
             layoutRef.current = nextLayout;
             setLayout((current) =>
                 current &&
@@ -537,12 +717,50 @@ export function VideoPanel(props: VideoPanelProps) {
                     : nextLayout,
             );
 
+            // Only the visible slice of the source is ever resampled. Zoomed in,
+            // a full-frame drawImage would touch every source pixel on every
+            // repaint, and panning repaints on every pointer move.
+            const sourceX = Math.max(0, -drawX / scale);
+            const sourceY = Math.max(0, -drawY / scale);
+            const sourceWidth = Math.min(frameWidth - sourceX, width / scale);
+            const sourceHeight = Math.min(
+                frameHeight - sourceY,
+                height / scale,
+            );
+            const canBlit = scale > 0 && sourceWidth > 0 && sourceHeight > 0;
+            // Resample only when shrinking. Magnified, both the frame and the mask
+            // show their true pixels: a blurred boundary is the wrong thing to put
+            // in front of someone deciding whether a mask is accurate.
+            const smooth = scale < 1;
+            const blit = (
+                source: CanvasImageSource,
+                alpha: number,
+                smooth: boolean,
+            ) => {
+                if (!canBlit) return;
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.imageSmoothingEnabled = smooth;
+                ctx.drawImage(
+                    source,
+                    sourceX,
+                    sourceY,
+                    sourceWidth,
+                    sourceHeight,
+                    drawX + sourceX * scale,
+                    drawY + sourceY * scale,
+                    sourceWidth * scale,
+                    sourceHeight * scale,
+                );
+                ctx.restore();
+            };
+
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.fillStyle = "#000";
             ctx.fillRect(0, 0, width, height);
 
             if (frame) {
-                ctx.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
+                blit(frame, 1, smooth);
             } else {
                 ctx.fillStyle = "#1b1f24";
                 ctx.fillRect(drawX, drawY, drawWidth, drawHeight);
@@ -589,16 +807,7 @@ export function VideoPanel(props: VideoPanelProps) {
                 maskRenderer.drawRuns(decoded.runs, requestTracklets[i].color);
             }
 
-            ctx.save();
-            ctx.globalAlpha = props.maskOpacity;
-            ctx.drawImage(
-                maskRenderer.canvasElement,
-                drawX,
-                drawY,
-                drawWidth,
-                drawHeight,
-            );
-            ctx.restore();
+            blit(maskRenderer.canvasElement, props.maskOpacity, smooth);
 
             if (props.tool === "review") return;
 
@@ -616,16 +825,11 @@ export function VideoPanel(props: VideoPanelProps) {
                 if (!mask) continue;
                 maskRenderer.clear();
                 maskRenderer.drawRuns(mask.runs, color);
-                ctx.save();
-                ctx.globalAlpha = Math.max(0.6, props.maskOpacity);
-                ctx.drawImage(
+                blit(
                     maskRenderer.canvasElement,
-                    drawX,
-                    drawY,
-                    drawWidth,
-                    drawHeight,
+                    Math.max(0.6, props.maskOpacity),
+                    smooth,
                 );
-                ctx.restore();
             }
 
             if (!drawing || props.method === "brush") return;
@@ -662,6 +866,7 @@ export function VideoPanel(props: VideoPanelProps) {
         };
     }, [
         viewport,
+        view,
         props.clip,
         props.frameIndex,
         props.selectedTrackletId,
@@ -724,6 +929,8 @@ export function VideoPanel(props: VideoPanelProps) {
                 ref={wrapRef}
                 className={`${styles.canvasWrap} ${drawing ? styles.prompting : ""} ${
                     drawing && props.method === "brush" ? styles.brushing : ""
+                } ${drawing || view.zoom <= MIN_ZOOM ? "" : styles.pannable} ${
+                    panning ? styles.panning : ""
                 }`}
             >
                 <canvas
@@ -736,9 +943,17 @@ export function VideoPanel(props: VideoPanelProps) {
                     onPointerUp={finishStroke}
                     onPointerCancel={finishStroke}
                     onPointerLeave={() => setCursor(null)}
+                    title="Scroll to zoom · middle-drag to pan"
                     onContextMenu={(event) => {
-                        if (!drawing) return;
+                        // The canvas owns the right button: an OS menu would
+                        // otherwise pop up in the middle of a right-drag pan.
                         event.preventDefault();
+                        if (swallowRightClickRef.current) {
+                            // That right-drag was a pan, not a click.
+                            swallowRightClickRef.current = false;
+                            return;
+                        }
+                        if (!drawing) return;
                         if (props.method !== "brush") handleCanvasClick(event);
                     }}
                 />
@@ -927,6 +1142,39 @@ export function VideoPanel(props: VideoPanelProps) {
                     />
                     Show all masks
                 </label>
+
+                <div className={styles.zoomGroup}>
+                    <button
+                        type="button"
+                        className="btn"
+                        onClick={() => zoomBy(1 / 1.5)}
+                        disabled={view.zoom <= MIN_ZOOM}
+                        title="Zoom out"
+                    >
+                        −
+                    </button>
+                    <span className={styles.zoomValue}>
+                        {Math.round(view.zoom * 100)}%
+                    </span>
+                    <button
+                        type="button"
+                        className="btn"
+                        onClick={() => zoomBy(1.5)}
+                        disabled={view.zoom >= MAX_ZOOM}
+                        title="Zoom in"
+                    >
+                        +
+                    </button>
+                    <button
+                        type="button"
+                        className="btn"
+                        onClick={resetView}
+                        disabled={view.zoom === FIT_VIEW.zoom}
+                        title="Fit the whole frame"
+                    >
+                        Fit
+                    </button>
+                </div>
             </div>
         </div>
     );

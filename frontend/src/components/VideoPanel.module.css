@@ -91,9 +91,35 @@
     white-space: nowrap;
 }
 
+.zoomGroup {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.zoomValue {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--muted);
+    min-width: 4ch;
+    text-align: right;
+}
+
 /* Brush tool: the SVG circle below is the cursor. */
 .brushing .canvas {
     cursor: none;
+}
+
+/* Review/propagate: the frame is a pannable surface, not a target. */
+.pannable .canvas {
+    cursor: grab;
+}
+
+/* Declared last so an in-flight pan wins over both the crosshair and the brush
+   tool's hidden cursor. */
+.panning .canvas {
+    cursor: grabbing;
 }
 
 /* Vector overlay for the polygon in progress and the brush cursor. */
