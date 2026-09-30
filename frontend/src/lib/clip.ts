@@ -3,6 +3,7 @@ import type {
     RawCategory,
     RawDataset,
     RawRle,
+    RawVideo,
     Taxonomy,
     Tracklet,
     TrackletReview,
@@ -785,18 +786,25 @@ export class Clip {
             known.add(tracklet.categoryId);
         }
 
+        // The frames that exist are the ones the session materialised, not the
+        // list the archive recorded when it was packed — a video-only archive
+        // records none at all. Writing the clip's own sequence keeps the
+        // exported JSON addressable by the masks it carries.
+        const exported: RawVideo = {
+            ...video,
+            file_names: [...this.frameNames],
+            length: this.frameNames.length,
+            width: this.width,
+            height: this.height,
+            fps: this.fps,
+            end_frame: Math.max(0, this.frameNames.length - 1),
+            status: this.editCount > 0 ? "edited" : video.status,
+            ...(semantic ? { label_maps: this.currentLabelMaps() } : {}),
+        };
+
         return {
             ...this.raw,
-            videos: [
-                {
-                    ...video,
-                    status: this.editCount > 0 ? "edited" : video.status,
-                    ...(semantic
-                        ? { label_maps: this.currentLabelMaps() }
-                        : {}),
-                },
-                ...this.raw.videos.slice(1),
-            ],
+            videos: [exported, ...this.raw.videos.slice(1)],
             annotations: [...others, ...annotations],
             categories,
         };

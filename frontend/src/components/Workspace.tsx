@@ -11,8 +11,18 @@ import type {
     TaxonomyKey,
 } from "../types";
 import { ReviewStore } from "../lib/review";
-import { downloadText } from "../lib/format";
 import { downloadBlob } from "../lib/zipWriter";
+import {
+    archiveFrameEntries,
+    exportAnnotation,
+    exportOriginalFrames,
+    exportProjectArchive,
+    exportSampledFrames,
+    exportSourceVideo,
+    sourceVideoEntry,
+    type ExportedFile,
+    type ExportProgress,
+} from "../lib/exporters";
 import { MODE_VOCABULARY } from "../lib/project";
 import { NEW_TRACKLET_LABEL } from "../lib/clip";
 import { rleArea } from "../lib/rle";
@@ -57,6 +67,7 @@ import {
     type Tool,
 } from "./Toolbar";
 import { LockIcon } from "./LockIcon";
+import { ExportMenu, type ExportOption } from "./ExportMenu";
 import styles from "./Workspace.module.css";
 
 export interface WorkspaceNotice {
@@ -242,7 +253,11 @@ export function Workspace({
     const [sam, setSam] = useState<Sam3Status | null>(null);
 
     const [className, setClassName] = useState("");
-    const [exporting, setExporting] = useState(false);
+    /** The export chooser is open, and which of its choices is being written. */
+    const [exportOpen, setExportOpen] = useState(false);
+    const [exportBusyId, setExportBusyId] = useState<string | null>(null);
+    const [exportProgress, setExportProgress] = useState<string | null>(null);
+    const [exportError, setExportError] = useState<string | null>(null);
     const [localNotice, setLocalNotice] = useState<WorkspaceNotice | null>(
         null,
     );
@@ -1847,6 +1862,10 @@ export function Workspace({
             )
                 return;
 
+            // The export chooser is modal: while it is up, its own Escape
+            // handler closes it and no shortcut may reach the workspace behind.
+            if (exportOpen) return;
+
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                 // Re-propagate from the corrected frame. Works from any tool, so a
                 // reviewer who has just pressed Enter on a correction can press it
@@ -1968,6 +1987,7 @@ export function Workspace({
         acceptPropagation,
         runPropagation,
         refineFrom,
+        exportOpen,
         repropagateFrom,
     ]);
 
@@ -1985,45 +2005,133 @@ export function Workspace({
         );
     }, [drafts.size, vocab.unit]);
 
-    const handleExport = useCallback(async () => {
-        if (!confirmDraftsDiscarded()) return;
-        const payload = ReviewStore.buildExport(clip, store.getRecord());
-        downloadText(
-            `${clip.name}.review.json`,
-            JSON.stringify(payload, null, 2),
-            "application/json",
-        );
-        downloadText(`${clip.name}.review.csv`, payload.csv, "text/csv");
-        if (clip.editCount === 0) return;
-        if (semantic) {
-            setExporting(true);
+    /**
+     * Run one export choice.
+     *
+     * The menu stays open while a multi-file export is written (progress lands
+     * in `busyText`) so a large clip shows something rather than looking stuck.
+     */
+    const runExport = useCallback(
+        async (
+            id: string,
+            unit: string,
+            task: (
+                report: ExportProgress,
+            ) => ExportedFile | Promise<ExportedFile>,
+        ) => {
+            setExportError(null);
+            setExportBusyId(id);
+            setExportProgress(null);
             try {
-                const blob = await clip.exportProjectZip(
-                    zip,
-                    store.getRecord(),
+                const file = await task((done, total) =>
+                    setExportProgress(`${done} / ${total} ${unit}`.trim()),
                 );
-                downloadBlob(`${clip.name}.project`, blob);
+                downloadBlob(file.fileName, file.blob);
+                setExportOpen(false);
                 setLocalNotice({
                     kind: "success",
-                    text: `Exported ${clip.name}.project with ${clip.dirtyFrames.size} updated label map${clip.dirtyFrames.size === 1 ? "" : "s"}. Open it to continue from the saved state.`,
+                    text: `Exported ${file.fileName}.`,
                 });
             } catch (cause) {
-                setLocalNotice({
-                    kind: "info",
-                    text: `Export failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-                });
+                setExportError(
+                    cause instanceof Error ? cause.message : String(cause),
+                );
             } finally {
-                setExporting(false);
+                setExportBusyId(null);
+                setExportProgress(null);
             }
-            return;
-        }
+        },
+        [],
+    );
 
-        downloadText(
-            `${clip.name}.json`,
-            JSON.stringify(clip.toDataset(store.getRecord()), null, 2),
-            "application/json",
-        );
-    }, [clip, store, semantic, zip, confirmDraftsDiscarded]);
+    // What this project can actually hand back. An archive packed from a video
+    // has no frame folder, one packed from frames has no video, and a
+    // video-only archive records no frame names at all — hence the checks.
+    const sourceVideo = useMemo(() => sourceVideoEntry(clip, zip), [clip, zip]);
+    const packedFrames = useMemo(() => archiveFrameEntries(zip), [zip]);
+
+    const exportOptions = useMemo<ExportOption[]>(
+        () => [
+            {
+                id: "video",
+                title: "Original video",
+                detail: "The source video this project was packed from, copied out unrecompressed.",
+                ...(sourceVideo
+                    ? {}
+                    : {
+                          disabledReason:
+                              "This project was packed from frames, so it carries no source video.",
+                      }),
+                run: () =>
+                    runExport("video", "", () => exportSourceVideo(clip, zip)),
+            },
+            {
+                id: "original-frames",
+                title: "Original frames",
+                detail: `The ${packedFrames.length} frame${
+                    packedFrames.length === 1 ? "" : "s"
+                } the archive carried, as a ZIP.`,
+                ...(packedFrames.length
+                    ? {}
+                    : {
+                          disabledReason:
+                              "This project was packed from a video, so it carries no frame folder.",
+                      }),
+                run: () =>
+                    runExport("original-frames", "frames", (report) =>
+                        exportOriginalFrames(clip, zip, report),
+                    ),
+            },
+            {
+                id: "sampled-frames",
+                title: "Sampled frames",
+                detail: `The ${frames.count} frame${
+                    frames.count === 1 ? "" : "s"
+                } this review annotated, as a ZIP.`,
+                ...(frames.count
+                    ? {}
+                    : { disabledReason: "This project has no frames." }),
+                run: () =>
+                    runExport("sampled-frames", "frames", (report) =>
+                        exportSampledFrames(clip, frames, report),
+                    ),
+            },
+            semantic
+                ? {
+                      id: "project",
+                      title: "Updated project archive",
+                      detail: "A .project holding the frames, the updated label maps and the annotation — reopen it to carry on from here.",
+                      run: () =>
+                          runExport("project", "label maps", (report) =>
+                              exportProjectArchive(
+                                  clip,
+                                  zip,
+                                  store.getRecord(),
+                                  report,
+                              ),
+                          ),
+                  }
+                : {
+                      id: "annotation",
+                      title: "Annotation JSON",
+                      detail: "The dataset as it stands: one entry per tracklet with its per-frame RLE masks.",
+                      run: () =>
+                          runExport("annotation", "frames", () =>
+                              exportAnnotation(clip, store.getRecord()),
+                          ),
+                  },
+        ],
+        [
+            clip,
+            frames,
+            packedFrames.length,
+            runExport,
+            semantic,
+            sourceVideo,
+            store,
+            zip,
+        ],
+    );
 
     return (
         <div className={styles.workspace}>
@@ -2108,10 +2216,16 @@ export function Workspace({
                 <button
                     type="button"
                     className="btn btnPrimary"
-                    onClick={() => void handleExport()}
-                    disabled={exporting}
+                    onClick={() => {
+                        // Same §6.2 guard: leaving with drafts open prompts
+                        // once, before anything is written.
+                        if (!confirmDraftsDiscarded()) return;
+                        setExportError(null);
+                        setExportOpen(true);
+                    }}
+                    disabled={exportBusyId !== null}
                 >
-                    {exporting ? "Exporting…" : "Export"}
+                    {exportBusyId !== null ? "Exporting…" : "Export"}
                 </button>
                 <button
                     type="button"
@@ -3021,6 +3135,17 @@ export function Workspace({
                     />
                 </aside>
             </div>
+
+            {exportOpen && (
+                <ExportMenu
+                    title={`Export ${clip.name}`}
+                    options={exportOptions}
+                    busyId={exportBusyId}
+                    busyText={exportProgress}
+                    error={exportError}
+                    onClose={() => setExportOpen(false)}
+                />
+            )}
         </div>
     );
 }

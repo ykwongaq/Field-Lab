@@ -33,4 +33,7 @@ node_modules/
 # Generated project archives
 *.zip
 
+# Backend runtime scratch (temp_dir: disposable review sessions)
+backend/tmp/
+
 backend/models

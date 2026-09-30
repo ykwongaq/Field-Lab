@@ -212,12 +212,16 @@ Your work is **saved automatically** in your browser as you go, so you can close
 
 ## 11. Exporting your review
 
-When you have reviewed the clip, click **Export** in the header. Two files download automatically:
+When you have reviewed the clip, click **Export** in the header. A small chooser opens listing everything the project can hand back, and each choice saves **its own file**:
 
-1. **`<clip>.review.json`** — the complete structured record: clip metadata plus, for every tracklet, the original pipeline values, your final values, the label confirmation flag, the mask verdict, and your comment.
-2. **`<clip>.review.csv`** — the same content as a flat, spreadsheet-friendly table, convenient for quick inspection in Excel, R, or Python.
+1. **Original video** — the source video the project was packed from, copied out unrecompressed. Only offered when the project was created from a video.
+2. **Original frames** — the frame folder the archive carried, as a ZIP. Only offered when the project was created from a folder of frames.
+3. **Sampled frames** — the frames this review actually annotated, as a ZIP. For a project created from a video these are the frames decoded from it; for one created from frames they are those frames.
+4. **Annotation JSON** — the dataset as it stands after your review, in the project's COCO video-segmentation layout (`videos` + `annotations[].segmentations[]`), with every tracklet's per-frame RLE masks. Semantic projects additionally bundle one label-map PNG per frame, because the JSON refers to those by name.
 
-Both files include the **original** prediction and your **final** decision side by side, so downstream scripts can diff what the model produced against what you concluded.
+A choice that does not apply to the current project is shown with the reason instead of a button — a frames-only project, for example, has no source video to export.
+
+> 💡 **Check for unsaved work first.** If any frame still has an uncommitted mask draft, Export asks once before it writes anything.
 
 Click **Open another** in the header to load a different project archive.
 
@@ -248,7 +252,7 @@ Click **Open another** in the header to load a different project archive.
 | **Taxonomy** | The scientific classification of the object: kingdom → phylum → class → order → family → genus → species. |
 | **Verdict**  | Your judgement of a mask's quality: Accurate, Inaccurate, or Unsure.                                      |
 | **Verified** | A tracklet whose label is confirmed **and** whose mask has a verdict.                                     |
-| **Export**   | The JSON + CSV files containing your completed review.                                                    |
+| **Export**   | The chooser that saves the original video, the frames, or the annotation JSON.                            |
 
 ---
 
