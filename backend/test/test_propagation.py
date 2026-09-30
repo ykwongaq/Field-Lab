@@ -658,9 +658,7 @@ def test_one_client_cannot_fill_the_queue():
     """
     alice, bob = "a" * 32, "b" * 32
     hold = _Hold()
-    registry = JobRegistry(
-        hold, max_jobs=6, max_jobs_per_client=2, ttl_seconds=1800
-    )
+    registry = JobRegistry(hold, max_jobs=6, max_jobs_per_client=2, ttl_seconds=1800)
     try:
         submit(registry, alice)
         submit(registry, alice)
@@ -697,9 +695,7 @@ def test_a_finished_job_does_not_hold_a_place():
 def test_the_registry_reports_the_shared_queue():
     """`counts()` describes the one GPU everybody shares, in flight only."""
     hold = _Hold()
-    registry = JobRegistry(
-        hold, max_jobs=8, max_jobs_per_client=4, ttl_seconds=1800
-    )
+    registry = JobRegistry(hold, max_jobs=8, max_jobs_per_client=4, ttl_seconds=1800)
     try:
         assert registry.counts() == {"queued": 0, "running": 0}
 
