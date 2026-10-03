@@ -83,12 +83,29 @@ export interface Taxonomy {
 
 export type TaxonomyKey = Exclude<keyof Taxonomy, "taxonId">;
 
+/**
+ * A project's label: one class, described once and shared by every tracklet
+ * assigned to it. `id` is the app's own 0-based sequence — it is the number
+ * drawn on the label's colour block and the COCO `category_id` on export.
+ * Unlabelled objects use the reserved id -1.
+ */
+export interface Label {
+    id: number;
+    /** Display name — the category's common name, else its species. */
+    name: string;
+    /** Colour of this label's masks and blocks. Frontend-only, never exported. */
+    color: string;
+    taxonomy: Taxonomy;
+}
+
 export type TrackletOrigin = "dataset" | "created";
 
 export interface Tracklet {
     id: number;
     objectId: number;
     categoryId: number;
+    /** The label this tracklet is assigned to, or `null` when unlabelled. */
+    labelId: number | null;
     label: string;
     taxonomy: Taxonomy;
     color: string;
@@ -109,11 +126,12 @@ export interface PromptPoint {
 }
 
 /**
- * Taxonomy corrections made in the workspace, keyed by tracklet id.
+ * Taxonomy corrections made in the workspace, keyed by **label id**.
  *
- * A tracklet absent from the map keeps the taxonomy the archive gave it, so an
- * empty map means "nothing was relabelled". This is the only annotation state
- * that lives outside the `Clip`, because it is keyed by hand and written on
- * export rather than affecting the masks.
+ * A label is one class, shared by every tracklet assigned to it, so an entry
+ * here describes the whole class at once. A label absent from the map keeps the
+ * taxonomy the archive gave it, so an empty map means "nothing was relabelled".
+ * This is the only annotation state that lives outside the `Clip`, because it is
+ * keyed by hand and written on export rather than affecting the masks.
  */
 export type TaxonomyOverrides = Record<number, Taxonomy>;

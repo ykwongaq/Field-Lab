@@ -43,6 +43,14 @@ export const MODE_VOCABULARY: Record<ProjectMode, ModeVocabulary> = {
 export const DEFAULT_PROJECT_MODE: ProjectMode = "instance";
 
 /**
+ * Modes that cannot be chosen when creating a project yet.
+ *
+ * Opening an existing project of a locked mode still works — this only gates
+ * creation. Semantic mode is locked while the label-list rework lands.
+ */
+export const LOCKED_MODES: readonly ProjectMode[] = ["semantic"];
+
+/**
  * Read the mode from a video record.
  */
 export function readProjectMode(video: RawVideo): {

@@ -8,6 +8,7 @@ import {
 } from "react";
 import { filesFromDrop } from "../lib/droppedFiles";
 import {
+    LOCKED_MODES,
     MODE_VOCABULARY,
     PROJECT_MODES,
     type ProjectMode,
@@ -526,13 +527,22 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
                             <div className={styles.modeGrid}>
                                 {PROJECT_MODES.map((option) => {
                                     const vocabulary = MODE_VOCABULARY[option];
+                                    const locked =
+                                        LOCKED_MODES.includes(option);
                                     const active = mode === option;
                                     return (
                                         <label
                                             key={option}
                                             className={`${styles.modeCard} ${
                                                 active ? styles.modeActive : ""
+                                            } ${
+                                                locked ? styles.modeLocked : ""
                                             }`}
+                                            title={
+                                                locked
+                                                    ? "Not available yet — semantic projects are temporarily locked."
+                                                    : undefined
+                                            }
                                         >
                                             <input
                                                 type="radio"
@@ -541,10 +551,12 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
                                                 checked={active}
                                                 onChange={() => setMode(option)}
                                                 className={styles.modeRadio}
+                                                disabled={locked}
                                                 required
                                             />
                                             <span className={styles.modeTitle}>
                                                 {vocabulary.title}
+                                                {locked ? " (unavailable)" : ""}
                                             </span>
                                             <span
                                                 className={

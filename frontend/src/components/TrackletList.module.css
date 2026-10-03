@@ -1,13 +1,12 @@
 /*
- * The objects panel fills the top share of the right sidebar. It is a fixed
- * fraction of the column so the inspector below it always has room, and only
- * the row list scrolls.
+ * The objects panel fills the top of the right sidebar; the label list sits
+ * below it. Only the row list scrolls.
  */
 .panel {
     display: flex;
     flex-direction: column;
     min-height: 0;
-    flex: 1 1 42%;
+    flex: 1 1 auto;
     border-bottom: 1px solid var(--line);
 }
 
@@ -129,11 +128,27 @@
     color: var(--bad);
 }
 
-.swatch {
-    width: 12px;
-    height: 12px;
+/*
+ * The row's colour block doubles as its label button: the label's colour with
+ * its id in the middle, or red with a dash when the object is unlabelled.
+ */
+.assign {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex: 0 0 auto;
-    border-radius: 3px;
+    align-self: center;
+    width: 26px;
+    height: 26px;
+    margin-left: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    color: #fff;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 

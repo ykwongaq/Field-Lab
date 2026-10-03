@@ -1,145 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { Taxonomy, TaxonomyKey, Tracklet } from "../types";
+import type { Taxonomy } from "../types";
 import type { Taxonomy as RankedTaxonomy } from "../types/annotations";
-import { MODE_VOCABULARY, type ProjectMode } from "../lib/project";
 import {
     getTaxonDetailBySuggestion,
     isAbort,
     suggestTaxa,
     type TaxonSuggestion,
 } from "../services/TaxonomyService";
-import { EmptyState } from "../ui";
-import styles from "./Inspector.module.css";
-
-const TAXONOMY_FIELDS: {
-    key: TaxonomyKey;
-    label: string;
-    placeholder: string;
-}[] = [
-    { key: "kingdom", label: "Kingdom", placeholder: "Animalia" },
-    { key: "phylum", label: "Phylum", placeholder: "Chordata" },
-    { key: "class", label: "Class", placeholder: "Mammalia" },
-    { key: "order", label: "Order", placeholder: "Primates" },
-    { key: "family", label: "Family", placeholder: "Atelidae" },
-    { key: "genus", label: "Genus", placeholder: "Ateles" },
-    { key: "species", label: "Species", placeholder: "Ateles geoffroyi" },
-    {
-        key: "commonName",
-        label: "Common name",
-        placeholder: "Geoffroy's Spider Monkey",
-    },
-];
-
-interface InspectorProps {
-    mode: ProjectMode;
-    tracklet: Tracklet | null;
-    /** The taxonomy in force: the workspace edit, else the archive's own. */
-    taxonomy: Taxonomy | null;
-    onTaxonomyField: (key: TaxonomyKey, value: string) => void;
-    onApplyTaxonomy: (taxonomy: Taxonomy) => void;
-}
-
-/**
- * The inspector: the identity and taxonomy of the selected object.
- *
- * Picking a suggestion in any rank fetches the taxon's full GBIF hierarchy and
- * fills that rank plus every ancestor above it, which is the whole point — the
- * species is what a curator knows, the path above it is bookkeeping.
- */
-export function Inspector(props: InspectorProps) {
-    const { tracklet, taxonomy } = props;
-    const vocab = MODE_VOCABULARY[props.mode];
-    const unitTitle = vocab.unit.charAt(0).toUpperCase() + vocab.unit.slice(1);
-
-    if (!tracklet || !taxonomy) {
-        return (
-            <section className={styles.panel}>
-                <header className={styles.head}>
-                    <span className="sectionLabel">Inspector</span>
-                </header>
-                <EmptyState icon="target" title={`No ${vocab.unit} selected`}>
-                    Pick one from the list, or click its mask on the frame.
-                </EmptyState>
-            </section>
-        );
-    }
-
-    const confirmed =
-        taxonomy.species.trim() !== "" || taxonomy.commonName.trim() !== "";
-
-    return (
-        <section className={styles.panel} aria-label={`${unitTitle} details`}>
-            <header className={styles.head}>
-                <span
-                    className={styles.swatch}
-                    style={{ background: tracklet.color }}
-                />
-                <div className={styles.headText}>
-                    <h2 className={styles.title}>
-                        {tracklet.label}
-                        <span className={styles.id}>#{tracklet.id}</span>
-                    </h2>
-                    <p className={styles.meta}>
-                        {vocab.hasObjectIdentity
-                            ? `object ${tracklet.objectId} · `
-                            : ""}
-                        frames {tracklet.maskFrames.first + 1}–
-                        {tracklet.maskFrames.last + 1} ·{" "}
-                        {tracklet.maskFrames.count}{" "}
-                        {tracklet.maskFrames.count === 1 ? "mask" : "masks"}
-                    </p>
-                </div>
-            </header>
-
-            <div className={`scrollArea ${styles.body}`}>
-                <div className={styles.sectionHead}>
-                    <span className="sectionLabel">Taxonomy</span>
-                    {confirmed && <span className="chip chipGood">named</span>}
-                </div>
-
-                <div className={styles.rows}>
-                    {TAXONOMY_FIELDS.map(({ key, label, placeholder }) =>
-                        key === "commonName" ? (
-                            <label key={key} className={styles.row}>
-                                <span className={styles.rowLabel}>{label}</span>
-                                <input
-                                    className="input"
-                                    value={taxonomy[key]}
-                                    placeholder={placeholder}
-                                    onChange={(event) =>
-                                        props.onTaxonomyField(
-                                            key,
-                                            event.target.value,
-                                        )
-                                    }
-                                />
-                            </label>
-                        ) : (
-                            <div key={key} className={styles.row}>
-                                <span className={styles.rowLabel}>{label}</span>
-                                <TaxonAutocomplete
-                                    value={taxonomy[key]}
-                                    label={label}
-                                    rank={key.toUpperCase()}
-                                    placeholder={placeholder}
-                                    commonName={taxonomy.commonName}
-                                    onChange={(value) =>
-                                        props.onTaxonomyField(key, value)
-                                    }
-                                    onApply={props.onApplyTaxonomy}
-                                />
-                            </div>
-                        ),
-                    )}
-                </div>
-            </div>
-        </section>
-    );
-}
+import styles from "./TaxonAutocomplete.module.css";
 
 /** Convert a rank-indexed taxonomy from the lookup service into the flat
- * taxonomy shape used by tracklets. */
+ * taxonomy shape used by labels. */
 function rankedToFlatTaxonomy(
     ranked: RankedTaxonomy,
     commonName: string,
@@ -157,7 +29,7 @@ function rankedToFlatTaxonomy(
     };
 }
 
-interface TaxonAutocompleteProps {
+export interface TaxonAutocompleteProps {
     value: string;
     label: string;
     rank: string;
@@ -172,7 +44,7 @@ interface TaxonAutocompleteProps {
  * the taxon's full GBIF hierarchy and fills the selected rank plus every
  * higher (ancestor) rank, leaving deeper ranks empty.
  */
-function TaxonAutocomplete({
+export function TaxonAutocomplete({
     value,
     label,
     rank,

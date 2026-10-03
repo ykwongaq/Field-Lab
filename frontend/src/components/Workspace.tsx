@@ -3,8 +3,8 @@ import type { Clip } from "../lib/clip";
 import type { FrameSource } from "../lib/frames";
 import { SessionFrameSource } from "../lib/frames";
 import type { ZipArchive } from "../lib/zip";
-import type { PromptPoint, RawRle, Taxonomy, TaxonomyKey } from "../types";
-import { TaxonomyStore } from "../lib/taxonomyStore";
+import type { PromptPoint, RawRle, Taxonomy } from "../types";
+import { LabelStore } from "../lib/labelStore";
 import { downloadBlob } from "../lib/zipWriter";
 import {
     archiveFrameEntries,
@@ -18,7 +18,8 @@ import {
     type ExportProgress,
 } from "../lib/exporters";
 import { MODE_VOCABULARY } from "../lib/project";
-import { NEW_TRACKLET_LABEL } from "../lib/clip";
+import { emptyTaxonomy, NEW_TRACKLET_LABEL } from "../lib/clip";
+import { nextUnusedLabelColor } from "../lib/palette";
 import { rleArea } from "../lib/rle";
 import {
     composeRle,
@@ -53,7 +54,8 @@ import {
 } from "./PropagationQueue";
 import { TimelineStrip, type TimelineFrameState } from "./TimelineStrip";
 import { TrackletList } from "./TrackletList";
-import { Inspector } from "./Inspector";
+import { LabelsPanel } from "./LabelsPanel";
+import { LabelEditor } from "./LabelEditor";
 import {
     Toolbar,
     type DeleteScope,
@@ -188,7 +190,16 @@ export function Workspace({
     onDismissNotice,
     onReset,
 }: WorkspaceProps) {
-    const [clip, setClip] = useState(initialClip);
+    // Labels carry the taxonomy, and saved overrides are keyed by label id.
+    // Folding them in here means the list, inspector and export all read one
+    // consistent clip from the first render.
+    const storeRef = useRef<LabelStore | null>(null);
+    const [clip, setClip] = useState(() => {
+        const loaded = LabelStore.load(initialClip.name, initialClip);
+        storeRef.current = loaded;
+        return loaded.applyTo(initialClip);
+    });
+    const store = storeRef.current as LabelStore;
     const vocab = MODE_VOCABULARY[clip.mode];
     const [frameIndex, setFrameIndex] = useState(0);
     const [playing, setPlaying] = useState(false);
@@ -235,6 +246,16 @@ export function Workspace({
     const [sam, setSam] = useState<Sam3Status | null>(null);
 
     const [className, setClassName] = useState("");
+    /** Instance mode: the label a newly drawn object is assigned to. */
+    const [newLabelId, setNewLabelId] = useState<number | null>(null);
+    /** The label editor: `{ labelId: null }` creates, a number edits. */
+    const [labelEditor, setLabelEditor] = useState<{
+        labelId: number | null;
+    } | null>(null);
+    /** The label whose deletion is awaiting confirmation. */
+    const [pendingLabelDelete, setPendingLabelDelete] = useState<number | null>(
+        null,
+    );
     /** The export chooser is open, and which of its choices is being written. */
     const [exportOpen, setExportOpen] = useState(false);
     const [exportBusyId, setExportBusyId] = useState<string | null>(null);
@@ -344,13 +365,6 @@ export function Workspace({
         return () => window.removeEventListener("beforeunload", onBeforeUnload);
     }, [clip.editCount, drafts.size]);
 
-    const storeRef = useRef<TaxonomyStore | null>(null);
-    let store = storeRef.current;
-    if (!store) {
-        store = TaxonomyStore.load(clip.name);
-        storeRef.current = store;
-    }
-
     const refresh = useCallback(() => setTick((value) => value + 1), []);
 
     const selected = useMemo(
@@ -387,28 +401,158 @@ export function Workspace({
         setSelectedId(id);
     }, []);
 
-    const setTaxonomyField = useCallback(
-        (key: TaxonomyKey, value: string) => {
-            if (!selected) return;
-            const next = { ...store.get(selected) };
-            next[key] = value;
-            store.set(selected.id, next);
+    const selectedLabel = selected ? clip.labelFor(selected) : null;
+
+    /** Assign a label to one object, or move it to unlabelled. */
+    const assignTrackletLabel = useCallback(
+        (trackletId: number, labelId: number | null) => {
+            setClip(clip.setLabel(trackletId, labelId));
             refresh();
         },
-        [selected, store, refresh],
+        [clip, refresh],
     );
 
-    const applyTaxonomy = useCallback(
-        (taxonomy: Taxonomy) => {
-            if (!selected) return;
-            store.set(selected.id, taxonomy);
+    /** A name no other label is already using. */
+    const uniqueLabelName = useCallback(
+        (base: string) => {
+            let name = base;
+            let suffix = 2;
+            while (
+                clip.labels.some(
+                    (item) => item.name.toLowerCase() === name.toLowerCase(),
+                )
+            ) {
+                name = `${base} ${suffix}`;
+                suffix += 1;
+            }
+            return name;
+        },
+        [clip.labels],
+    );
+
+    /** The picker's "＋": create a label, assign it, then open its editor. */
+    const createLabelForTracklet = useCallback(
+        (trackletId: number) => {
+            const { clip: assigned, label } = clip.assignLabel(
+                trackletId,
+                uniqueLabelName("new label"),
+            );
+            // A fresh label must not inherit a saved edit left behind by an
+            // earlier label that happened to hold the same id.
+            store.remove(label.id);
+            setClip(assigned);
+            refresh();
+            setLabelEditor({ labelId: label.id });
+        },
+        [clip, store, uniqueLabelName, refresh],
+    );
+
+    const openLabelEditor = useCallback(
+        (labelId: number | null) => setLabelEditor({ labelId }),
+        [],
+    );
+
+    /** Save the label editor: add a new label, or update the one being edited. */
+    const saveLabel = useCallback(
+        (patch: { name: string; taxonomy: Taxonomy; color: string }) => {
+            if (!labelEditor) return;
+            if (labelEditor.labelId === null) {
+                const { clip: added, label } = clip.addLabel(patch.name);
+                // Clear any saved edit left by a previously deleted label that
+                // held this id, then write the values just entered.
+                store.remove(label.id);
+                setClip(
+                    added.updateLabel(label.id, {
+                        taxonomy: patch.taxonomy,
+                        color: patch.color,
+                    }),
+                );
+                store.set(label.id, patch.taxonomy);
+                store.setColor(label.id, patch.color);
+            } else {
+                const labelId = labelEditor.labelId;
+                setClip(
+                    clip.updateLabel(labelId, {
+                        name: patch.name,
+                        taxonomy: patch.taxonomy,
+                        color: patch.color,
+                    }),
+                );
+                store.set(labelId, patch.taxonomy);
+                store.setColor(labelId, patch.color);
+            }
+            setLabelEditor(null);
             refresh();
         },
-        [selected, store, refresh],
+        [clip, labelEditor, store, refresh],
     );
 
-    /** The taxonomy in force for the selected object: edit, else the archive's. */
-    const selectedTaxonomy = selected ? store.get(selected) : null;
+    const deleteLabel = useCallback(
+        (labelId: number) => {
+            const affected = clip.tracklets.filter(
+                (tracklet) => tracklet.labelId === labelId,
+            ).length;
+            const next = clip.deleteLabel(labelId);
+            if (next === clip) {
+                setPendingLabelDelete(null);
+                return;
+            }
+            // The store is keyed by label id, and ids are positional, so it has
+            // to renumber alongside the clip.
+            store.deleteLabel(labelId);
+            setNewLabelId((current) => {
+                if (current === null) return null;
+                if (current === labelId) return null;
+                return current > labelId ? current - 1 : current;
+            });
+            setClip(next);
+            setPendingLabelDelete(null);
+            refresh();
+            setLocalNotice({
+                kind: "info",
+                text:
+                    affected === 0
+                        ? "Label deleted."
+                        : `Label deleted — ${affected} ${
+                              affected === 1 ? "object is" : "objects are"
+                          } now unlabelled.`,
+            });
+        },
+        [clip, store, refresh],
+    );
+
+    /** Select the first object that uses a label. */
+    const selectLabel = useCallback(
+        (labelId: number) => {
+            const first = clip.tracklets.find(
+                (tracklet) => tracklet.labelId === labelId,
+            );
+            if (first) selectTracklet(first.id);
+        },
+        [clip.tracklets, selectTracklet],
+    );
+
+    const editorLabel =
+        labelEditor?.labelId != null
+            ? clip.labelById(labelEditor.labelId)
+            : null;
+    const editorTaxonomy = editorLabel
+        ? store.get(editorLabel)
+        : emptyTaxonomy();
+    /** A new label starts on the next colour no other label is using. */
+    const editorColor = editorLabel
+        ? store.colorOf(editorLabel)
+        : nextUnusedLabelColor(clip.labels.map((label) => label.color));
+
+    /** The label a delete confirmation is about, and how many it would free. */
+    const pendingLabel =
+        pendingLabelDelete === null ? null : clip.labelById(pendingLabelDelete);
+    const pendingLabelCount =
+        pendingLabelDelete === null
+            ? 0
+            : clip.tracklets.filter(
+                  (tracklet) => tracklet.labelId === pendingLabelDelete,
+              ).length;
 
     const resetPrompt = useCallback(() => {
         segmentAbortRef.current?.abort();
@@ -961,11 +1105,14 @@ export function Workspace({
                     : [...pool].sort((a, b) => b.area - a.area).slice(0, 1);
 
             const label = className.trim() || NEW_TRACKLET_LABEL;
+            const chosenLabel = clip.labelById(newLabelId);
             let next = clip;
             const created: number[] = [];
             for (const instance of chosen) {
                 const added = next.addTracklet(frameIndex, instance.rle, label);
-                next = added.clip;
+                next = chosenLabel
+                    ? added.clip.setLabel(added.tracklet.id, chosenLabel.id)
+                    : added.clip;
                 created.push(added.tracklet.id);
             }
             setClip(next);
@@ -990,6 +1137,7 @@ export function Workspace({
             clip,
             frameIndex,
             className,
+            newLabelId,
             refresh,
             discardDraft,
             vocab.unit,
@@ -1005,7 +1153,6 @@ export function Workspace({
             const next = clip.replaceMask(selectedId, frameIndex, finalMask);
             const stillThere = next.tracklets.some((t) => t.id === selectedId);
             if (!stillThere) {
-                store.remove(selectedId);
                 const position = clip.tracklets.findIndex(
                     (t) => t.id === selectedId,
                 );
@@ -1038,7 +1185,10 @@ export function Workspace({
                 frameIndex,
                 finalMask,
             );
-            setClip(next);
+            const chosenLabel = clip.labelById(newLabelId);
+            setClip(
+                chosenLabel ? next.setLabel(tracklet.id, chosenLabel.id) : next,
+            );
             setSelectedId(tracklet.id);
             discardDraft();
             // Stay in Add mask. The next object is usually drawn immediately, and
@@ -1107,6 +1257,7 @@ export function Workspace({
         candidate,
         className,
         targetClass,
+        newLabelId,
     ]);
 
     /**
@@ -1127,7 +1278,6 @@ export function Workspace({
             if (next === clip) return;
             const stillThere = next.tracklets.some((t) => t.id === id);
             if (!stillThere) {
-                store.remove(id);
                 const position = clip.tracklets.findIndex((t) => t.id === id);
                 const fallback =
                     next.tracklets[
@@ -2697,6 +2847,33 @@ export function Workspace({
                                 </label>
                             )}
 
+                            {!semantic && tool === "addMask" && (
+                                <select
+                                    className={styles.promptSelect}
+                                    value={
+                                        clip.labelById(newLabelId)
+                                            ? String(newLabelId)
+                                            : ""
+                                    }
+                                    onChange={(event) =>
+                                        setNewLabelId(
+                                            event.target.value === ""
+                                                ? null
+                                                : Number(event.target.value),
+                                        )
+                                    }
+                                    aria-label="Label for the new object"
+                                    title="Label the object you are about to create. Leave as Unlabelled to label it later."
+                                >
+                                    <option value="">Unlabelled</option>
+                                    {clip.labels.map((label) => (
+                                        <option key={label.id} value={label.id}>
+                                            {label.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+
                             {semantic && tool === "addMask" && (
                                 <>
                                     <input
@@ -2983,14 +3160,21 @@ export function Workspace({
                             tool === "propagate" ? togglePropBatch : undefined
                         }
                         onDelete={setPendingDelete}
+                        onAssign={semantic ? undefined : assignTrackletLabel}
+                        onNewLabel={
+                            semantic ? undefined : createLabelForTracklet
+                        }
                     />
-                    <Inspector
-                        mode={clip.mode}
-                        tracklet={selected}
-                        taxonomy={selectedTaxonomy}
-                        onTaxonomyField={setTaxonomyField}
-                        onApplyTaxonomy={applyTaxonomy}
-                    />
+                    {!semantic && (
+                        <LabelsPanel
+                            clip={clip}
+                            selectedLabelId={selectedLabel?.id ?? null}
+                            onSelect={selectLabel}
+                            onCreate={() => openLabelEditor(null)}
+                            onEdit={(labelId) => openLabelEditor(labelId)}
+                            onDelete={setPendingLabelDelete}
+                        />
+                    )}
                 </aside>
             </div>
 
@@ -3039,6 +3223,48 @@ export function Workspace({
                             : `This removes the ${vocab.unit} and all of its masks from the clip.`}{" "}
                         This cannot be undone — corrections made elsewhere that
                         reference it are lost too.
+                    </p>
+                </Dialog>
+            )}
+
+            {labelEditor && (
+                <LabelEditor
+                    label={editorLabel}
+                    taxonomy={editorTaxonomy}
+                    color={editorColor}
+                    onSave={saveLabel}
+                    onClose={() => setLabelEditor(null)}
+                />
+            )}
+
+            {pendingLabelDelete !== null && (
+                <Dialog
+                    title={`Delete label ${pendingLabelDelete}?`}
+                    onClose={() => setPendingLabelDelete(null)}
+                    footer={
+                        <>
+                            <Button
+                                variant="ghost"
+                                onClick={() => setPendingLabelDelete(null)}
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                variant="danger"
+                                onClick={() => deleteLabel(pendingLabelDelete)}
+                            >
+                                Delete label
+                            </Button>
+                        </>
+                    }
+                >
+                    <p>
+                        {pendingLabel
+                            ? `“${pendingLabel.name}” is used by ${pendingLabelCount} ${
+                                  pendingLabelCount === 1 ? "object" : "objects"
+                              }, which will become unlabelled.`
+                            : "This label will be removed."}{" "}
+                        This cannot be undone.
                     </p>
                 </Dialog>
             )}

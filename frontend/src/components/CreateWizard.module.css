@@ -255,6 +255,17 @@
     background: var(--accent-soft);
 }
 
+/* A mode that cannot be created yet; the card stays visible so the option is
+   discoverable, but it reads as unavailable and cannot be selected. */
+.modeLocked {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.modeLocked:hover {
+    border-color: var(--line);
+}
+
 .modeRadio {
     position: absolute;
     opacity: 0;

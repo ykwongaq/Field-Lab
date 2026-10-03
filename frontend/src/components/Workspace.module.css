@@ -241,6 +241,25 @@
     color: var(--faint);
 }
 
+/* The label picker in the add-mask bar, sized like the class-name input. */
+.promptSelect {
+    min-width: 150px;
+    max-width: 220px;
+    padding: 5px 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--fs-sm);
+}
+
+.promptSelect:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* Inline labelled control ("Back __ Forward __ Direction [select]"). */
 .rangeField {
     display: inline-flex;

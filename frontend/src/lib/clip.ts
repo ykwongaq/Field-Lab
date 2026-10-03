@@ -1,4 +1,5 @@
 import type {
+    Label,
     RawAnnotation,
     RawCategory,
     RawDataset,
@@ -10,7 +11,11 @@ import type {
 } from "../types";
 import type { ZipArchive } from "./zip";
 import { ZipWriter } from "./zipWriter";
-import { colorForIndex } from "./palette";
+import {
+    colorForIndex,
+    nextUnusedLabelColor,
+    UNLABELLED_COLOR,
+} from "./palette";
 import { ANNOTATION_ENTRY, readProjectMode, type ProjectMode } from "./project";
 import { rleIsEmpty, subtractRle, unionRle } from "./rle";
 import {
@@ -25,7 +30,17 @@ import {
 /** Label given to a tracklet created with the "Add mask" tool. */
 export const NEW_TRACKLET_LABEL = "unlabelled object";
 
-function emptyTaxonomy(): Taxonomy {
+/**
+ * Reserved category id for tracklets that carry no label.
+ *
+ * Real labels are the app's 0-based sequence (0, 1, 2, …), so -1 can never
+ * collide with one. It is written to the annotation JSON as the unlabelled
+ * bucket's category; the red block is what makes the gap visible in the app.
+ */
+export const UNLABELLED_LABEL_ID = -1;
+
+/** A taxonomy with every rank empty — the starting point for a new label. */
+export function emptyTaxonomy(): Taxonomy {
     return {
         taxonId: null,
         kingdom: "",
@@ -56,6 +71,11 @@ function taxonomyFromCategory(
     };
 }
 
+/** The name a label is shown under: its common name, else its scientific one. */
+export function labelNameOf(taxonomy: Taxonomy): string {
+    return taxonomy.commonName.trim() || taxonomy.species.trim();
+}
+
 function maskFramesOf(
     segmentations: (RawRle | null)[],
 ): Tracklet["maskFrames"] {
@@ -79,6 +99,8 @@ interface ClipInit {
     fps: number;
     frameNames: string[];
     tracklets: Tracklet[];
+    /** The project's label table (instance projects; empty for semantic). */
+    labels: Label[];
     mode: ProjectMode;
     modeAssumed: boolean;
     videoEntry: string | null;
@@ -161,6 +183,11 @@ export class Clip {
     readonly fps: number;
     readonly frameNames: string[];
     readonly tracklets: Tracklet[];
+    /**
+     * The project's label table: one row per class, shared by every tracklet
+     * assigned to it. Empty for semantic projects, whose classes are tracklets.
+     */
+    readonly labels: Label[];
     /** Segmentation mode fixed at project creation; read-only by design. */
     readonly mode: ProjectMode;
     /** `true` when the JSON had no `segmentation_mode` (old archive, instance assumed). */
@@ -191,6 +218,7 @@ export class Clip {
         this.fps = init.fps;
         this.frameNames = init.frameNames;
         this.tracklets = init.tracklets;
+        this.labels = init.labels;
         this.mode = init.mode;
         this.modeAssumed = init.modeAssumed;
         this.videoEntry = init.videoEntry;
@@ -257,6 +285,51 @@ export class Clip {
             (raw.categories ?? []).map((category) => [category.id, category]),
         );
 
+        const maxOf = (values: number[]) =>
+            values.length ? Math.max(...values) : 0;
+
+        // Category ids start above every id the archive uses or references.
+        const nextCategoryId =
+            Math.max(
+                maxOf((raw.categories ?? []).map((c) => c.id)),
+                maxOf((raw.annotations ?? []).map((a) => a.category_id)),
+            ) + 1;
+
+        // Instance projects: collapse the archive's category rows into one label
+        // per distinct common name (else species), so a class is described once
+        // and shared by every tracklet that uses it. Ids are reused from the
+        // archive where possible, which keeps an already-deduplicated project
+        // stable across reopen/export cycles. Semantic projects keep their
+        // per-class categories untouched and never populate this table.
+        const labels: Label[] = [];
+        const labelsByKey = new Map<string, Label>();
+
+        const resolveInstanceLabel = (
+            category: RawCategory | undefined,
+        ): Label | null => {
+            const taxonomy = taxonomyFromCategory(
+                category,
+                category?.species ?? "",
+            );
+            const name = labelNameOf(taxonomy);
+            if (!name) return null;
+            const key = `${name}\u0000${taxonomy.species}`.toLowerCase();
+            const existing = labelsByKey.get(key);
+            if (existing) return existing;
+            // Label ids are the app's own 0-based sequence: the number shown on
+            // a label is its id. Archive category ids are not reused — export
+            // remaps annotations to the label id instead.
+            const label: Label = {
+                id: labels.length,
+                name,
+                color: nextUnusedLabelColor(labels.map((item) => item.color)),
+                taxonomy,
+            };
+            labelsByKey.set(key, label);
+            labels.push(label);
+            return label;
+        };
+
         const tracklets: Tracklet[] = (raw.annotations ?? [])
             .filter((a) => a.video_id === video.id)
             .sort((a, b) => a.id - b.id)
@@ -266,13 +339,31 @@ export class Clip {
                 ).map((seg) => (seg && seg.counts ? seg : null));
 
                 const category = taxonomyByCategory.get(a.category_id);
+
+                if (mode === "instance") {
+                    const label = resolveInstanceLabel(category);
+                    return {
+                        id: a.id,
+                        objectId: a.object_id,
+                        categoryId: label?.id ?? UNLABELLED_LABEL_ID,
+                        labelId: label?.id ?? null,
+                        label: label?.name ?? NEW_TRACKLET_LABEL,
+                        taxonomy: label?.taxonomy ?? emptyTaxonomy(),
+                        color: label ? label.color : UNLABELLED_COLOR,
+                        segmentations,
+                        maskFrames: maskFramesOf(segmentations),
+                        origin: "dataset" as const,
+                    };
+                }
+
+                // Semantic: unchanged — one class per category id.
                 const species = category?.species || a.noun_phrase || "";
                 const taxonomy = taxonomyFromCategory(category, species);
-
                 return {
                     id: a.id,
                     objectId: a.object_id,
                     categoryId: a.category_id,
+                    labelId: a.category_id,
                     label: a.noun_phrase ?? species ?? `object ${a.object_id}`,
                     taxonomy,
                     color: colorForIndex(i),
@@ -290,9 +381,6 @@ export class Clip {
             (annotationEntry === ANNOTATION_ENTRY
                 ? "clip"
                 : annotationEntry.replace(/^.*\//, "").replace(/\.json$/i, ""));
-
-        const maxOf = (values: number[]) =>
-            values.length ? Math.max(...values) : 0;
 
         // Semantic projects: masks live in per-frame label maps, one tracklet
         // per class. (A semantic archive without `label_maps` is read like an
@@ -334,6 +422,7 @@ export class Clip {
                             id: nextTrackletId++,
                             objectId: nextObjectId++,
                             categoryId: classId,
+                            labelId: classId,
                             label:
                                 category?.species ||
                                 category?.common_name ||
@@ -372,11 +461,11 @@ export class Clip {
             raw,
             nextTrackletId,
             nextObjectId,
-            nextCategoryId:
-                Math.max(
-                    maxOf((raw.categories ?? []).map((c) => c.id)),
-                    maxOf(tracklets.map((t) => t.categoryId)),
-                ) + 1,
+            nextCategoryId: Math.max(
+                nextCategoryId,
+                maxOf(tracklets.map((t) => t.categoryId)) + 1,
+            ),
+            labels,
             editCount: 0,
             labelMaps,
             dirtyFrames: new Set(),
@@ -404,6 +493,185 @@ export class Clip {
         return seg;
     }
 
+    /** Look a label up by id; `null` (unlabelled) has no label. */
+    labelById(labelId: number | null): Label | null {
+        if (labelId === null) return null;
+        return this.labels.find((label) => label.id === labelId) ?? null;
+    }
+
+    /** The label a tracklet is assigned to, or `null` when it has none. */
+    labelFor(tracklet: Tracklet): Label | null {
+        return this.labelById(tracklet.labelId);
+    }
+
+    /**
+     * Add a label to the project without assigning anything to it. Its id is
+     * the next position in the list, and it takes the next palette colour unless
+     * one is given.
+     */
+    addLabel(
+        name: string,
+        taxonomy: Taxonomy = emptyTaxonomy(),
+        color: string = nextUnusedLabelColor(
+            this.labels.map((label) => label.color),
+        ),
+    ): { clip: Clip; label: Label } {
+        const label: Label = {
+            id: this.labels.length,
+            name: name.trim() || NEW_TRACKLET_LABEL,
+            color,
+            taxonomy,
+        };
+        return {
+            clip: this.clone({
+                labels: [...this.labels, label],
+                editCount: this.editCount + 1,
+            }),
+            label,
+        };
+    }
+
+    /**
+     * Assign a tracklet to a label, creating the label when no label with that
+     * name exists yet. The tracklet adopts the label's name, taxonomy and
+     * colour, and leaves the red "unlabelled" look behind.
+     */
+    assignLabel(
+        trackletId: number,
+        name: string,
+        taxonomy: Taxonomy = emptyTaxonomy(),
+    ): { clip: Clip; label: Label } {
+        const trimmed = name.trim() || NEW_TRACKLET_LABEL;
+        const existing = this.labels.find(
+            (item) => item.name.trim().toLowerCase() === trimmed.toLowerCase(),
+        );
+        if (existing) {
+            return {
+                clip: this.setLabel(trackletId, existing.id),
+                label: existing,
+            };
+        }
+        const { clip, label } = this.addLabel(trimmed, taxonomy);
+        return { clip: clip.setLabel(trackletId, label.id), label };
+    }
+
+    /**
+     * Move a tracklet to a label by id, or to the unlabelled bucket with
+     * `null`. The object adopts the label's name, taxonomy and colour.
+     */
+    setLabel(trackletId: number, labelId: number | null): Clip {
+        const index = this.tracklets.findIndex((t) => t.id === trackletId);
+        if (index < 0) return this;
+        const current = this.tracklets[index];
+        if (current.labelId === labelId) return this;
+
+        let next: Tracklet;
+        if (labelId === null) {
+            next = {
+                ...current,
+                categoryId: UNLABELLED_LABEL_ID,
+                labelId: null,
+                label: NEW_TRACKLET_LABEL,
+                taxonomy: emptyTaxonomy(),
+                color: UNLABELLED_COLOR,
+            };
+        } else {
+            const label = this.labels.find((item) => item.id === labelId);
+            if (!label) return this;
+            next = {
+                ...current,
+                categoryId: label.id,
+                labelId: label.id,
+                label: label.name,
+                taxonomy: label.taxonomy,
+                color: label.color,
+            };
+        }
+        const tracklets = [...this.tracklets];
+        tracklets[index] = next;
+        return this.clone({ tracklets, editCount: this.editCount + 1 });
+    }
+
+    /**
+     * Remove a label. Its objects are not deleted — they fall back to
+     * unlabelled (the red block with no number), and the labels after it are
+     * renumbered so ids stay contiguous from 0.
+     *
+     * Because ids are positional, the tracklets are remapped in the same step;
+     * callers must renumber any other id-keyed state (the persisted store).
+     */
+    deleteLabel(labelId: number): Clip {
+        const index = this.labels.findIndex((label) => label.id === labelId);
+        if (index < 0) return this;
+        const labels = this.labels
+            .filter((label) => label.id !== labelId)
+            .map((label) =>
+                label.id > labelId ? { ...label, id: label.id - 1 } : label,
+            );
+        const tracklets = this.tracklets.map((tracklet) => {
+            if (tracklet.labelId === labelId) {
+                return {
+                    ...tracklet,
+                    categoryId: UNLABELLED_LABEL_ID,
+                    labelId: null,
+                    label: NEW_TRACKLET_LABEL,
+                    taxonomy: emptyTaxonomy(),
+                    color: UNLABELLED_COLOR,
+                };
+            }
+            if (tracklet.labelId !== null && tracklet.labelId > labelId) {
+                const shifted = tracklet.labelId - 1;
+                return { ...tracklet, labelId: shifted, categoryId: shifted };
+            }
+            return tracklet;
+        });
+        return this.clone({
+            labels,
+            tracklets,
+            editCount: this.editCount + 1,
+        });
+    }
+
+    /**
+     * Update a label's name, colour and/or taxonomy. Every tracklet assigned to
+     * it mirrors the change, so one edit describes the whole class.
+     *
+     * `options.edit` (default `true`) decides whether the change counts as a
+     * mask edit; applying stored overrides on open passes `false`, so a project
+     * is not reported as edited just because its labels carry saved settings.
+     */
+    updateLabel(
+        labelId: number,
+        patch: { name?: string; taxonomy?: Taxonomy; color?: string },
+        options: { edit?: boolean } = {},
+    ): Clip {
+        const index = this.labels.findIndex((label) => label.id === labelId);
+        if (index < 0) return this;
+        const current = this.labels[index];
+        const name = patch.name?.trim() ? patch.name.trim() : current.name;
+        const taxonomy = patch.taxonomy ?? current.taxonomy;
+        const color = patch.color ?? current.color;
+        if (
+            name === current.name &&
+            taxonomy === current.taxonomy &&
+            color === current.color
+        )
+            return this;
+        const labels = [...this.labels];
+        labels[index] = { ...current, name, taxonomy, color };
+        const tracklets = this.tracklets.map((tracklet) =>
+            tracklet.labelId === labelId
+                ? { ...tracklet, label: name, taxonomy, color }
+                : tracklet,
+        );
+        return this.clone({
+            labels,
+            tracklets,
+            editCount:
+                options.edit === false ? this.editCount : this.editCount + 1,
+        });
+    }
+
     // ----------------------------------------------------------------- editing
 
     private clone(patch: Partial<ClipInit>): Clip {
@@ -414,6 +682,7 @@ export class Clip {
             fps: this.fps,
             frameNames: this.frameNames,
             tracklets: this.tracklets,
+            labels: this.labels,
             mode: this.mode,
             modeAssumed: this.modeAssumed,
             videoEntry: this.videoEntry,
@@ -455,22 +724,97 @@ export class Clip {
             this.frameCount,
         ).fill(null);
         segmentations[frameIndex] = mask;
+
+        // Semantic: a class *is* a tracklet, so each new one keeps its own
+        // category named by the class string — the original behaviour.
+        if (this.mode === "semantic") {
+            const tracklet: Tracklet = {
+                id: this.nextTrackletId,
+                objectId: this.nextObjectId,
+                categoryId: this.nextCategoryId,
+                labelId: this.nextCategoryId,
+                label,
+                taxonomy: emptyTaxonomy(),
+                color: colorForIndex(this.tracklets.length),
+                segmentations,
+                maskFrames: maskFramesOf(segmentations),
+                origin: "created",
+            };
+            const clip = this.clone({
+                tracklets: [...this.tracklets, tracklet],
+                nextTrackletId: this.nextTrackletId + 1,
+                nextObjectId: this.nextObjectId + 1,
+                nextCategoryId: this.nextCategoryId + 1,
+                editCount: this.editCount + 1,
+                dirtyFrames: this.markDirty(frameIndex),
+            });
+            return { clip, tracklet };
+        }
+
+        // Instance: a blank name means unlabelled. No category is minted for it,
+        // and it is drawn in the reserved red so the gap is visible.
+        const name = label.trim();
+        const named = name !== "" && name !== NEW_TRACKLET_LABEL;
+        if (!named) {
+            const tracklet: Tracklet = {
+                id: this.nextTrackletId,
+                objectId: this.nextObjectId,
+                categoryId: UNLABELLED_LABEL_ID,
+                labelId: null,
+                label: NEW_TRACKLET_LABEL,
+                taxonomy: emptyTaxonomy(),
+                color: UNLABELLED_COLOR,
+                segmentations,
+                maskFrames: maskFramesOf(segmentations),
+                origin: "created",
+            };
+            const clip = this.clone({
+                tracklets: [...this.tracklets, tracklet],
+                nextTrackletId: this.nextTrackletId + 1,
+                nextObjectId: this.nextObjectId + 1,
+                editCount: this.editCount + 1,
+                dirtyFrames: this.markDirty(frameIndex),
+            });
+            return { clip, tracklet };
+        }
+
+        // A named label is shared: reuse the one with this name, else create it.
+        const existing = this.labels.find(
+            (item) => item.name.trim().toLowerCase() === name.toLowerCase(),
+        );
+        const labelId = existing?.id ?? this.labels.length;
+        const labels = existing
+            ? this.labels
+            : [
+                  ...this.labels,
+                  {
+                      id: labelId,
+                      name,
+                      color: nextUnusedLabelColor(
+                          this.labels.map((label) => label.color),
+                      ),
+                      taxonomy: emptyTaxonomy(),
+                  },
+              ];
         const tracklet: Tracklet = {
             id: this.nextTrackletId,
             objectId: this.nextObjectId,
-            categoryId: this.nextCategoryId,
-            label,
-            taxonomy: emptyTaxonomy(),
-            color: colorForIndex(this.tracklets.length),
+            categoryId: labelId,
+            labelId,
+            label: existing?.name ?? name,
+            taxonomy: existing?.taxonomy ?? emptyTaxonomy(),
+            color:
+                existing?.color ??
+                nextUnusedLabelColor(this.labels.map((label) => label.color)),
             segmentations,
             maskFrames: maskFramesOf(segmentations),
             origin: "created",
         };
         const clip = this.clone({
             tracklets: [...this.tracklets, tracklet],
+            labels,
             nextTrackletId: this.nextTrackletId + 1,
             nextObjectId: this.nextObjectId + 1,
-            nextCategoryId: this.nextCategoryId + 1,
             editCount: this.editCount + 1,
             dirtyFrames: this.markDirty(frameIndex),
         });
@@ -740,8 +1084,12 @@ export class Clip {
      * Write the current tracklets back into the annotation-JSON layout.
      *
      * Annotations for other videos in the file (if any) are kept untouched.
-     * Categories created in the app (one per added tracklet) are filled from
-     * the taxonomy overrides when `taxonomies` is given.
+     *
+     * Instance projects export one category per label (named by its common
+     * name), so tracklets that share a label share a category. Semantic
+     * projects keep their one-category-per-class behaviour. Taxonomy overrides
+     * are still keyed by tracklet id in Phase 0; the first one for a label names
+     * that label.
      */
     toDataset(taxonomies: TaxonomyOverrides = {}): RawDataset {
         const video = this.raw.videos[0];
@@ -749,12 +1097,34 @@ export class Clip {
             (a) => a.video_id !== video.id,
         );
         const semantic = this.mode === "semantic";
+
+        // The taxonomy in force for each label: the stored override (keyed by
+        // label id) when there is one, else the label's own.
+        const taxonomyByLabel = new Map<number, Taxonomy>();
+        for (const label of this.labels) {
+            taxonomyByLabel.set(
+                label.id,
+                taxonomies[label.id] ?? label.taxonomy,
+            );
+        }
+
+        /** What a tracklet's label is called: its common name, else species. */
+        const labelName = (tracklet: Tracklet): string => {
+            if (tracklet.labelId === null) return NEW_TRACKLET_LABEL;
+            const taxonomy = taxonomyByLabel.get(tracklet.labelId);
+            return (taxonomy ? labelNameOf(taxonomy) : "") || tracklet.label;
+        };
+
         const annotations: RawAnnotation[] = this.tracklets.map((tracklet) => ({
             id: tracklet.id,
             video_id: video.id,
             object_id: tracklet.objectId,
-            category_id: tracklet.categoryId,
-            noun_phrase: tracklet.label,
+            category_id: semantic
+                ? tracklet.categoryId
+                : (tracklet.labelId ?? UNLABELLED_LABEL_ID),
+            // The category is named by its common name, not the archive's noun
+            // phrase; this field mirrors it for readers that still expect one.
+            noun_phrase: semantic ? tracklet.label : labelName(tracklet),
             // Instance: `null` marks frames where the tracklet is absent (see
             // README). Semantic: masks live in the label maps, not here.
             segmentations: semantic
@@ -762,27 +1132,74 @@ export class Clip {
                 : tracklet.segmentations.map((seg) => seg ?? null),
         }));
 
-        const categories: RawCategory[] = [...(this.raw.categories ?? [])];
-        const known = new Set(categories.map((c) => c.id));
-        for (const tracklet of this.tracklets) {
-            if (tracklet.origin !== "created" || known.has(tracklet.categoryId))
-                continue;
-            const taxonomy = taxonomies[tracklet.id] ?? tracklet.taxonomy;
-            categories.push({
-                id: tracklet.categoryId,
-                ...(taxonomy.taxonId !== null
-                    ? { taxon_id: taxonomy.taxonId }
-                    : {}),
-                kingdom: taxonomy.kingdom,
-                phylum: taxonomy.phylum,
-                class: taxonomy.class,
-                order: taxonomy.order,
-                family: taxonomy.family,
-                genus: taxonomy.genus,
-                species: taxonomy.species,
-                common_name: taxonomy.commonName,
-            });
-            known.add(tracklet.categoryId);
+        let categories: RawCategory[];
+        if (semantic) {
+            // Unchanged: one category per class tracklet.
+            categories = [...(this.raw.categories ?? [])];
+            const known = new Set(categories.map((c) => c.id));
+            for (const tracklet of this.tracklets) {
+                if (
+                    tracklet.origin !== "created" ||
+                    known.has(tracklet.categoryId)
+                )
+                    continue;
+                const taxonomy =
+                    taxonomies[tracklet.labelId ?? tracklet.categoryId] ??
+                    tracklet.taxonomy;
+                categories.push({
+                    id: tracklet.categoryId,
+                    ...(taxonomy.taxonId !== null
+                        ? { taxon_id: taxonomy.taxonId }
+                        : {}),
+                    kingdom: taxonomy.kingdom,
+                    phylum: taxonomy.phylum,
+                    class: taxonomy.class,
+                    order: taxonomy.order,
+                    family: taxonomy.family,
+                    genus: taxonomy.genus,
+                    species: taxonomy.species,
+                    common_name: taxonomy.commonName,
+                });
+                known.add(tracklet.categoryId);
+            }
+        } else {
+            // One category per label. Categories only other videos still use are
+            // kept; this video's old (now superseded) rows are dropped, which is
+            // what makes the label table the single source of truth.
+            const otherIds = new Set(
+                (this.raw.annotations ?? [])
+                    .filter((a) => a.video_id !== video.id)
+                    .map((a) => a.category_id),
+            );
+            const byId = new Map<number, RawCategory>();
+            for (const category of this.raw.categories ?? []) {
+                if (otherIds.has(category.id)) byId.set(category.id, category);
+            }
+            for (const label of this.labels) {
+                const taxonomy =
+                    taxonomyByLabel.get(label.id) ?? label.taxonomy;
+                byId.set(label.id, {
+                    id: label.id,
+                    ...(taxonomy.taxonId !== null
+                        ? { taxon_id: taxonomy.taxonId }
+                        : {}),
+                    kingdom: taxonomy.kingdom,
+                    phylum: taxonomy.phylum,
+                    class: taxonomy.class,
+                    order: taxonomy.order,
+                    family: taxonomy.family,
+                    genus: taxonomy.genus,
+                    species: taxonomy.species,
+                    common_name: labelNameOf(taxonomy) || label.name,
+                });
+            }
+            if (this.tracklets.some((t) => t.labelId === null)) {
+                byId.set(UNLABELLED_LABEL_ID, {
+                    id: UNLABELLED_LABEL_ID,
+                    common_name: NEW_TRACKLET_LABEL,
+                });
+            }
+            categories = [...byId.values()];
         }
 
         // The frames that exist are the ones the session materialised, not the

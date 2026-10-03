@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { Clip } from "../lib/clip";
 import { MODE_VOCABULARY } from "../lib/project";
 import { EmptyState, Icon } from "../ui";
+import { LabelPicker } from "./LabelPicker";
 import styles from "./TrackletList.module.css";
 
 interface TrackletListProps {
@@ -24,13 +25,18 @@ interface TrackletListProps {
      * the selected row. Removal is confirmed by the caller, not here.
      */
     onDelete?: (id: number) => void;
+    /** Assign a label to one object (instance mode). */
+    onAssign?: (trackletId: number, labelId: number | null) => void;
+    /** Create a new label and assign it to one object (instance mode). */
+    onNewLabel?: (trackletId: number) => void;
 }
 
 /**
  * The object list: every tracklet in the clip, searchable.
  *
  * It is the workspace's index — selecting a row decides which mask the canvas
- * draws and which taxonomy the inspector edits.
+ * draws. Each row's colour block is also its label button: it shows the label's
+ * colour and id, and opens the picker that changes it.
  */
 export function TrackletList({
     clip,
@@ -39,8 +45,15 @@ export function TrackletList({
     batch = [],
     onToggleBatch,
     onDelete,
+    onAssign,
+    onNewLabel,
 }: TrackletListProps) {
     const [query, setQuery] = useState("");
+    const [picker, setPicker] = useState<{
+        trackletId: number;
+        anchor: DOMRect;
+        current: number | null;
+    } | null>(null);
     const vocab = MODE_VOCABULARY[clip.mode];
 
     const items = useMemo(() => {
@@ -95,6 +108,33 @@ export function TrackletList({
                                 key={tracklet.id}
                                 className={`${styles.row} ${active ? styles.selected : ""}`}
                             >
+                                {onAssign && (
+                                    <button
+                                        type="button"
+                                        className={styles.assign}
+                                        style={{ background: tracklet.color }}
+                                        onClick={(event) => {
+                                            const anchor =
+                                                event.currentTarget.getBoundingClientRect();
+                                            setPicker((current) =>
+                                                current?.trackletId ===
+                                                tracklet.id
+                                                    ? null
+                                                    : {
+                                                          trackletId:
+                                                              tracklet.id,
+                                                          anchor,
+                                                          current:
+                                                              tracklet.labelId,
+                                                      },
+                                            );
+                                        }}
+                                        aria-label={`Assign a label to ${vocab.unit} #${tracklet.id}. Current: ${tracklet.label}`}
+                                        title="Assign a label"
+                                    >
+                                        {tracklet.labelId ?? "–"}
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     className={styles.item}
@@ -110,12 +150,6 @@ export function TrackletList({
                                             : undefined
                                     }
                                 >
-                                    <span
-                                        className={styles.swatch}
-                                        style={{
-                                            background: tracklet.color,
-                                        }}
-                                    />
                                     <span className={styles.body}>
                                         <span className={styles.label}>
                                             {tracklet.label}
@@ -153,6 +187,23 @@ export function TrackletList({
                     })
                 )}
             </div>
+
+            {picker && onAssign && (
+                <LabelPicker
+                    anchor={picker.anchor}
+                    labels={clip.labels}
+                    current={picker.current}
+                    onPick={(labelId) => {
+                        onAssign(picker.trackletId, labelId);
+                        setPicker(null);
+                    }}
+                    onNew={() => {
+                        onNewLabel?.(picker.trackletId);
+                        setPicker(null);
+                    }}
+                    onClose={() => setPicker(null)}
+                />
+            )}
         </section>
     );
 }

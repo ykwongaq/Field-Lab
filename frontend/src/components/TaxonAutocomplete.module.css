@@ -1,0 +1,79 @@
+/*
+ * The taxonomy autocomplete's own styles. These lived in `Inspector.module.css`
+ * until the inspector was replaced by the label editor, which is the only
+ * remaining place a taxonomy is edited.
+ */
+
+.autocomplete {
+    position: relative;
+    min-width: 0;
+}
+
+.hint {
+    position: absolute;
+    top: 50%;
+    right: 9px;
+    transform: translateY(-50%);
+    font-size: var(--fs-xs);
+    color: var(--faint);
+    pointer-events: none;
+}
+
+.error {
+    display: block;
+    margin-top: 4px;
+    font-size: var(--fs-xs);
+    color: var(--bad);
+}
+
+.suggestList {
+    position: absolute;
+    top: calc(100% + 3px);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    box-shadow: var(--shadow-2);
+    max-height: 220px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.suggestItem {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+    width: 100%;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    text-align: left;
+}
+
+.suggestActive {
+    background: var(--accent-soft);
+}
+
+.suggestName {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-md);
+    font-style: italic;
+    color: var(--ink);
+}
+
+.suggestRank {
+    flex: 0 0 auto;
+    font-size: var(--fs-xs);
+    color: var(--faint);
+    text-transform: lowercase;
+}
