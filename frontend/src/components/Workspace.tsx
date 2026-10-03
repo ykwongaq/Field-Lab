@@ -1,32 +1,12 @@
-import {
-    useCallback,
-    useEffect,
-    useMemo,
-    useRef,
-    useState,
-    type CSSProperties,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Clip } from "../lib/clip";
 import type { FrameSource } from "../lib/frames";
 import { SessionFrameSource } from "../lib/frames";
 import type { ZipArchive } from "../lib/zip";
-import type { PromptPoint, RawRle, Taxonomy } from "../types";
+import type { PromptPoint, RawRle } from "../types";
 import { LabelStore } from "../lib/labelStore";
-import { downloadBlob } from "../lib/zipWriter";
-import {
-    archiveFrameEntries,
-    exportAnnotation,
-    exportOriginalFrames,
-    exportProjectArchive,
-    exportSampledFrames,
-    exportSourceVideo,
-    sourceVideoEntry,
-    type ExportedFile,
-    type ExportProgress,
-} from "../lib/exporters";
 import { MODE_VOCABULARY } from "../lib/project";
-import { emptyTaxonomy, NEW_TRACKLET_LABEL } from "../lib/clip";
-import { nextUnusedLabelColor } from "../lib/palette";
+import { NEW_TRACKLET_LABEL } from "../lib/clip";
 import { rleArea } from "../lib/rle";
 import {
     composeRle,
@@ -52,6 +32,10 @@ import {
     type PropagatedFrame,
     type PropagationDirection,
 } from "../lib/propagateApi";
+import { usePanelLayout } from "../hooks/usePanelLayout";
+import { useExport } from "../hooks/useExport";
+import { useWorkspaceShortcuts } from "../hooks/useWorkspaceShortcuts";
+import { useLabelEditing } from "../hooks/useLabelEditing";
 import { VideoPanel } from "./VideoPanel";
 import { PropagationRange } from "./PropagationRange";
 import {
@@ -70,7 +54,7 @@ import {
     type Tool,
 } from "./Toolbar";
 import { Button, Chip, Dialog, Icon, Splitter } from "../ui";
-import { ExportMenu, type ExportOption } from "./ExportMenu";
+import { ExportMenu } from "./ExportMenu";
 import styles from "./Workspace.module.css";
 
 export interface WorkspaceNotice {
@@ -135,56 +119,6 @@ function entryToRun(
 }
 
 const DEFAULT_PROPAGATE_FORWARD = 10;
-
-/* ------------------------------------------------------------- panel layout
- *
- * The two draggable seams: the sidebar's left edge and the label list's top
- * edge. Sizes are remembered per browser under these keys, so a reviewer who
- * widens a panel keeps that width on the next project.
- */
-
-const LAYOUT_KEYS = {
-    panelW: "vsr.layout.panelW",
-    labelsH: "vsr.layout.labelsH",
-};
-
-/** Mirrors `--rail-w`; the rail is fixed, so clamping the sidebar needs it. */
-const RAIL_W = 72;
-/** Neither the sidebar nor the stage may be squeezed below these. */
-const PANEL_MIN_W = 280;
-const STAGE_MIN_W = 360;
-/** The label list keeps a header plus a couple of rows; the object list keeps more. */
-const LABELS_MIN_H = 132;
-const TRACKLETS_MIN_H = 168;
-/** Mirrors the stylesheet's 30% fallback, for the first keyboard nudge. */
-const LABELS_DEFAULT_FRAC = 0.3;
-
-/** A remembered panel size, or `null` when there is nothing trustworthy. */
-function readStoredSize(key: string): number | null {
-    try {
-        const raw = localStorage.getItem(key);
-        const value = raw === null ? NaN : Number(raw);
-        return Number.isFinite(value) && value > 0 ? value : null;
-    } catch {
-        return null;
-    }
-}
-
-function storeSize(key: string, value: number): void {
-    try {
-        localStorage.setItem(key, String(value));
-    } catch {
-        /* storage is blocked: the size still holds for this page */
-    }
-}
-
-function forgetSize(key: string): void {
-    try {
-        localStorage.removeItem(key);
-    } catch {
-        /* nothing to do */
-    }
-}
 
 /**
  * The key every per-frame piece of state is held under.
@@ -268,114 +202,20 @@ export function Workspace({
     // again on the next render; the counter's own value is not needed.
     const [, setTick] = useState(0);
 
-    /*
-     * Panel layout.
-     *
-     * Two seams are draggable: the sidebar's left edge and the label list's top
-     * edge. A size of `null` defers to the stylesheet — the `--panel-w` token,
-     * the label list's content height — so an untouched workspace looks exactly
-     * as it did before the seams existed; a number pins the panel in px.
-     */
-    const [panelW, setPanelW] = useState<number | null>(() =>
-        readStoredSize(LAYOUT_KEYS.panelW),
-    );
-    const [labelsH, setLabelsH] = useState<number | null>(() =>
-        readStoredSize(LAYOUT_KEYS.labelsH),
-    );
-    const bodyRef = useRef<HTMLDivElement>(null);
-    const sidebarRef = useRef<HTMLElement>(null);
-
-    /** Pin the sidebar to `width`, clamped so the stage stays usable. */
-    const applyPanelW = useCallback((width: number) => {
-        const rect = bodyRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        const max = Math.max(PANEL_MIN_W, rect.width - RAIL_W - STAGE_MIN_W);
-        const next = Math.round(Math.min(Math.max(width, PANEL_MIN_W), max));
-        setPanelW(next);
-        storeSize(LAYOUT_KEYS.panelW, next);
-    }, []);
-
-    /** Pin the label list to `height`, clamped so the object list stays usable. */
-    const applyLabelsH = useCallback((height: number) => {
-        const rect = sidebarRef.current?.getBoundingClientRect();
-        if (!rect || rect.height === 0) return;
-        const max = Math.max(LABELS_MIN_H, rect.height - TRACKLETS_MIN_H);
-        const next = Math.round(Math.min(Math.max(height, LABELS_MIN_H), max));
-        setLabelsH(next);
-        storeSize(LAYOUT_KEYS.labelsH, next);
-    }, []);
-
-    /*
-     * A drag reports the pointer, not the size: the sidebar runs from the
-     * pointer to the body's right edge, the label list from the pointer down.
-     */
-    const onPanelDrag = useCallback(
-        (clientX: number) => {
-            const rect = bodyRef.current?.getBoundingClientRect();
-            if (rect) applyPanelW(rect.right - clientX);
-        },
-        [applyPanelW],
-    );
-
-    const onLabelsDrag = useCallback(
-        (clientY: number) => {
-            const rect = sidebarRef.current?.getBoundingClientRect();
-            if (rect) applyLabelsH(rect.bottom - clientY);
-        },
-        [applyLabelsH],
-    );
-
-    /*
-     * Arrow keys step from the size actually in force, which before the first
-     * drag is a measured width / the stylesheet's 30% — not a stored number.
-     */
-    const onPanelNudge = useCallback(
-        (delta: number) => {
-            const width = sidebarRef.current?.getBoundingClientRect().width;
-            if (width) applyPanelW(width - delta);
-        },
-        [applyPanelW],
-    );
-
-    const onLabelsNudge = useCallback(
-        (delta: number) => {
-            const rect = sidebarRef.current?.getBoundingClientRect();
-            if (!rect || rect.height === 0) return;
-            const current = labelsH ?? rect.height * LABELS_DEFAULT_FRAC;
-            applyLabelsH(current - delta);
-        },
-        [applyLabelsH, labelsH],
-    );
-
-    const resetPanelW = useCallback(() => {
-        setPanelW(null);
-        forgetSize(LAYOUT_KEYS.panelW);
-    }, []);
-
-    const resetLabelsH = useCallback(() => {
-        setLabelsH(null);
-        forgetSize(LAYOUT_KEYS.labelsH);
-    }, []);
-
-    // A size set at a larger window can squeeze the stage or the object list out
-    // of a smaller one; re-clamp on resize (and once on mount, for a stored size).
-    useEffect(() => {
-        const onResize = () => {
-            if (panelW !== null) applyPanelW(panelW);
-            if (labelsH !== null) applyLabelsH(labelsH);
-        };
-        window.addEventListener("resize", onResize);
-        return () => window.removeEventListener("resize", onResize);
-    }, [panelW, labelsH, applyPanelW, applyLabelsH]);
-
-    const bodyStyle =
-        panelW === null
-            ? undefined
-            : ({ "--panel-w": `${panelW}px` } as CSSProperties);
-    const sidebarStyle =
-        labelsH === null
-            ? undefined
-            : ({ "--labels-h": `${labelsH}px` } as CSSProperties);
+    // The two draggable seams and their persisted sizes live in a hook; the
+    // workspace only attaches the refs and forwards the pointer deltas.
+    const {
+        bodyRef,
+        sidebarRef,
+        bodyStyle,
+        sidebarStyle,
+        onPanelDrag,
+        onLabelsDrag,
+        onPanelNudge,
+        onLabelsNudge,
+        resetPanelW,
+        resetLabelsH,
+    } = usePanelLayout();
 
     const semantic = clip.mode === "semantic";
     // There is one model now: SAM 3 answers text, box and point prompts, and the
@@ -412,21 +252,6 @@ export function Workspace({
     const [sam, setSam] = useState<Sam3Status | null>(null);
 
     const [className, setClassName] = useState("");
-    /** Instance mode: the label a newly drawn object is assigned to. */
-    const [newLabelId, setNewLabelId] = useState<number | null>(null);
-    /** The label editor: `{ labelId: null }` creates, a number edits. */
-    const [labelEditor, setLabelEditor] = useState<{
-        labelId: number | null;
-    } | null>(null);
-    /** The label whose deletion is awaiting confirmation. */
-    const [pendingLabelDelete, setPendingLabelDelete] = useState<number | null>(
-        null,
-    );
-    /** The export chooser is open, and which of its choices is being written. */
-    const [exportOpen, setExportOpen] = useState(false);
-    const [exportBusyId, setExportBusyId] = useState<string | null>(null);
-    const [exportProgress, setExportProgress] = useState<string | null>(null);
-    const [exportError, setExportError] = useState<string | null>(null);
     /**
      * The object a row's trash button asked to delete, pending confirmation.
      *
@@ -438,6 +263,29 @@ export function Workspace({
         null,
     );
     const notice = localNotice ?? externalNotice;
+
+    // The export chooser's state, runner and per-project options. It is created
+    // here, ahead of the keyboard effect that reads `exportOpen`, and its
+    // success notice is routed back into the workspace's own notice state.
+    const {
+        exportOpen,
+        exportBusyId,
+        exportProgress,
+        exportError,
+        exportOptions,
+        openExport,
+        closeExport,
+    } = useExport({
+        clip,
+        frames,
+        zip,
+        store,
+        onExported: (fileName) =>
+            setLocalNotice({
+                kind: "success",
+                text: `Exported ${fileName}.`,
+            }),
+    });
 
     const [propStatus, setPropStatus] = useState<PropagateStatus | null>(null);
     // Both directions over the whole clip is the default the reviewer wants:
@@ -569,156 +417,34 @@ export function Workspace({
 
     const selectedLabel = selected ? clip.labelFor(selected) : null;
 
-    /** Assign a label to one object, or move it to unlabelled. */
-    const assignTrackletLabel = useCallback(
-        (trackletId: number, labelId: number | null) => {
-            setClip(clip.setLabel(trackletId, labelId));
-            refresh();
-        },
-        [clip, refresh],
-    );
-
-    /** A name no other label is already using. */
-    const uniqueLabelName = useCallback(
-        (base: string) => {
-            let name = base;
-            let suffix = 2;
-            while (
-                clip.labels.some(
-                    (item) => item.name.toLowerCase() === name.toLowerCase(),
-                )
-            ) {
-                name = `${base} ${suffix}`;
-                suffix += 1;
-            }
-            return name;
-        },
-        [clip.labels],
-    );
-
-    /** The picker's "＋": create a label, assign it, then open its editor. */
-    const createLabelForTracklet = useCallback(
-        (trackletId: number) => {
-            const { clip: assigned, label } = clip.assignLabel(
-                trackletId,
-                uniqueLabelName("new label"),
-            );
-            // A fresh label must not inherit a saved edit left behind by an
-            // earlier label that happened to hold the same id.
-            store.remove(label.id);
-            setClip(assigned);
-            refresh();
-            setLabelEditor({ labelId: label.id });
-        },
-        [clip, store, uniqueLabelName, refresh],
-    );
-
-    const openLabelEditor = useCallback(
-        (labelId: number | null) => setLabelEditor({ labelId }),
-        [],
-    );
-
-    /** Save the label editor: add a new label, or update the one being edited. */
-    const saveLabel = useCallback(
-        (patch: { name: string; taxonomy: Taxonomy; color: string }) => {
-            if (!labelEditor) return;
-            if (labelEditor.labelId === null) {
-                const { clip: added, label } = clip.addLabel(patch.name);
-                // Clear any saved edit left by a previously deleted label that
-                // held this id, then write the values just entered.
-                store.remove(label.id);
-                setClip(
-                    added.updateLabel(label.id, {
-                        taxonomy: patch.taxonomy,
-                        color: patch.color,
-                    }),
-                );
-                store.set(label.id, patch.taxonomy);
-                store.setColor(label.id, patch.color);
-            } else {
-                const labelId = labelEditor.labelId;
-                setClip(
-                    clip.updateLabel(labelId, {
-                        name: patch.name,
-                        taxonomy: patch.taxonomy,
-                        color: patch.color,
-                    }),
-                );
-                store.set(labelId, patch.taxonomy);
-                store.setColor(labelId, patch.color);
-            }
-            setLabelEditor(null);
-            refresh();
-        },
-        [clip, labelEditor, store, refresh],
-    );
-
-    const deleteLabel = useCallback(
-        (labelId: number) => {
-            const affected = clip.tracklets.filter(
-                (tracklet) => tracklet.labelId === labelId,
-            ).length;
-            const next = clip.deleteLabel(labelId);
-            if (next === clip) {
-                setPendingLabelDelete(null);
-                return;
-            }
-            // The store is keyed by label id, and ids are positional, so it has
-            // to renumber alongside the clip.
-            store.deleteLabel(labelId);
-            setNewLabelId((current) => {
-                if (current === null) return null;
-                if (current === labelId) return null;
-                return current > labelId ? current - 1 : current;
-            });
-            setClip(next);
-            setPendingLabelDelete(null);
-            refresh();
-            setLocalNotice({
-                kind: "info",
-                text:
-                    affected === 0
-                        ? "Label deleted."
-                        : `Label deleted — ${affected} ${
-                              affected === 1 ? "object is" : "objects are"
-                          } now unlabelled.`,
-            });
-        },
-        [clip, store, refresh],
-    );
-
-    /** Select the first object that uses a label. */
-    const selectLabel = useCallback(
-        (labelId: number) => {
-            const first = clip.tracklets.find(
-                (tracklet) => tracklet.labelId === labelId,
-            );
-            if (first) selectTracklet(first.id);
-        },
-        [clip.tracklets, selectTracklet],
-    );
-
-    const editorLabel =
-        labelEditor?.labelId != null
-            ? clip.labelById(labelEditor.labelId)
-            : null;
-    const editorTaxonomy = editorLabel
-        ? store.get(editorLabel)
-        : emptyTaxonomy();
-    /** A new label starts on the next colour no other label is using. */
-    const editorColor = editorLabel
-        ? store.colorOf(editorLabel)
-        : nextUnusedLabelColor(clip.labels.map((label) => label.color));
-
-    /** The label a delete confirmation is about, and how many it would free. */
-    const pendingLabel =
-        pendingLabelDelete === null ? null : clip.labelById(pendingLabelDelete);
-    const pendingLabelCount =
-        pendingLabelDelete === null
-            ? 0
-            : clip.tracklets.filter(
-                  (tracklet) => tracklet.labelId === pendingLabelDelete,
-              ).length;
+    // Labels: the editor, the picker's "＋" target, the pending delete and the
+    // per-object assignment all live in a hook.
+    const {
+        newLabelId,
+        setNewLabelId,
+        labelEditor,
+        setLabelEditor,
+        pendingLabelDelete,
+        setPendingLabelDelete,
+        editorLabel,
+        editorTaxonomy,
+        editorColor,
+        pendingLabel,
+        pendingLabelCount,
+        assignTrackletLabel,
+        createLabelForTracklet,
+        openLabelEditor,
+        saveLabel,
+        deleteLabel,
+        selectLabel,
+    } = useLabelEditing({
+        clip,
+        setClip,
+        store,
+        refresh,
+        selectTracklet,
+        onNotice: (text) => setLocalNotice({ kind: "info", text }),
+    });
 
     const resetPrompt = useCallback(() => {
         segmentAbortRef.current?.abort();
@@ -2114,129 +1840,33 @@ export function Workspace({
         return () => cancelAnimationFrame(raf);
     }, [playing, clip.fps, clip.frameCount]);
 
-    useEffect(() => {
-        const onKeyDown = (event: KeyboardEvent) => {
-            const target = event.target as HTMLElement | null;
-            if (
-                target &&
-                ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
-            )
-                return;
-
-            // The export chooser is modal: while it is up, its own Escape
-            // handler closes it and no shortcut may reach the workspace behind.
-            if (exportOpen) return;
-
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                // Re-propagate from the corrected frame. Works from any tool, so a
-                // reviewer who has just pressed Enter on a correction can press it
-                // again without hunting for the propagate panel.
-                if (refineFrom !== null) {
-                    event.preventDefault();
-                    repropagateFrom(refineFrom);
-                }
-                return;
-            }
-
-            if (tool === "propagate") {
-                switch (event.key) {
-                    case "Escape":
-                        event.preventDefault();
-                        changeTool("review");
-                        return;
-                    case "Enter":
-                        event.preventDefault();
-                        if (propRun) acceptPropagation();
-                        else void runPropagation();
-                        return;
-                }
-            } else if (tool !== "review") {
-                switch (event.key) {
-                    case "Escape":
-                        event.preventDefault();
-                        changeTool("review");
-                        return;
-                    case "Enter":
-                        event.preventDefault();
-                        if (method === "polygon" && polygon.length >= 3)
-                            closePolygon();
-                        else commitMask();
-                        return;
-                    case "Backspace":
-                        event.preventDefault();
-                        undo();
-                        return;
-                    case "s":
-                        changeMethod("point");
-                        return;
-                    case "p":
-                        changeMethod("polygon");
-                        return;
-                    case "b":
-                        changeMethod("brush");
-                        return;
-                    case "[":
-                        setBrushSize((size) =>
-                            Math.max(1, Math.round(size / 1.25)),
-                        );
-                        return;
-                    case "]":
-                        setBrushSize((size) =>
-                            Math.min(200, Math.round(size * 1.25)),
-                        );
-                        return;
-                }
-            }
-
-            switch (event.key) {
-                case "a":
-                    changeTool(tool === "addMask" ? "review" : "addMask");
-                    break;
-                case "e":
-                    if (selected)
-                        changeTool(tool === "editMask" ? "review" : "editMask");
-                    break;
-                case "t":
-                    if (selectedHasMaskHere || tool === "propagate")
-                        changeTool(
-                            tool === "propagate" ? "review" : "propagate",
-                        );
-                    break;
-                case " ":
-                    event.preventDefault();
-                    setPlaying((value) => !value);
-                    break;
-                case "ArrowLeft":
-                    event.preventDefault();
-                    stepFrame(-1);
-                    break;
-                case "ArrowRight":
-                    event.preventDefault();
-                    stepFrame(1);
-                    break;
-            }
-        };
-        window.addEventListener("keydown", onKeyDown);
-        return () => window.removeEventListener("keydown", onKeyDown);
-    }, [
-        stepFrame,
-        tool,
-        method,
-        polygon.length,
-        selected,
-        changeTool,
-        changeMethod,
-        closePolygon,
-        commitMask,
-        undo,
-        selectedHasMaskHere,
-        propRun,
-        acceptPropagation,
-        runPropagation,
-        refineFrom,
-        exportOpen,
-        repropagateFrom,
-    ]);
+    // The whole keyboard map lives in a hook; everything it branches on is
+    // passed in, so the component keeps only the wiring.
+    useWorkspaceShortcuts(
+        {
+            exportOpen,
+            tool,
+            method,
+            polygonLength: polygon.length,
+            hasSelection: selected !== null,
+            selectedHasMaskHere,
+            hasPropRun: propRun !== null,
+            refineFrom,
+        },
+        {
+            stepFrame,
+            changeTool,
+            changeMethod,
+            closePolygon,
+            commitMask,
+            undo,
+            acceptPropagation,
+            runPropagation,
+            repropagateFrom,
+            setPlaying,
+            setBrushSize,
+        },
+    );
 
     /**
      * Ask once before uncommitted work is thrown away.
@@ -2251,134 +1881,6 @@ export function Workspace({
             `${count} frame${count === 1 ? " has" : "s have"} uncommitted ${vocab.unit} mask draft${count === 1 ? "" : "s"}. Discard ${count === 1 ? "it" : "them"} and continue?`,
         );
     }, [drafts.size, vocab.unit]);
-
-    /**
-     * Run one export choice.
-     *
-     * The menu stays open while a multi-file export is written (progress lands
-     * in `busyText`) so a large clip shows something rather than looking stuck.
-     */
-    const runExport = useCallback(
-        async (
-            id: string,
-            unit: string,
-            task: (
-                report: ExportProgress,
-            ) => ExportedFile | Promise<ExportedFile>,
-        ) => {
-            setExportError(null);
-            setExportBusyId(id);
-            setExportProgress(null);
-            try {
-                const file = await task((done, total) =>
-                    setExportProgress(`${done} / ${total} ${unit}`.trim()),
-                );
-                downloadBlob(file.fileName, file.blob);
-                setExportOpen(false);
-                setLocalNotice({
-                    kind: "success",
-                    text: `Exported ${file.fileName}.`,
-                });
-            } catch (cause) {
-                setExportError(
-                    cause instanceof Error ? cause.message : String(cause),
-                );
-            } finally {
-                setExportBusyId(null);
-                setExportProgress(null);
-            }
-        },
-        [],
-    );
-
-    // What this project can actually hand back. An archive packed from a video
-    // has no frame folder, one packed from frames has no video, and a
-    // video-only archive records no frame names at all — hence the checks.
-    const sourceVideo = useMemo(() => sourceVideoEntry(clip, zip), [clip, zip]);
-    const packedFrames = useMemo(() => archiveFrameEntries(zip), [zip]);
-
-    const exportOptions = useMemo<ExportOption[]>(
-        () => [
-            {
-                id: "video",
-                title: "Original video",
-                detail: "The source video this project was packed from, copied out unrecompressed.",
-                ...(sourceVideo
-                    ? {}
-                    : {
-                          disabledReason:
-                              "This project was packed from frames, so it carries no source video.",
-                      }),
-                run: () =>
-                    runExport("video", "", () => exportSourceVideo(clip, zip)),
-            },
-            {
-                id: "original-frames",
-                title: "Original frames",
-                detail: `The ${packedFrames.length} frame${
-                    packedFrames.length === 1 ? "" : "s"
-                } the archive carried, as a ZIP.`,
-                ...(packedFrames.length
-                    ? {}
-                    : {
-                          disabledReason:
-                              "This project was packed from a video, so it carries no frame folder.",
-                      }),
-                run: () =>
-                    runExport("original-frames", "frames", (report) =>
-                        exportOriginalFrames(clip, zip, report),
-                    ),
-            },
-            {
-                id: "sampled-frames",
-                title: "Sampled frames",
-                detail: `The ${frames.count} frame${
-                    frames.count === 1 ? "" : "s"
-                } this review annotated, as a ZIP.`,
-                ...(frames.count
-                    ? {}
-                    : { disabledReason: "This project has no frames." }),
-                run: () =>
-                    runExport("sampled-frames", "frames", (report) =>
-                        exportSampledFrames(clip, frames, report),
-                    ),
-            },
-            semantic
-                ? {
-                      id: "project",
-                      title: "Updated project archive",
-                      detail: "A .project holding the frames, the updated label maps and the annotation — reopen it to carry on from here.",
-                      run: () =>
-                          runExport("project", "label maps", (report) =>
-                              exportProjectArchive(
-                                  clip,
-                                  zip,
-                                  store.getRecord(),
-                                  report,
-                              ),
-                          ),
-                  }
-                : {
-                      id: "annotation",
-                      title: "Annotation JSON",
-                      detail: "The dataset as it stands: one entry per tracklet with its per-frame RLE masks.",
-                      run: () =>
-                          runExport("annotation", "frames", () =>
-                              exportAnnotation(clip, store.getRecord()),
-                          ),
-                  },
-        ],
-        [
-            clip,
-            frames,
-            packedFrames.length,
-            runExport,
-            semantic,
-            sourceVideo,
-            store,
-            zip,
-        ],
-    );
 
     return (
         <div className={styles.workspace}>
@@ -2438,8 +1940,7 @@ export function Workspace({
                         // Leaving with drafts open prompts once, before
                         // anything is written.
                         if (!confirmDraftsDiscarded()) return;
-                        setExportError(null);
-                        setExportOpen(true);
+                        openExport();
                     }}
                 >
                     {exportBusyId !== null ? "Exporting…" : "Export"}
@@ -3372,7 +2873,7 @@ export function Workspace({
                     busyId={exportBusyId}
                     busyText={exportProgress}
                     error={exportError}
-                    onClose={() => setExportOpen(false)}
+                    onClose={closeExport}
                 />
             )}
 
