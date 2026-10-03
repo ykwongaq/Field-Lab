@@ -1,14 +1,17 @@
 /*
- * The labels panel: the project's class table. It sits between the object list
- * and the inspector, and grows only as far as its rows need so the object list
- * keeps the rest of the column.
+ * The labels panel: the project's class table. It sits below the object list
+ * and, until the seam is dragged, grows only as far as its rows need so the
+ * object list keeps the rest of the column.
  */
 .panel {
     display: flex;
     flex-direction: column;
     min-height: 0;
-    flex: 0 0 auto;
-    max-height: 30%;
+    /* Auto (content height, capped at 30%) until the seam pins a height; then
+       the basis holds that height and the cap follows it, so the old ceiling
+       never fights a deliberate drag. */
+    flex: 0 0 var(--labels-h, auto);
+    max-height: var(--labels-h, 30%);
     border-bottom: 1px solid var(--line);
 }
 

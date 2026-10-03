@@ -89,6 +89,8 @@
 
     --rail-w: 72px;
     --panel-w: 360px;
+    /* The draggable seams' hit area; the hairline each one draws is centred in it. */
+    --splitter-w: 6px;
     --header-h: 52px;
     --statusbar-h: 26px;
 

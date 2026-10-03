@@ -3,9 +3,10 @@
  *
  * The whole app is a fixed-height shell: the header, the optional notice and
  * the body share 100% of the viewport, and the body splits into a tool rail, a
- * stage and a sidebar by fixed fractions. Nothing here scrolls the page — only
- * the regions that can hold unbounded content scroll internally — so the
- * proportions are identical at every window size.
+ * stage and a sidebar. The rail is fixed; the sidebar's width and the label
+ * list's height come from the two draggable seams (`Splitter`), which write
+ * `--panel-w` and `--labels-h`. Nothing here scrolls the page — only the
+ * regions that can hold unbounded content scroll internally.
  */
 
 .workspace {
@@ -127,7 +128,11 @@
     flex: 1 1 auto;
     min-height: 0;
     display: grid;
-    grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--panel-w);
+    /* rail · stage · seam · sidebar — the seam draws the divider the sidebar
+       used to carry as a border, and the last track is the dragged width. */
+    grid-template-columns:
+        var(--rail-w) minmax(0, 1fr)
+        var(--splitter-w) var(--panel-w);
     overflow: hidden;
 }
 
@@ -135,7 +140,9 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-left: 1px solid var(--line);
+    /* Holds the object list, the seam and the label list. Clipping means a
+       height remembered from a larger window cannot spill out of a smaller one. */
+    overflow: hidden;
     background: var(--surface-1);
 }
 

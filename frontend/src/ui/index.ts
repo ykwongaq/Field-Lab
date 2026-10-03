@@ -14,6 +14,7 @@ export {
     type SegmentedProps,
 } from "./Chip";
 export { Dialog, type DialogProps } from "./Dialog";
+export { Splitter, type SplitterProps } from "./Splitter";
 export {
     EmptyState,
     ProgressBar,

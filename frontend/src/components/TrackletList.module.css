@@ -7,7 +7,7 @@
     flex-direction: column;
     min-height: 0;
     flex: 1 1 auto;
-    border-bottom: 1px solid var(--line);
+    /* No bottom border: the seam below draws the divider onto the label list. */
 }
 
 .head {
