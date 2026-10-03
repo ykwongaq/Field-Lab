@@ -160,10 +160,11 @@
     align-items: center;
     gap: var(--s-2);
     flex: 0 0 auto;
-    min-height: 40px;
-    padding: 6px 12px;
+    min-height: 44px;
+    padding: 7px 12px;
     border-bottom: 1px solid var(--line);
-    background: var(--surface-2);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface-1));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
@@ -178,11 +179,30 @@
     flex: 0 0 auto;
 }
 
+/* The active mode, as a badge: the one tinted element on the bar, so the eye
+   lands on what the controls below are acting on. */
 .promptTitle {
-    font-size: var(--fs-md);
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 10px;
+    border: 1px solid var(--accent-line);
+    border-radius: var(--r-full);
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+    font-size: var(--fs-sm);
     font-weight: 600;
+    letter-spacing: 0.01em;
     white-space: nowrap;
-    color: var(--ink);
+}
+
+/* Hairline between logical groups of controls on the bar. */
+.barDivider {
+    flex: 0 0 auto;
+    width: 1px;
+    height: 20px;
+    margin: 0 2px;
+    background: var(--line);
 }
 
 .promptStatus {
@@ -270,18 +290,62 @@
     color: var(--faint);
 }
 
-/* Segmented controls inside the tool bar reuse the shared vocabulary but sit
-   on the bar's own surface. */
-.segmented {
-    background: var(--surface-1);
+/*
+ * Tool-bar controls compose the shared button/segmented vocabulary and then
+ * step it down one notch: the secondary buttons lose their fill, and the
+ * selected segment is the only accent-tinted chip in its track. Scoping the
+ * overrides to `.promptBar` keeps them from leaking into the rest of the app.
+ */
+.promptBar :global(.btn) {
+    height: 28px;
+    padding: 0 11px;
+    border-color: var(--line);
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font-size: var(--fs-sm);
+    font-weight: 600;
 }
 
-.segment {
-    color: var(--muted);
-}
-
-.segmentActive,
-.segmentActive:hover:not(:disabled) {
-    background: var(--surface-4);
+.promptBar :global(.btn):hover:not(:disabled) {
+    border-color: var(--line-focus);
+    background: var(--surface-3);
     color: var(--ink);
+}
+
+.promptBar :global(.btnPrimary) {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.promptBar :global(.btnPrimary):hover:not(:disabled) {
+    border-color: var(--accent-hi);
+    background: var(--accent-hi);
+    color: var(--accent-ink);
+}
+
+.promptBar :global(.segmented) {
+    padding: 3px;
+    background: var(--surface-1);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.promptBar :global(.segment) {
+    padding: 3px 11px;
+    border-radius: var(--r-xs);
+    color: var(--muted);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.promptBar :global(.segment):hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--ink-2);
+}
+
+.promptBar :global(.segmentActive),
+.promptBar :global(.segmentActive):hover:not(:disabled) {
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+    box-shadow: inset 0 0 0 1px var(--accent-line);
 }

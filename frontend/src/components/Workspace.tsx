@@ -2518,8 +2518,10 @@ export function Workspace({
                                     : `Edit mask · ${selected?.label ?? ""} #${selectedId}`}
                             </span>
 
+                            <div className={styles.barDivider} />
+
                             <div
-                                className={styles.segmented}
+                                className="segmented"
                                 role="radiogroup"
                                 aria-label="Drawing method"
                             >
@@ -2537,7 +2539,7 @@ export function Workspace({
                                         type="button"
                                         role="radio"
                                         aria-checked={method === value}
-                                        className={`${styles.segment} ${method === value ? styles.segmentActive : ""}`}
+                                        className={`segment ${method === value ? "segmentActive" : ""}`}
                                         onClick={() => changeMethod(value)}
                                         title={
                                             value === "point"
@@ -2577,7 +2579,7 @@ export function Workspace({
                             )}
 
                             <div
-                                className={styles.segmented}
+                                className="segmented"
                                 role="radiogroup"
                                 aria-label="Paint mode"
                             >
@@ -2588,7 +2590,7 @@ export function Workspace({
                                             type="button"
                                             role="radio"
                                             aria-checked={paintMode === value}
-                                            className={`${styles.segment} ${paintMode === value ? styles.segmentActive : ""}`}
+                                            className={`segment ${paintMode === value ? "segmentActive" : ""}`}
                                             onClick={() => setPaintMode(value)}
                                             title={
                                                 value === "add"
@@ -2601,6 +2603,8 @@ export function Workspace({
                                     ),
                                 )}
                             </div>
+
+                            <div className={styles.barDivider} />
 
                             {selected && selectedHasMaskHere && (
                                 <button
