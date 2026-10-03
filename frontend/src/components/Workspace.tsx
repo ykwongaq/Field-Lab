@@ -47,12 +47,7 @@ import { TimelineStrip, type TimelineFrameState } from "./TimelineStrip";
 import { TrackletList } from "./TrackletList";
 import { LabelsPanel } from "./LabelsPanel";
 import { LabelEditor } from "./LabelEditor";
-import {
-    Toolbar,
-    type DeleteScope,
-    type DrawMethod,
-    type Tool,
-} from "./Toolbar";
+import { Toolbar, type DrawMethod, type Tool } from "./Toolbar";
 import { Button, Chip, Dialog, Icon, Splitter } from "../ui";
 import { ExportMenu } from "./ExportMenu";
 import styles from "./Workspace.module.css";
@@ -1153,52 +1148,35 @@ export function Workspace({
     ]);
 
     /**
-     * Remove a mask, or the whole object, by id.
+     * Remove an object and every mask it owns, by id.
      *
-     * The rail's Delete menu acts on the selection and the object list's row
-     * trash acts on a row, so both route through here instead of duplicating the
-     * selection/bookkeeping dance.
+     * The object list's row trash asks for confirmation first, then routes
+     * through here. The frame-level “delete mask” gesture is separate —
+     * `clearMaskOnFrame` in the mask bar.
      */
     const deleteTracklet = useCallback(
-        (id: number, scope: DeleteScope) => {
+        (id: number) => {
             const before = clip.tracklets.find((t) => t.id === id);
             if (!before) return;
-            const next =
-                scope === "frame"
-                    ? clip.removeMask(id, frameIndex)
-                    : clip.removeTracklet(id);
+            const next = clip.removeTracklet(id);
             if (next === clip) return;
-            const stillThere = next.tracklets.some((t) => t.id === id);
-            if (!stillThere) {
-                const position = clip.tracklets.findIndex((t) => t.id === id);
-                const fallback =
-                    next.tracklets[
-                        Math.min(position, next.tracklets.length - 1)
-                    ] ?? null;
-                // A row can be deleted while a different object is selected, so
-                // only move the selection when the deleted object held it.
-                setSelectedId((current) =>
-                    current === id ? (fallback?.id ?? null) : current,
-                );
-            }
+            const position = clip.tracklets.findIndex((t) => t.id === id);
+            const fallback =
+                next.tracklets[Math.min(position, next.tracklets.length - 1)] ??
+                null;
+            // A row can be deleted while a different object is selected, so
+            // only move the selection when the deleted object held it.
+            setSelectedId((current) =>
+                current === id ? (fallback?.id ?? null) : current,
+            );
             setClip(next);
             refresh();
             setLocalNotice({
                 kind: "info",
-                text: stillThere
-                    ? `Removed the mask on frame ${frameIndex + 1}.`
-                    : `Removed ${vocab.unit} #${id}.`,
+                text: `Removed ${vocab.unit} #${id}.`,
             });
         },
-        [clip, frameIndex, store, refresh, vocab.unit],
-    );
-
-    const deleteSelected = useCallback(
-        (scope: DeleteScope) => {
-            if (selectedId === null) return;
-            deleteTracklet(selectedId, scope);
-        },
-        [selectedId, deleteTracklet],
+        [clip, refresh, vocab.unit],
     );
 
     /** The object named by the open delete confirmation, if any. */
@@ -1972,14 +1950,10 @@ export function Workspace({
                     tool={tool}
                     sam={sam}
                     modelName={modelName}
-                    canDeleteFrame={selectedHasMaskHere}
-                    canDeleteTracklet={selected !== null}
                     canEdit={selected !== null}
                     canPropagate={selectedHasMaskHere}
                     propagateModel={propagateModel}
-                    selectedMaskCount={selected?.maskFrames.count ?? 0}
                     onToolChange={changeTool}
-                    onDelete={deleteSelected}
                     onRefreshStatus={refreshSam}
                 />
 
@@ -2892,7 +2866,7 @@ export function Workspace({
                             <Button
                                 variant="danger"
                                 onClick={() => {
-                                    deleteTracklet(pendingDelete, "tracklet");
+                                    deleteTracklet(pendingDelete);
                                     setPendingDelete(null);
                                 }}
                             >

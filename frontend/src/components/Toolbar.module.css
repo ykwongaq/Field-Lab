@@ -66,60 +66,6 @@
     min-height: var(--s-2);
 }
 
-/* ------------------------------------------------------------ delete menu */
-
-.menuAnchor {
-    position: relative;
-    display: flex;
-}
-
-.menu {
-    position: absolute;
-    top: -4px;
-    left: calc(100% + 8px);
-    z-index: 40;
-    min-width: 216px;
-    padding: 5px;
-    border: 1px solid var(--line-strong);
-    border-radius: var(--r-md);
-    background: var(--surface-3);
-    box-shadow: var(--shadow-2);
-}
-
-.menuItem {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    width: 100%;
-    padding: 7px 9px;
-    border: 0;
-    border-radius: var(--r-sm);
-    background: transparent;
-    color: var(--ink);
-    font-size: var(--fs-md);
-    text-align: left;
-}
-
-.menuItem:hover:not(:disabled) {
-    background: var(--surface-4);
-}
-
-.menuItem:disabled {
-    color: var(--faint);
-    cursor: not-allowed;
-}
-
-.menuDanger:hover:not(:disabled) {
-    background: var(--bad-soft);
-    color: var(--bad);
-}
-
-.menuHint {
-    font-size: var(--fs-xs);
-    color: var(--muted);
-}
-
 /* ----------------------------------------------------------- model status */
 
 .status {
