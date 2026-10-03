@@ -1,6 +1,5 @@
 /** Muted, colour-blind-friendly palette used to colour tracklets. */
 const PALETTE = [
-    "#1f77b4",
     "#d62728",
     "#2ca02c",
     "#9467bd",
@@ -40,4 +39,4 @@ export function colorForIndex(index: number): string {
  * you are working on". Every other mask keeps its own colour, which is how you
  * spot two animals being confused.
  */
-export const SELECTED_COLOR = "#ffffff";
+export const SELECTED_COLOR = "#1f77b4";

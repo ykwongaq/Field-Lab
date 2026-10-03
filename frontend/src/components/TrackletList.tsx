@@ -17,6 +17,13 @@ interface TrackletListProps {
      * propagation concept, so the modifier means nothing in the other tools.
      */
     onToggleBatch?: (id: number) => void;
+    /**
+     * Delete handler.
+     *
+     * When passed, each row grows a trash button that appears on hover and on
+     * the selected row. Removal is confirmed by the caller, not here.
+     */
+    onDelete?: (id: number) => void;
 }
 
 /**
@@ -31,6 +38,7 @@ export function TrackletList({
     onSelect,
     batch = [],
     onToggleBatch,
+    onDelete,
 }: TrackletListProps) {
     const [query, setQuery] = useState("");
     const vocab = MODE_VOCABULARY[clip.mode];
@@ -83,47 +91,64 @@ export function TrackletList({
                         const queued = batch.includes(tracklet.id);
                         const active = tracklet.id === selectedId;
                         return (
-                            <button
+                            <div
                                 key={tracklet.id}
-                                type="button"
-                                className={`${styles.item} ${active ? styles.selected : ""}`}
-                                onClick={(event) =>
-                                    event.shiftKey && onToggleBatch
-                                        ? onToggleBatch(tracklet.id)
-                                        : onSelect(tracklet.id)
-                                }
-                                aria-current={active ? "true" : undefined}
-                                title={
-                                    onToggleBatch
-                                        ? "Shift-click to queue this one for propagation"
-                                        : undefined
-                                }
+                                className={`${styles.row} ${active ? styles.selected : ""}`}
                             >
-                                <span
-                                    className={styles.swatch}
-                                    style={{ background: tracklet.color }}
-                                />
-                                <span className={styles.body}>
-                                    <span className={styles.label}>
-                                        {tracklet.label}
-                                    </span>
-                                    <span className={styles.meta}>
-                                        #{tracklet.id}
-                                        {vocab.hasObjectIdentity
-                                            ? ` · obj ${tracklet.objectId}`
-                                            : ""}{" "}
-                                        · {tracklet.maskFrames.count} frames
-                                    </span>
-                                </span>
-                                {queued && (
+                                <button
+                                    type="button"
+                                    className={styles.item}
+                                    onClick={(event) =>
+                                        event.shiftKey && onToggleBatch
+                                            ? onToggleBatch(tracklet.id)
+                                            : onSelect(tracklet.id)
+                                    }
+                                    aria-current={active ? "true" : undefined}
+                                    title={
+                                        onToggleBatch
+                                            ? "Shift-click to queue this one for propagation"
+                                            : undefined
+                                    }
+                                >
                                     <span
-                                        className="chip chipAccent"
-                                        title="Queued for propagation; Shift-click to remove from the queue"
-                                    >
-                                        queued
+                                        className={styles.swatch}
+                                        style={{
+                                            background: tracklet.color,
+                                        }}
+                                    />
+                                    <span className={styles.body}>
+                                        <span className={styles.label}>
+                                            {tracklet.label}
+                                        </span>
+                                        <span className={styles.meta}>
+                                            #{tracklet.id}
+                                            {vocab.hasObjectIdentity
+                                                ? ` · obj ${tracklet.objectId}`
+                                                : ""}{" "}
+                                            · {tracklet.maskFrames.count} frames
+                                        </span>
                                     </span>
+                                    {queued && (
+                                        <span
+                                            className="chip chipAccent"
+                                            title="Queued for propagation; Shift-click to remove from the queue"
+                                        >
+                                            queued
+                                        </span>
+                                    )}
+                                </button>
+                                {onDelete && (
+                                    <button
+                                        type="button"
+                                        className={styles.trash}
+                                        onClick={() => onDelete(tracklet.id)}
+                                        aria-label={`Delete ${vocab.unit} #${tracklet.id}`}
+                                        title={`Delete ${vocab.unit} #${tracklet.id}`}
+                                    >
+                                        <Icon name="trash" size={14} />
+                                    </button>
                                 )}
-                            </button>
+                            </div>
                         );
                     })
                 )}

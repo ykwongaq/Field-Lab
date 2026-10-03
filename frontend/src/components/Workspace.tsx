@@ -60,7 +60,7 @@ import {
     type DrawMethod,
     type Tool,
 } from "./Toolbar";
-import { Button, Chip, Icon } from "../ui";
+import { Button, Chip, Dialog, Icon } from "../ui";
 import { ExportMenu, type ExportOption } from "./ExportMenu";
 import styles from "./Workspace.module.css";
 
@@ -240,6 +240,13 @@ export function Workspace({
     const [exportBusyId, setExportBusyId] = useState<string | null>(null);
     const [exportProgress, setExportProgress] = useState<string | null>(null);
     const [exportError, setExportError] = useState<string | null>(null);
+    /**
+     * The object a row's trash button asked to delete, pending confirmation.
+     *
+     * Removing an object is not undoable, so the list opens the one modal shell
+     * rather than deleting on the click.
+     */
+    const [pendingDelete, setPendingDelete] = useState<number | null>(null);
     const [localNotice, setLocalNotice] = useState<WorkspaceNotice | null>(
         null,
     );
@@ -725,6 +732,11 @@ export function Workspace({
             resetPrompt();
             setPolygon([]);
             setMethod(next);
+            // The Add/Erase toggle is only offered for Brush and Polygon. For the
+            // model methods exclusion is expressed as Shift-click, so a paint mode
+            // left over from an earlier brush would silently *subtract* the model's
+            // result with no visible control to explain why.
+            if (needsModel) setPaintMode("add");
             // Selecting a model method while SAM 3 is down used to return
             // silently, which reads as a broken button. Select it anyway and say
             // why it cannot run; Polygon and Brush keep working regardless.
@@ -838,13 +850,6 @@ export function Workspace({
         }
     }, [prompt, segmentPoints]);
 
-    const applyCandidate = useCallback(() => {
-        if (!candidate || segmenting) return;
-        if (candidate.area > 0)
-            pushDraft(composeRle(draft, candidate.rle, paintMode));
-        resetPrompt();
-    }, [candidate, segmenting, draft, paintMode, pushDraft, resetPrompt]);
-
     const addPolygonPoint = useCallback((point: FramePoint) => {
         setPolygon((current) => [...current, point]);
     }, []);
@@ -913,8 +918,12 @@ export function Workspace({
 
     const finalMask = useMemo(() => {
         if (isTextSplit) return null;
+        // Every model method folds its candidate into the draft, so the commit
+        // button is the *single* accept step. Leaving `text` out meant a text
+        // prompt that matched one object produced a disabled commit button and
+        // forced an extra "Apply" click first.
         const withCandidate =
-            (method === "point" || method === "box") &&
+            (method === "point" || method === "box" || method === "text") &&
             candidate &&
             candidate.area > 0
                 ? composeRle(draft, candidate.rle, paintMode)
@@ -963,7 +972,10 @@ export function Workspace({
             setSelectedId(created[created.length - 1] ?? null);
             refresh();
             discardDraft();
-            setTool("review");
+            // Creating objects is an Add-mask act, so stay there and let the next
+            // one be drawn straight away. A text prompt fired from Edit mask is
+            // the only other way in, and that still returns to Review.
+            if (tool !== "addMask") setTool("review");
             setLocalNotice({
                 kind: "success",
                 text: `Added ${created.length} ${
@@ -1029,7 +1041,10 @@ export function Workspace({
             setClip(next);
             setSelectedId(tracklet.id);
             discardDraft();
-            setTool("review");
+            // Stay in Add mask. The next object is usually drawn immediately, and
+            // returning to Select forced a click on the rail for every one.
+            // `discardDraft` already cleared the draft, the clicks and the
+            // polygon, so the bar is back to a clean prompt.
             setLocalNotice({
                 kind: "success",
                 text: `Added ${vocab.unit} #${tracklet.id}.`,
@@ -1071,7 +1086,8 @@ export function Workspace({
             return;
         }
         discardDraft();
-        setTool("review");
+        // Same as the instance path: stay in Add mask for the next class or
+        // object. The class name is left in the box so a repeat is one click.
     }, [
         tool,
         segmenting,
@@ -1093,27 +1109,35 @@ export function Workspace({
         targetClass,
     ]);
 
-    const deleteSelected = useCallback(
-        (scope: DeleteScope) => {
-            if (selectedId === null) return;
-            const before = clip.tracklets.find((t) => t.id === selectedId);
+    /**
+     * Remove a mask, or the whole object, by id.
+     *
+     * The rail's Delete menu acts on the selection and the object list's row
+     * trash acts on a row, so both route through here instead of duplicating the
+     * selection/bookkeeping dance.
+     */
+    const deleteTracklet = useCallback(
+        (id: number, scope: DeleteScope) => {
+            const before = clip.tracklets.find((t) => t.id === id);
             if (!before) return;
             const next =
                 scope === "frame"
-                    ? clip.removeMask(selectedId, frameIndex)
-                    : clip.removeTracklet(selectedId);
+                    ? clip.removeMask(id, frameIndex)
+                    : clip.removeTracklet(id);
             if (next === clip) return;
-            const stillThere = next.tracklets.some((t) => t.id === selectedId);
+            const stillThere = next.tracklets.some((t) => t.id === id);
             if (!stillThere) {
-                store.remove(selectedId);
-                const position = clip.tracklets.findIndex(
-                    (t) => t.id === selectedId,
-                );
+                store.remove(id);
+                const position = clip.tracklets.findIndex((t) => t.id === id);
                 const fallback =
                     next.tracklets[
                         Math.min(position, next.tracklets.length - 1)
                     ] ?? null;
-                setSelectedId(fallback?.id ?? null);
+                // A row can be deleted while a different object is selected, so
+                // only move the selection when the deleted object held it.
+                setSelectedId((current) =>
+                    current === id ? (fallback?.id ?? null) : current,
+                );
             }
             setClip(next);
             refresh();
@@ -1121,10 +1145,27 @@ export function Workspace({
                 kind: "info",
                 text: stillThere
                     ? `Removed the mask on frame ${frameIndex + 1}.`
-                    : `Removed ${vocab.unit} #${selectedId}.`,
+                    : `Removed ${vocab.unit} #${id}.`,
             });
         },
-        [selectedId, clip, frameIndex, store, refresh, vocab.unit],
+        [clip, frameIndex, store, refresh, vocab.unit],
+    );
+
+    const deleteSelected = useCallback(
+        (scope: DeleteScope) => {
+            if (selectedId === null) return;
+            deleteTracklet(selectedId, scope);
+        },
+        [selectedId, deleteTracklet],
+    );
+
+    /** The object named by the open delete confirmation, if any. */
+    const pendingDeleteTarget = useMemo(
+        () =>
+            pendingDelete === null
+                ? null
+                : (clip.tracklets.find((t) => t.id === pendingDelete) ?? null),
+        [clip.tracklets, pendingDelete],
     );
 
     const propagateModel = "SAM 3 tracker";
@@ -2578,44 +2619,59 @@ export function Workspace({
                                 </button>
                             )}
 
-                            <div
-                                className="segmented"
-                                role="radiogroup"
-                                aria-label="Paint mode"
-                            >
-                                {(["add", "erase"] as PaintMode[]).map(
-                                    (value) => (
-                                        <button
-                                            key={value}
-                                            type="button"
-                                            role="radio"
-                                            aria-checked={paintMode === value}
-                                            className={`segment ${paintMode === value ? "segmentActive" : ""}`}
-                                            onClick={() => setPaintMode(value)}
-                                            title={
-                                                value === "add"
-                                                    ? "New strokes, polygons and SAM results are added to the draft"
-                                                    : "New strokes, polygons and SAM results are removed from the draft"
-                                            }
-                                        >
-                                            {value === "add" ? "Add" : "Erase"}
-                                        </button>
-                                    ),
-                                )}
-                            </div>
+                            {(method === "brush" || method === "polygon") && (
+                                <div
+                                    className="segmented"
+                                    role="radiogroup"
+                                    aria-label="Paint mode"
+                                >
+                                    {(["add", "erase"] as PaintMode[]).map(
+                                        (value) => (
+                                            <button
+                                                key={value}
+                                                type="button"
+                                                role="radio"
+                                                aria-checked={
+                                                    paintMode === value
+                                                }
+                                                className={`segment ${paintMode === value ? "segmentActive" : ""}`}
+                                                onClick={() =>
+                                                    setPaintMode(value)
+                                                }
+                                                title={
+                                                    value === "add"
+                                                        ? "New strokes and shapes are added to the draft"
+                                                        : "New strokes and shapes are subtracted from the draft"
+                                                }
+                                            >
+                                                {value === "add"
+                                                    ? "Add"
+                                                    : "Erase"}
+                                            </button>
+                                        ),
+                                    )}
+                                </div>
+                            )}
 
                             <div className={styles.barDivider} />
 
-                            {selected && selectedHasMaskHere && (
-                                <button
-                                    type="button"
-                                    className="btn"
-                                    onClick={clearMaskOnFrame}
-                                    title="Delete the mask on this frame and draw it again. A redraw then replaces it, instead of being added to the mask you are rejecting."
-                                >
-                                    Clear frame mask
-                                </button>
-                            )}
+                            {/* Deleting the committed mask is an Edit-mask act: in Add
+                                mask the draft is a brand new object, so clearing the
+                                selected one has nothing to do with what is being
+                                drawn. Whole-object and frame deletion live on the
+                                object list and the tool rail. */}
+                            {tool === "editMask" &&
+                                selected &&
+                                selectedHasMaskHere && (
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        onClick={clearMaskOnFrame}
+                                        title="Delete the mask on this frame and draw it again. A redraw then replaces it, instead of being added to the mask you are rejecting."
+                                    >
+                                        Delete mask on this frame
+                                    </button>
+                                )}
 
                             {method === "brush" && (
                                 <label
@@ -2787,21 +2843,6 @@ export function Workspace({
                                 )}
                             </span>
                             <div className={styles.spacer} />
-                            {(method === "point" ||
-                                method === "box" ||
-                                method === "text") &&
-                                candidate &&
-                                candidate.area > 0 && (
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        disabled={segmenting}
-                                        onClick={applyCandidate}
-                                        title="Keep this result in the draft and start a new prompt (e.g. to add another region)"
-                                    >
-                                        Apply
-                                    </button>
-                                )}
                             {method === "polygon" && polygon.length >= 3 && (
                                 <button
                                     type="button"
@@ -2812,31 +2853,22 @@ export function Workspace({
                                     Close polygon
                                 </button>
                             )}
-                            <button
-                                type="button"
-                                className="btn"
-                                disabled={!canUndo}
-                                onClick={undo}
-                                title="Backspace"
-                            >
-                                Undo
-                            </button>
+                            {/*
+                                One recovery button, not three. Undo, Reset and
+                                Cancel all read as "throw something away" and sat
+                                side by side, so the bar now offers a single Clear
+                                that drops every pending mask on this frame. Undo
+                                (Backspace) and leaving the tool (Esc) still work
+                                from the keyboard, where they cost no clutter.
+                            */}
                             <button
                                 type="button"
                                 className="btn"
                                 disabled={!canUndo && !draftChanged}
                                 onClick={discardDraft}
-                                title="Discard the draft and start over on this frame"
+                                title="Throw away every pending mask on this frame — the draft, the clicks and any polygon — and start over. Esc leaves the tool without discarding."
                             >
                                 Clear
-                            </button>
-                            <button
-                                type="button"
-                                className="btn"
-                                onClick={() => changeTool("review")}
-                                title="Esc"
-                            >
-                                Cancel
                             </button>
                             <button
                                 type="button"
@@ -2950,6 +2982,7 @@ export function Workspace({
                         onToggleBatch={
                             tool === "propagate" ? togglePropBatch : undefined
                         }
+                        onDelete={setPendingDelete}
                     />
                     <Inspector
                         mode={clip.mode}
@@ -2970,6 +3003,44 @@ export function Workspace({
                     error={exportError}
                     onClose={() => setExportOpen(false)}
                 />
+            )}
+
+            {pendingDelete !== null && (
+                <Dialog
+                    title={`Delete ${vocab.unit} #${pendingDelete}?`}
+                    onClose={() => setPendingDelete(null)}
+                    footer={
+                        <>
+                            <Button
+                                variant="ghost"
+                                onClick={() => setPendingDelete(null)}
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                variant="danger"
+                                onClick={() => {
+                                    deleteTracklet(pendingDelete, "tracklet");
+                                    setPendingDelete(null);
+                                }}
+                            >
+                                Delete {vocab.unit}
+                            </Button>
+                        </>
+                    }
+                >
+                    <p>
+                        {pendingDeleteTarget
+                            ? `“${pendingDeleteTarget.label}” has ${pendingDeleteTarget.maskFrames.count} frame${
+                                  pendingDeleteTarget.maskFrames.count === 1
+                                      ? ""
+                                      : "s"
+                              } with a mask. Deleting removes the ${vocab.unit} and every one of them from the clip.`
+                            : `This removes the ${vocab.unit} and all of its masks from the clip.`}{" "}
+                        This cannot be undone — corrections made elsewhere that
+                        reference it are lost too.
+                    </p>
+                </Dialog>
             )}
         </div>
     );

@@ -58,20 +58,19 @@
     padding-bottom: var(--s-2);
 }
 
-.item {
+/*
+ * A row is a select button plus a reveal-on-hover delete button. The two cannot
+ * nest — a button inside a button is invalid HTML — so the row wrapper carries
+ * the highlight and the selection accent, and the select button fills it.
+ */
+.row {
     display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 7px 12px;
-    border: 0;
+    align-items: stretch;
     border-left: 2px solid transparent;
-    background: transparent;
-    text-align: left;
     transition: background var(--t-fast);
 }
 
-.item:hover {
+.row:hover {
     background: var(--surface-2);
 }
 
@@ -79,6 +78,55 @@
 .selected:hover {
     border-left-color: var(--accent);
     background: var(--accent-soft);
+}
+
+.item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px 12px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+}
+
+/*
+ * Hidden until the row is hovered, focused or selected. `visibility` rather
+ * than `display` on purpose: the space stays reserved, so revealing the button
+ * never reflows the row, and it becomes reachable by Tab once the row's select
+ * button has focus.
+ */
+.trash {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    margin-right: 6px;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--faint);
+    opacity: 0;
+    visibility: hidden;
+    transition:
+        background var(--t-fast),
+        color var(--t-fast),
+        opacity var(--t-fast);
+}
+
+.row:hover .trash,
+.row:focus-within .trash,
+.selected .trash {
+    opacity: 1;
+    visibility: visible;
+}
+
+.trash:hover {
+    background: var(--bad-soft);
+    color: var(--bad);
 }
 
 .swatch {
