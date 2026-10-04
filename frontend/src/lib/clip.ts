@@ -327,22 +327,31 @@ export class Clip {
             ) + 1;
 
         // Instance projects: collapse the archive's category rows into one label
-        // per distinct common name (else species), so a class is described once
-        // and shared by every tracklet that uses it. Ids are reused from the
-        // archive where possible, which keeps an already-deduplicated project
-        // stable across reopen/export cycles. Semantic projects keep their
-        // per-class categories untouched and never populate this table.
+        // per distinct name, so a class is described once and shared by every
+        // tracklet that uses it. Ids are reused from the archive where possible,
+        // which keeps an already-deduplicated project stable across
+        // reopen/export cycles. Semantic projects keep their per-class
+        // categories untouched and never populate this table.
         const labels: Label[] = [];
         const labelsByKey = new Map<string, Label>();
 
+        // A category names itself in whichever way the writer recorded it: the
+        // `name` export field, its taxonomy (common name → species → broader
+        // ranks), or — for archives written before either — the annotation's
+        // `noun_phrase`. Only when none of them names it does the tracklet stay
+        // unlabelled.
         const resolveInstanceLabel = (
             category: RawCategory | undefined,
+            nounPhrase = "",
         ): Label | null => {
             const taxonomy = taxonomyFromCategory(
                 category,
                 category?.species ?? "",
             );
-            const name = labelNameOf(taxonomy);
+            const name =
+                category?.name?.trim() ||
+                categoryNameOf(taxonomy) ||
+                nounPhrase.trim();
             if (!name) return null;
             const key = `${name}\u0000${taxonomy.species}`.toLowerCase();
             const existing = labelsByKey.get(key);
@@ -372,7 +381,10 @@ export class Clip {
                 const category = taxonomyByCategory.get(a.category_id);
 
                 if (mode === "instance") {
-                    const label = resolveInstanceLabel(category);
+                    const label = resolveInstanceLabel(
+                        category,
+                        a.noun_phrase ?? "",
+                    );
                     return {
                         id: a.id,
                         objectId: a.object_id,
@@ -395,7 +407,11 @@ export class Clip {
                     objectId: a.object_id,
                     categoryId: a.category_id,
                     labelId: a.category_id,
-                    label: a.noun_phrase ?? species ?? `object ${a.object_id}`,
+                    label:
+                        a.noun_phrase ||
+                        category?.name ||
+                        species ||
+                        `object ${a.object_id}`,
                     taxonomy,
                     color: colorForIndex(i),
                     segmentations,
@@ -403,6 +419,16 @@ export class Clip {
                     origin: "dataset" as const,
                 };
             });
+
+        // Categories the annotations never reference still describe a label the
+        // archive knows about (e.g. one created but not yet assigned), so the
+        // label table mirrors every category row, not just the referenced ones.
+        if (mode === "instance") {
+            for (const category of raw.categories ?? []) {
+                if (category.id === UNLABELLED_LABEL_ID) continue;
+                resolveInstanceLabel(category);
+            }
+        }
 
         // `video_name` is written by every creation path; the entry name is a
         // fallback for hand-made archives, where the fixed root entry carries
@@ -455,8 +481,10 @@ export class Clip {
                             categoryId: classId,
                             labelId: classId,
                             label:
-                                category?.species ||
-                                category?.common_name ||
+                                category?.name ||
+                                categoryNameOf(
+                                    taxonomyFromCategory(category),
+                                ) ||
                                 `class ${classId}`,
                             taxonomy: taxonomyFromCategory(category),
                             color: colorForIndex(tracklets.length),
