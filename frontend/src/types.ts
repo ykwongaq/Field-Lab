@@ -52,6 +52,11 @@ export interface RawAnnotation {
 
 export interface RawCategory {
     id: number;
+    /**
+     * Export name: the common name when one is given, else the deepest
+     * specified taxonomic rank, else `null` when nothing is named at all.
+     */
+    name?: string | null;
     taxon_id?: number;
     kingdom?: string;
     phylum?: string;

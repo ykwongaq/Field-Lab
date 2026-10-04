@@ -76,6 +76,37 @@ export function labelNameOf(taxonomy: Taxonomy): string {
     return taxonomy.commonName.trim() || taxonomy.species.trim();
 }
 
+/** Taxonomic ranks from most specific to broadest, used for fallback naming. */
+const RANK_DEPTH_ORDER = [
+    "species",
+    "genus",
+    "family",
+    "order",
+    "class",
+    "phylum",
+    "kingdom",
+] as const;
+
+/**
+ * The `name` a category is exported under: its common name when one is given,
+ * else the deepest specified rank of its taxonomy, else `null` when nothing is
+ * named at all.
+ */
+export function categoryNameOf(taxonomy: Taxonomy): string | null {
+    const common = taxonomy.commonName.trim();
+    if (common) return common;
+    for (const rank of RANK_DEPTH_ORDER) {
+        const value = taxonomy[rank].trim();
+        if (value) return value;
+    }
+    return null;
+}
+
+/** The export name for a raw category, computed from its flattened taxonomy. */
+function categoryNameFromRaw(category: RawCategory): string | null {
+    return categoryNameOf(taxonomyFromCategory(category));
+}
+
 function maskFramesOf(
     segmentations: (RawRle | null)[],
 ): Tracklet["maskFrames"] {
@@ -1135,7 +1166,10 @@ export class Clip {
         let categories: RawCategory[];
         if (semantic) {
             // Unchanged: one category per class tracklet.
-            categories = [...(this.raw.categories ?? [])];
+            categories = (this.raw.categories ?? []).map((category) => ({
+                ...category,
+                name: category.name ?? categoryNameFromRaw(category),
+            }));
             const known = new Set(categories.map((c) => c.id));
             for (const tracklet of this.tracklets) {
                 if (
@@ -1148,6 +1182,7 @@ export class Clip {
                     tracklet.taxonomy;
                 categories.push({
                     id: tracklet.categoryId,
+                    name: categoryNameOf(taxonomy),
                     ...(taxonomy.taxonId !== null
                         ? { taxon_id: taxonomy.taxonId }
                         : {}),
@@ -1173,13 +1208,18 @@ export class Clip {
             );
             const byId = new Map<number, RawCategory>();
             for (const category of this.raw.categories ?? []) {
-                if (otherIds.has(category.id)) byId.set(category.id, category);
+                if (otherIds.has(category.id))
+                    byId.set(category.id, {
+                        ...category,
+                        name: category.name ?? categoryNameFromRaw(category),
+                    });
             }
             for (const label of this.labels) {
                 const taxonomy =
                     taxonomyByLabel.get(label.id) ?? label.taxonomy;
                 byId.set(label.id, {
                     id: label.id,
+                    name: categoryNameOf(taxonomy),
                     ...(taxonomy.taxonId !== null
                         ? { taxon_id: taxonomy.taxonId }
                         : {}),
@@ -1196,6 +1236,7 @@ export class Clip {
             if (this.tracklets.some((t) => t.labelId === null)) {
                 byId.set(UNLABELLED_LABEL_ID, {
                     id: UNLABELLED_LABEL_ID,
+                    name: NEW_TRACKLET_LABEL,
                     common_name: NEW_TRACKLET_LABEL,
                 });
             }
