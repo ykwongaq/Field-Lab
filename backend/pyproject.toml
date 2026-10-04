@@ -1,0 +1,12 @@
+# Test configuration only. There is deliberately no `[project]` table yet: the
+# backend is run as `uvicorn src.main:app` from this directory, so `src` is a
+# plain package on the root rather than an installed one. Declaring one is a
+# later step (it would let the CLIs run as `python -m vsr.cli...`), and a
+# half-declared package would invite an editable install that does not work.
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+# `src.*` is imported from the backend root, so that root has to be importable.
+# Saying so here is what removes the `sys.path.insert` preamble that every test
+# module used to carry, and makes `pytest` work from anywhere in the repo.
+pythonpath = ["."]

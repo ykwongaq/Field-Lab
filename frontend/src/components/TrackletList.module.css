@@ -1,135 +1,176 @@
-.list {
-  flex: 0 0 30%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+/*
+ * The objects panel fills the top of the right sidebar; the label list sits
+ * below it. Only the row list scrolls.
+ */
+.panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 auto;
+    /* No bottom border: the seam below draws the divider onto the label list. */
 }
 
-.listHeader {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
+.head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+    padding: 10px 12px 6px;
+}
+
+.count {
+    margin-left: auto;
+    padding: 0 7px;
+    border-radius: var(--r-full);
+    background: var(--surface-3);
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+}
+
+.searchWrap {
+    position: relative;
+    flex: 0 0 auto;
+    padding: 0 12px 8px;
+}
+
+.searchIcon {
+    position: absolute;
+    top: 50%;
+    left: 21px;
+    transform: translateY(-50%);
+    color: var(--faint);
+    pointer-events: none;
 }
 
 .search {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  font: inherit;
-  font-size: 0.85rem;
+    padding-left: 30px;
+    font-size: var(--fs-sm);
 }
 
-.filters {
-  display: flex;
-  gap: 6px;
+.search::-webkit-search-cancel-button {
+    appearance: none;
 }
 
-.filterBtn {
-  flex: 1;
-  border: 1px solid var(--line);
-  background: #fff;
-  color: var(--muted);
-  font-size: 0.72rem;
-  padding: 4px 6px;
-  border-radius: 999px;
+.list {
+    flex: 1 1 auto;
+    padding-bottom: var(--s-2);
 }
 
-.filterBtn:hover {
-  background: var(--bg);
+/*
+ * A row is a select button plus a reveal-on-hover delete button. The two cannot
+ * nest — a button inside a button is invalid HTML — so the row wrapper carries
+ * the highlight and the selection accent, and the select button fills it.
+ */
+.row {
+    display: flex;
+    align-items: stretch;
+    border-left: 2px solid transparent;
+    transition: background var(--t-fast);
 }
 
-.filterActive {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
+.row:hover {
+    background: var(--surface-2);
 }
 
-.listScroll {
-  flex: 1;
-  overflow-y: auto;
-}
-
-.empty {
-  color: var(--muted);
-  text-align: center;
-  padding: 20px 12px;
-  margin: 0;
-  font-size: 0.85rem;
+.selected,
+.selected:hover {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
 }
 
 .item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 12px;
-  border: none;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px 12px;
+    border: 0;
+    background: transparent;
+    text-align: left;
 }
 
-.item:hover {
-  background: var(--bg);
+/*
+ * Hidden until the row is hovered, focused or selected. `visibility` rather
+ * than `display` on purpose: the space stays reserved, so revealing the button
+ * never reflows the row, and it becomes reachable by Tab once the row's select
+ * button has focus.
+ */
+.trash {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    margin-right: 6px;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--faint);
+    opacity: 0;
+    visibility: hidden;
+    transition:
+        background var(--t-fast),
+        color var(--t-fast),
+        opacity var(--t-fast);
 }
 
-.selected {
-  background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--accent);
+.row:hover .trash,
+.row:focus-within .trash,
+.selected .trash {
+    opacity: 1;
+    visibility: visible;
 }
 
-.swatch {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-  flex: 0 0 auto;
+.trash:hover {
+    background: var(--bad-soft);
+    color: var(--bad);
 }
 
-.itemBody {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+/*
+ * The row's colour block doubles as its label button: the label's colour with
+ * its id in the middle, or red with a dash when the object is unlabelled.
+ */
+.assign {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    align-self: center;
+    width: 26px;
+    height: 26px;
+    margin-left: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    color: #fff;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
-.itemLabel {
-  font-style: italic;
-  font-size: 0.92rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--ink);
+.body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
 }
 
-.itemMeta {
-  color: var(--muted);
-  font-size: 0.72rem;
+.label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-md);
+    font-style: italic;
+    color: var(--ink);
 }
 
-.status {
-  flex: 0 0 auto;
-  font-size: 0.68rem;
-  padding: 2px 8px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-.statusDone {
-  background: var(--good-soft);
-  color: var(--good);
-}
-
-.statusPartial {
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-
-.statusTodo {
-  background: var(--line);
-  color: var(--muted);
+.meta {
+    font-size: var(--fs-xs);
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
 }

@@ -1,0 +1,67 @@
+/*
+ * The draggable seam between two panels.
+ *
+ * It is a hit area first: a full-length strip with a hairline down the middle,
+ * so the gutter stays as thin as the old border while the part you can grab is
+ * comfortably wide. Hover, focus and drag all light the hairline up in the
+ * accent colour, which is the whole affordance — there is no decorative grip.
+ */
+.splitter {
+    position: relative;
+    flex: 0 0 auto;
+    z-index: 2;
+    outline: none;
+    touch-action: none;
+    user-select: none;
+}
+
+.vertical {
+    cursor: col-resize;
+}
+
+.horizontal {
+    height: var(--splitter-w);
+    cursor: row-resize;
+}
+
+.splitter::before {
+    content: "";
+    position: absolute;
+    background: var(--line);
+    transition: background var(--t-fast);
+}
+
+.vertical::before {
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+}
+
+.horizontal::before {
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    transform: translateY(-50%);
+}
+
+.splitter:hover::before,
+.splitter:focus-visible::before,
+.dragging::before {
+    background: var(--accent);
+}
+
+/* Thickening the hairline is the focus indicator as well as the hover cue. */
+.vertical:hover::before,
+.vertical:focus-visible::before,
+.vertical.dragging::before {
+    width: 2px;
+}
+
+.horizontal:hover::before,
+.horizontal:focus-visible::before,
+.horizontal.dragging::before {
+    height: 2px;
+}

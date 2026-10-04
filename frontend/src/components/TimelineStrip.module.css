@@ -1,0 +1,161 @@
+/*
+ * The timeline is a fixed-height band between the tool bar and the stage: a
+ * caption row, the scrub track, and a legend of the frame states present.
+ */
+.wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex: 0 0 auto;
+    padding: 7px 12px 9px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-1);
+}
+
+.caption {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    min-height: 16px;
+    font-size: var(--fs-xs);
+    color: var(--muted);
+}
+
+.captionLabel {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--ink-2);
+}
+
+.legend {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    flex-wrap: nowrap;
+    margin-left: auto;
+    overflow: hidden;
+}
+
+.legendItem {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+.track {
+    position: relative;
+    height: 18px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    cursor: pointer;
+    overflow: hidden;
+    touch-action: none;
+}
+
+.track:hover {
+    border-color: var(--line-strong);
+}
+
+.track:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.playhead {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    border-radius: var(--r-full);
+    background: var(--ink);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+}
+
+.playheadHandle {
+    position: absolute;
+    top: -3px;
+    width: 10px;
+    height: 10px;
+    margin-left: -4px;
+    border-radius: 50%;
+    background: var(--ink);
+    box-shadow: var(--shadow-1);
+    pointer-events: none;
+}
+
+/*
+ * The propagation range band. It shares the track's coordinate system with the
+ * SVG above it, so its edges line up with the frames it covers. The range is
+ * read-only while a run is going, so only the bars take the pointer.
+ */
+.rangeShade {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(8, 12, 16, 0.5);
+    pointer-events: none;
+}
+
+.rangeBand {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    /* Edges only. A fill here would tint the per-frame cells, and a human frame has
+       to keep reading as its own label colour under every overlay. */
+    border-left: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+    pointer-events: none;
+}
+
+/* The frame carrying the mask; the range always keeps it inside. */
+.rangeAnchor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: #e74c3c;
+    pointer-events: none;
+}
+
+/* A draggable end of the range: the "two bars" the reviewer slides. */
+.rangeHandle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 9px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+    cursor: ew-resize;
+    touch-action: none;
+}
+
+.rangeHandle:hover,
+.rangeHandleActive {
+    background: var(--accent-hi);
+}
+
+.rangeHandle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}

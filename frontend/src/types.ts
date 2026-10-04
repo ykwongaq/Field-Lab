@@ -1,110 +1,137 @@
-/**
- * Data model for the video-segmentation review tool.
- *
- * The annotation JSON follows the "VideoSegmentation" layout emitted by
- * pycocotools-based pipelines: one `videos` record (with `fps`) and a flat
- * `annotations` array of tracklets whose `segmentations` are per-frame RLE
- * masks encoded by `pycocotools.mask.encode`.
- */
-
 export interface RawVideo {
-	id: number;
-	video_name: string;
-	file_names: string[];
-	length: number;
-	height: number;
-	width: number;
-	fps: number;
-	original_video?: string;
-	scene_id?: string;
-	start_frame?: number;
-	end_frame?: number;
-	status?: string;
+    id: number;
+    video_name: string;
+    file_names: string[];
+    length: number;
+    height: number;
+    width: number;
+    fps: number;
+    original_video?: string | null;
+    segmentation_mode?: string | null;
+    video_file?: string | null;
+    /** Frame rate of the source material, when it is known. */
+    original_fps?: number | null;
+    /** Frame rate the project was created for (intent, not a re-encode). */
+    target_fps?: number | null;
+    /** Decimation applied when the frames were extracted, if any. */
+    frame_step?: number;
+
+    label_maps?: (string | null)[] | null;
+    scene_id?: string;
+    start_frame?: number;
+    end_frame?: number;
+    status?: string;
 }
 
 export interface RawRle {
-	size: [number, number];
-	counts: string | number[];
+    size: [number, number];
+    counts: string | number[];
 }
 
-/** A single foreground run decoded from an RLE mask. */
 export interface ForegroundRun {
-	x: number;
-	y: number;
-	length: number;
+    x: number;
+    y: number;
+    length: number;
 }
 
-/** An RLE mask decoded by the backend into drawable foreground runs. */
 export interface DecodedMask {
-	height: number;
-	width: number;
-	runs: ForegroundRun[];
+    height: number;
+    width: number;
+    runs: ForegroundRun[];
 }
 
 export interface RawAnnotation {
-	id: number;
-	video_id: number;
-	object_id: number;
-	category_id: number;
-	noun_phrase: string;
-	segmentations: RawRle[];
+    id: number;
+    video_id: number;
+    object_id: number;
+    category_id: number;
+    noun_phrase: string;
+
+    segmentations?: (RawRle | null)[];
 }
 
 export interface RawCategory {
-	id: number;
-	taxon_id?: number;
-	kingdom?: string;
-	phylum?: string;
-	class?: string;
-	order?: string;
-	family?: string;
-	genus?: string;
-	species?: string;
-	common_name?: string;
+    id: number;
+    taxon_id?: number;
+    kingdom?: string;
+    phylum?: string;
+    class?: string;
+    order?: string;
+    family?: string;
+    genus?: string;
+    species?: string;
+    common_name?: string;
 }
 
 export interface RawDataset {
-	videos: RawVideo[];
-	annotations: RawAnnotation[];
-	categories?: RawCategory[];
+    videos: RawVideo[];
+    annotations: RawAnnotation[];
+    categories?: RawCategory[];
 }
 
-/** The taxonomic hierarchy attached to a tracklet's label. */
 export interface Taxonomy {
-	taxonId: number | null;
-	kingdom: string;
-	phylum: string;
-	class: string;
-	order: string;
-	family: string;
-	genus: string;
-	species: string;
-	commonName: string;
+    taxonId: number | null;
+    kingdom: string;
+    phylum: string;
+    class: string;
+    order: string;
+    family: string;
+    genus: string;
+    species: string;
+    commonName: string;
 }
 
 export type TaxonomyKey = Exclude<keyof Taxonomy, "taxonId">;
 
-/** An annotation promoted into a first-class tracklet used by the UI. */
+/**
+ * A project's label: one class, described once and shared by every tracklet
+ * assigned to it. `id` is the app's own 0-based sequence — it is the number
+ * drawn on the label's colour block and the COCO `category_id` on export.
+ * Unlabelled objects use the reserved id -1.
+ */
+export interface Label {
+    id: number;
+    /** Display name — the category's common name, else its species. */
+    name: string;
+    /** Colour of this label's masks and blocks. Frontend-only, never exported. */
+    color: string;
+    taxonomy: Taxonomy;
+}
+
+export type TrackletOrigin = "dataset" | "created";
+
 export interface Tracklet {
-	id: number;
-	objectId: number;
-	categoryId: number;
-	label: string;
-	taxonomy: Taxonomy;
-	color: string;
-	segmentations: RawRle[];
-	maskFrames: {
-		first: number;
-		last: number;
-		count: number;
-	};
+    id: number;
+    objectId: number;
+    categoryId: number;
+    /** The label this tracklet is assigned to, or `null` when unlabelled. */
+    labelId: number | null;
+    label: string;
+    taxonomy: Taxonomy;
+    color: string;
+    segmentations: (RawRle | null)[];
+    maskFrames: {
+        first: number;
+        last: number;
+        count: number;
+    };
+    origin: TrackletOrigin;
 }
 
-export type MaskVerdict = "good" | "bad" | "unsure";
-
-export interface TrackletReview {
-	labelConfirmed: boolean;
-	taxonomy: Taxonomy | null;
-	maskVerdict: MaskVerdict | null;
-	comment: string;
+export interface PromptPoint {
+    x: number;
+    y: number;
+    /** 1 = include this point in the mask, 0 = exclude it. */
+    label: 0 | 1;
 }
+
+/**
+ * Taxonomy corrections made in the workspace, keyed by **label id**.
+ *
+ * A label is one class, shared by every tracklet assigned to it, so an entry
+ * here describes the whole class at once. A label absent from the map keeps the
+ * taxonomy the archive gave it, so an empty map means "nothing was relabelled".
+ * This is the only annotation state that lives outside the `Clip`, because it is
+ * keyed by hand and written on export rather than affecting the masks.
+ */
+export type TaxonomyOverrides = Record<number, Taxonomy>;

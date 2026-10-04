@@ -1,0 +1,171 @@
+/*
+ * The labels panel: the project's class table. It sits below the object list
+ * and, until the seam is dragged, grows only as far as its rows need so the
+ * object list keeps the rest of the column.
+ */
+.panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* Auto (content height, capped at 30%) until the seam pins a height; then
+       the basis holds that height and the cap follows it, so the old ceiling
+       never fights a deliberate drag. */
+    flex: 0 0 var(--labels-h, auto);
+    max-height: var(--labels-h, 30%);
+    border-bottom: 1px solid var(--line);
+}
+
+.head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+    padding: 10px 12px 6px;
+}
+
+.count {
+    margin-left: auto;
+    padding: 0 7px;
+    border-radius: var(--r-full);
+    background: var(--surface-3);
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+}
+
+.list {
+    flex: 0 1 auto;
+    min-height: 0;
+    padding-bottom: var(--s-2);
+}
+
+.row {
+    display: flex;
+    align-items: stretch;
+    border-left: 2px solid transparent;
+    transition: background var(--t-fast);
+}
+
+.row:hover {
+    background: var(--surface-2);
+}
+
+.selected,
+.selected:hover {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 7px 6px 7px 12px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+}
+
+/*
+ * The label's colour block. Its id is drawn in the middle so labels that
+ * cycled back onto the same palette colour stay distinguishable.
+ */
+.block {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    color: #fff;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-md);
+    font-style: italic;
+    color: var(--ink);
+}
+
+.meta {
+    flex: 0 0 auto;
+    font-size: var(--fs-xs);
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Row actions stay out of the way until the row is pointed at or focused. */
+.action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--faint);
+    opacity: 0;
+    transition:
+        background var(--t-fast),
+        color var(--t-fast),
+        opacity var(--t-fast);
+}
+
+.row:hover .action,
+.row:focus-within .action,
+.selected .action {
+    opacity: 1;
+}
+
+.action:hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--ink);
+}
+
+.action:disabled {
+    opacity: 0;
+    cursor: not-allowed;
+}
+
+.row:hover .action:disabled {
+    opacity: 0.35;
+}
+
+.danger:hover:not(:disabled) {
+    background: var(--bad-soft);
+    color: var(--bad);
+}
+
+.row > .action:last-child {
+    margin-right: 6px;
+}
+
+/* The header's "create" button, tucked after the count. */
+.add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--muted);
+}
+
+.add:hover {
+    background: var(--surface-3);
+    color: var(--ink);
+}

@@ -1,0 +1,67 @@
+/*
+ * The label picker popover: a grid of colour blocks, one per label, each
+ * showing its id. Opened from a tracklet row's assignment button.
+ */
+
+.panel {
+    position: fixed;
+    z-index: 60;
+    padding: 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    box-shadow: var(--shadow-2);
+}
+
+.grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.block {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    color: #fff;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.active {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.new {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px dashed var(--line-strong);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-size: var(--fs-md);
+}
+
+.new:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+}
+
+.caption {
+    margin: 8px 2px 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-xs);
+    color: var(--muted);
+}

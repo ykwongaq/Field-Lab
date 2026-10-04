@@ -1,0 +1,54 @@
+{
+  "_comment": "VideoSegmenter backend settings. Precedence: environment variable > this file > built-in defaults. Relative paths for temp_dir/projects_dir/log_dir resolve against the process working directory; relative model paths (sam3.checkpoint, sam3.bpe_path) resolve against the backend folder. Point VSR_CONFIG_FILE at another file to use it instead of this one.",
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "cors_origins": ["*"]
+  },
+
+  "temp_dir": "tmp",
+
+  "projects_dir": "projects",
+
+  "logging": {
+    "log_dir": "logs",
+    "log_level": "INFO"
+  },
+
+  "http": {
+    "max_upload_bytes": 4294967296
+  },
+
+  "sessions": {
+    "_comment": "A session is the frame working copy of one open project. ttl_seconds is how long an idle one survives; max_bytes is the disk backstop across every client, and max_bytes_per_client is a single client's share, so one reviewer's large project cannot evict another reviewer's open clip.",
+    "ttl_seconds": 21600,
+    "max_bytes": 68719476736,
+    "max_bytes_per_client": 17179869184
+  },
+
+  "sam3": {
+    "_comment": "Set enabled=false to run the backend without SAM 3 at all: no model is probed or loaded and /api/sam3 and /api/propagate answer 503. `checkpoint` points at a local sam3.pt (relative paths resolve against backend/); leave it null to download the gated facebook/sam3 weights instead, which needs `hf auth login`. `bpe_path` can stay null: the tokenizer vocabulary ships inside the sam3 package. `eager` loads the models while the server starts and keeps them resident; `max_resident_models` is how many fit at once (2 = the image model and the video predictor together, so neither load evicts the other). `image_cache_size` is how many frames keep their vision embeddings for click-by-click prompting per reviewer, and `image_cache_clients` how many reviewers keep such a cache: the budget is per client, so one reviewer's clicks cannot evict another's frames. 1 reproduces a single shared cache; raising the client count multiplies peak host memory by the same factor.",
+    "enabled": true,
+    "checkpoint": "models/sam3.pt",
+    "bpe_path": null,
+    "device": "auto",
+    "eager": true,
+    "max_resident_models": 2,
+    "inst_interactivity": true,
+    "autocast": true,
+    "image_cache_size": 2,
+    "image_cache_clients": 4
+  },
+
+  "propagate": {
+    "_comment": "window_frames is how many frames one SAM 3 session holds while propagating and overlap is how many neighboring windows share (the re-anchoring stretch). A longer range is split into overlapping windows, so a mask can be propagated to the end of any clip; there is no frame cap. chaining decides what a window with no hand-verified mask may be seeded with: 'derived' (default) hands it the previous window's own prediction, which is what reaches the whole clip; 'verified' stops the run instead, so it never travels more than one window past a mask a human drew. A request may override it per run. max_jobs is the queue ceiling across every client and max_jobs_per_client is one reviewer's share of it, so a single client cannot fill the queue and stop everyone else starting a run.",
+    "window_frames": 48,
+    "overlap": 8,
+    "anchor_max": 3,
+    "chaining": "derived",
+    "max_jobs": 32,
+    "max_jobs_per_client": 8,
+    "job_ttl_seconds": 1800
+  }
+}

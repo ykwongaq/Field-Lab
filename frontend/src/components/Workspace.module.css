@@ -1,86 +1,389 @@
+/*
+ * Workspace layout.
+ *
+ * The whole app is a fixed-height shell: the header, the optional notice and
+ * the body share 100% of the viewport, and the body splits into a tool rail, a
+ * stage and a sidebar. The rail is fixed; the sidebar's width and the label
+ * list's height come from the two draggable seams (`Splitter`), which write
+ * `--panel-w` and `--labels-h`. Nothing here scrolls the page — only the
+ * regions that can hold unbounded content scroll internally.
+ */
+
 .workspace {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg);
 }
 
+/* ------------------------------------------------------------------ header */
+
 .header {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    flex: 0 0 auto;
+    height: var(--header-h);
+    padding: 0 12px 0 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-1);
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    border: 1px solid var(--accent-line);
+    border-radius: var(--r-sm);
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.identity {
+    min-width: 0;
+}
+
+.titleRow {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    min-width: 0;
 }
 
 .title {
-  margin: 0;
-  font-size: 1.1rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-lg);
+    font-weight: 600;
 }
 
 .meta {
-  display: flex;
-  gap: 14px;
-  color: var(--muted);
-  font-size: 0.78rem;
-  flex-wrap: wrap;
-  margin-top: 2px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 1px;
+    font-size: var(--fs-xs);
+    color: var(--faint);
 }
 
-.warning {
-  color: var(--warn);
+.sep {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--line-focus);
 }
 
 .spacer {
-  flex: 1;
+    flex: 1 1 auto;
+    min-width: var(--s-2);
 }
 
-.progress {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 220px;
+/* ------------------------------------------------------------------ notice */
+
+.notice {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    flex: 0 0 auto;
+    padding: 7px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--info-soft);
+    color: var(--ink-2);
+    font-size: var(--fs-sm);
 }
 
-.progressText {
-  font-size: 0.75rem;
-  color: var(--muted);
+.noticeSuccess {
+    background: var(--good-soft);
 }
 
-.progressTrack {
-  height: 6px;
-  background: var(--line);
-  border-radius: 999px;
-  overflow: hidden;
+.noticeClose {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--muted);
+    line-height: 1;
 }
 
-.progressFill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 999px;
-  transition: width 160ms ease;
+.noticeClose:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--ink);
 }
+
+/* -------------------------------------------------------------------- body */
 
 .body {
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 400px;
-  min-height: 0;
-}
-
-.videoCol {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding: 14px;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    /* rail · stage · seam · sidebar — the seam draws the divider the sidebar
+       used to carry as a border, and the last track is the dragged width. */
+    grid-template-columns:
+        var(--rail-w) minmax(0, 1fr)
+        var(--splitter-w) var(--panel-w);
+    overflow: hidden;
 }
 
 .sidebar {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-left: 1px solid var(--line);
-  background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* Holds the object list, the seam and the label list. Clipping means a
+       height remembered from a larger window cannot spill out of a smaller one. */
+    overflow: hidden;
+    background: var(--surface-1);
+}
+
+/* --------------------------------------------------------------- the stage */
+
+.videoCol {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--stage);
+}
+
+/*
+ * The tool bar is a single non-wrapping row that scrolls horizontally if a tool
+ * carries more controls than fit, so it can never push the stage out of the
+ * viewport. The status text truncates, and the trailing spacer is what pins the
+ * action buttons (Clear / accept) to the right edge.
+ */
+.promptBar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface-1));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.promptBar::-webkit-scrollbar {
+    display: none;
+}
+
+.promptBar > * {
+    flex: 0 0 auto;
+}
+
+/*
+ * `.promptBar > *` above would also freeze the trailing spacer, so the action
+ * buttons would sit right after whichever controls the active draw method
+ * happens to show and drift as the method changes. Re-declare the spacer's
+ * growth with a scoped selector (higher specificity) so the buttons stay pinned
+ * to the right regardless of what precedes them.
+ */
+.promptBar > .spacer {
+    flex: 1 1 auto;
+}
+
+/* The active mode, as a badge: the one tinted element on the bar, so the eye
+   lands on what the controls below are acting on. */
+.promptTitle {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 10px;
+    border: 1px solid var(--accent-line);
+    border-radius: var(--r-full);
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+}
+
+/* Hairline between logical groups of controls on the bar. */
+.barDivider {
+    flex: 0 0 auto;
+    width: 1px;
+    height: 20px;
+    margin: 0 2px;
+    background: var(--line);
+}
+
+.promptStatus {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-sm);
+    color: var(--muted);
+}
+
+.promptError {
+    color: var(--bad);
+}
+
+.promptInput {
+    min-width: 170px;
+    max-width: 220px;
+    padding: 5px 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--fs-sm);
+}
+
+.promptInput:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.promptInput::placeholder {
+    color: var(--faint);
+}
+
+/* The label picker in the add-mask bar, sized like the class-name input. */
+.promptSelect {
+    min-width: 150px;
+    max-width: 220px;
+    padding: 5px 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--fs-sm);
+}
+
+.promptSelect:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Inline labelled control ("Back __ Forward __ Direction [select]"). */
+.rangeField {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-sm);
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.numberInput {
+    width: 62px;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-1);
+    color: var(--ink);
+    font: inherit;
+    font-size: var(--fs-sm);
+    font-variant-numeric: tabular-nums;
+}
+
+.numberInput:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.brushSize {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--fs-sm);
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.brushSize input[type="range"] {
+    width: 104px;
+    accent-color: var(--accent);
+}
+
+.brushValue {
+    min-width: 42px;
+    font-variant-numeric: tabular-nums;
+    color: var(--faint);
+}
+
+/*
+ * Tool-bar controls compose the shared button/segmented vocabulary and then
+ * step it down one notch: the secondary buttons lose their fill, and the
+ * selected segment is the only accent-tinted chip in its track. Scoping the
+ * overrides to `.promptBar` keeps them from leaking into the rest of the app.
+ */
+.promptBar :global(.btn) {
+    height: 28px;
+    padding: 0 11px;
+    border-color: var(--line);
+    background: var(--surface-2);
+    color: var(--ink-2);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+}
+
+.promptBar :global(.btn):hover:not(:disabled) {
+    border-color: var(--line-focus);
+    background: var(--surface-3);
+    color: var(--ink);
+}
+
+.promptBar :global(.btnPrimary) {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.promptBar :global(.btnPrimary):hover:not(:disabled) {
+    border-color: var(--accent-hi);
+    background: var(--accent-hi);
+    color: var(--accent-ink);
+}
+
+.promptBar :global(.segmented) {
+    padding: 3px;
+    background: var(--surface-1);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.promptBar :global(.segment) {
+    padding: 3px 11px;
+    border-radius: var(--r-xs);
+    color: var(--muted);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.promptBar :global(.segment):hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--ink-2);
+}
+
+.promptBar :global(.segmentActive),
+.promptBar :global(.segmentActive):hover:not(:disabled) {
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+    box-shadow: inset 0 0 0 1px var(--accent-line);
 }

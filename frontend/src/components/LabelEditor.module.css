@@ -1,0 +1,114 @@
+/*
+ * The label editor: name, colour and the shared taxonomy. Opened from the label
+ * list for both creating and editing, because a label is one class described
+ * once.
+ */
+
+.body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    align-items: center;
+    gap: 10px;
+}
+
+.rowLabel {
+    font-size: var(--fs-xs);
+    color: var(--muted);
+    text-align: right;
+}
+
+.sep {
+    height: 1px;
+    margin: 2px 0;
+    background: var(--line);
+}
+
+.swatches {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+/* `display: contents` keeps the palette buttons in the swatch row's flex flow
+   while still giving screen readers the radiogroup. */
+.paletteGroup {
+    display: contents;
+}
+
+.custom {
+    position: relative;
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+}
+
+/* The native picker fills the swatch; its chrome is stripped so it reads as one
+   more colour block, with a "+" marking it as the free choice. */
+.colorInput {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+}
+
+.colorInput::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.colorInput::-webkit-color-swatch {
+    border: 0;
+    border-radius: 4px;
+}
+
+.colorInput::-moz-color-swatch {
+    border: 0;
+    border-radius: 4px;
+}
+
+.customPlus {
+    position: absolute;
+    right: -3px;
+    bottom: -4px;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--ink);
+    text-shadow:
+        0 0 2px #000,
+        0 0 2px #000;
+    pointer-events: none;
+}
+
+.swatch {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.swatchActive {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}

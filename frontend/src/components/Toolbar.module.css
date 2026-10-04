@@ -1,0 +1,114 @@
+/*
+ * The tool rail: a fixed-width column of icon+label tools. It is the app's
+ * primary mode switch, so the active tool is the strongest colour on the rail.
+ */
+.rail {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    width: var(--rail-w);
+    min-height: 0;
+    padding: 8px 7px;
+    border-right: 1px solid var(--line);
+    background: var(--surface-1);
+}
+
+.tool {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 8px 2px 6px;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--muted);
+    transition:
+        background var(--t-fast),
+        color var(--t-fast),
+        border-color var(--t-fast);
+}
+
+.tool:hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--ink);
+}
+
+.tool:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.toolActive,
+.toolActive:hover:not(:disabled) {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent-hi);
+}
+
+.label {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.divider {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--line);
+}
+
+.spacer {
+    flex: 1 1 auto;
+    min-height: var(--s-2);
+}
+
+/* ----------------------------------------------------------- model status */
+
+.status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 7px 2px;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--faint);
+}
+
+.status:hover {
+    background: var(--surface-3);
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--line-strong);
+}
+
+.dotOk {
+    background: var(--good);
+    box-shadow: 0 0 0 3px var(--good-soft);
+}
+
+.dotBad {
+    background: var(--bad);
+    box-shadow: 0 0 0 3px var(--bad-soft);
+}
+
+.dotPending {
+    background: var(--amber);
+}
+
+.statusText {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
