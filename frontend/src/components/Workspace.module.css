@@ -160,7 +160,8 @@
 /*
  * The tool bar is a single non-wrapping row that scrolls horizontally if a tool
  * carries more controls than fit, so it can never push the stage out of the
- * viewport. The status text is the only flexible child and truncates.
+ * viewport. The status text truncates, and the trailing spacer is what pins the
+ * action buttons (Clear / accept) to the right edge.
  */
 .promptBar {
     display: flex;
@@ -184,6 +185,17 @@
 
 .promptBar > * {
     flex: 0 0 auto;
+}
+
+/*
+ * `.promptBar > *` above would also freeze the trailing spacer, so the action
+ * buttons would sit right after whichever controls the active draw method
+ * happens to show and drift as the method changes. Re-declare the spacer's
+ * growth with a scoped selector (higher specificity) so the buttons stay pinned
+ * to the right regardless of what precedes them.
+ */
+.promptBar > .spacer {
+    flex: 1 1 auto;
 }
 
 /* The active mode, as a badge: the one tinted element on the bar, so the eye
