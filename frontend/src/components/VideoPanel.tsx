@@ -18,6 +18,13 @@ import {
     type FramePoint,
     type PaintMode,
 } from "../lib/raster";
+import {
+    insertVertex,
+    moveVertex,
+    nearestEdge,
+    nearestVertex,
+    removeVertex,
+} from "../lib/contour";
 import type { DecodedMask, PromptPoint, RawRle, Tracklet } from "../types";
 import type { PromptBox } from "../lib/sam3Api";
 import {
@@ -43,6 +50,9 @@ const CANDIDATE_ERASE_COLOR = "#ff5f5f";
 const POSITIVE_COLOR = "#2ecc71";
 const NEGATIVE_COLOR = "#e74c3c";
 const CLOSE_POLYGON_RADIUS = 9;
+/** Screen-space radii for grabbing a vertex or an edge of an existing outline. */
+const VERTEX_HIT_RADIUS = 7;
+const EDGE_HIT_RADIUS = 6;
 
 interface VideoPanelProps {
     clip: Clip;
@@ -61,6 +71,13 @@ interface VideoPanelProps {
     brushSize: number;
     prompt: PromptPoint[];
     polygon: FramePoint[];
+    /**
+     * Editable outline of the mask being corrected, derived from the draft.
+     *
+     * Non-null means the polygon tool is in *outline edit* mode: the shape is
+     * already closed and its vertices are dragged, rather than clicked into place.
+     */
+    outline: FramePoint[][] | null;
     draft: DecodedMask | null;
     candidate: DecodedMask | null;
     editingTrackletId: number | null;
@@ -71,6 +88,8 @@ interface VideoPanelProps {
     box?: PromptBox | null;
     onPolygonPoint: (point: FramePoint) => void;
     onPolygonClose: () => void;
+    /** The outline was edited: the rings to bake into the draft. */
+    onOutlineChange: (rings: FramePoint[][]) => void;
     onStroke: (stroke: RawRle, mode: PaintMode) => void;
     onSelectTracklet: (id: number) => void;
     promptHint?: string;
@@ -151,6 +170,15 @@ export function VideoPanel(props: VideoPanelProps) {
         last: FramePoint;
         pointerId: number;
     } | null>(null);
+    //: The live outline drag. The rings live on the ref as well as in state so a
+    //: fast drag never works from the previous render's snapshot.
+    const dragRef = useRef<{
+        pointerId: number;
+        ring: number;
+        index: number;
+        rings: FramePoint[][];
+    } | null>(null);
+    const [dragRings, setDragRings] = useState<FramePoint[][] | null>(null);
 
     const [cursor, setCursor] = useState<FramePoint | null>(null);
     //: The box being dragged (box prompt): live while dragging, committed on release.
@@ -301,6 +329,9 @@ export function VideoPanel(props: VideoPanelProps) {
                     label: negative ? 0 : 1,
                 });
             } else if (props.method === "polygon") {
+                // An existing mask's outline is dragged, not clicked: adding a
+                // point would land a stray vertex next to the hands.
+                if (props.outline) return;
                 if (event.button === 2) {
                     if (props.polygon.length >= 3) props.onPolygonClose();
                     return;
@@ -399,6 +430,63 @@ export function VideoPanel(props: VideoPanelProps) {
                 });
                 return;
             }
+            // Editing an existing mask's outline. The left button grabs (or
+            // creates) a vertex to drag; the right button removes one, matching
+            // the right-button vocabulary the brush already uses.
+            const outline = props.outline;
+            if (drawing && props.method === "polygon" && outline) {
+                const layout = layoutRef.current;
+                if (!layout) return;
+                const point = toFrame(event, true);
+                if (!point) return;
+                const vertexRadius = VERTEX_HIT_RADIUS / layout.scale;
+                if (event.button === 2) {
+                    const doomed = nearestVertex(outline, point, vertexRadius);
+                    if (!doomed) return;
+                    const trimmed = removeVertex(
+                        outline,
+                        doomed.ring,
+                        doomed.index,
+                    );
+                    if (!trimmed) return;
+                    event.preventDefault();
+                    props.onOutlineChange(trimmed);
+                    return;
+                }
+                if (event.button !== 0) return;
+                const grabbed = nearestVertex(outline, point, vertexRadius);
+                let rings = outline;
+                let ring = grabbed?.ring ?? -1;
+                let index = grabbed?.index ?? -1;
+                if (!grabbed) {
+                    const edge = nearestEdge(
+                        outline,
+                        point,
+                        EDGE_HIT_RADIUS / layout.scale,
+                    );
+                    // Only an existing edge can be split; a click on empty space
+                    // is not how a missing blob is added (the brush is).
+                    if (!edge) return;
+                    rings = insertVertex(
+                        outline,
+                        edge.ring,
+                        edge.index,
+                        edge.at,
+                    );
+                    ring = edge.ring;
+                    index = edge.index + 1;
+                }
+                event.preventDefault();
+                dragRef.current = {
+                    pointerId: event.pointerId,
+                    ring,
+                    index,
+                    rings,
+                };
+                setDragRings(rings);
+                event.currentTarget.setPointerCapture(event.pointerId);
+                return;
+            }
             if (!drawing || props.method !== "brush") return;
             if (event.button !== 0 && event.button !== 2) return;
             const point = toFrame(event);
@@ -417,15 +505,7 @@ export function VideoPanel(props: VideoPanelProps) {
             };
             event.currentTarget.setPointerCapture(event.pointerId);
         },
-        [
-            drawing,
-            rightHasDrawMeaning,
-            props.method,
-            props.paintMode,
-            props.brushSize,
-            toFrame,
-            paintLiveSegment,
-        ],
+        [drawing, rightHasDrawMeaning, props, toFrame, paintLiveSegment],
     );
 
     const handlePointerMove = useCallback(
@@ -454,6 +534,22 @@ export function VideoPanel(props: VideoPanelProps) {
                         ),
                     );
                 }
+                return;
+            }
+
+            const drag = dragRef.current;
+            if (drag && drag.pointerId === event.pointerId) {
+                const rect = canvas.getBoundingClientRect();
+                const raw = screenToFrame(
+                    layout,
+                    event.clientX - rect.left,
+                    event.clientY - rect.top,
+                );
+                drag.rings = moveVertex(drag.rings, drag.ring, drag.index, {
+                    x: Math.min(layout.width, Math.max(0, raw.x)),
+                    y: Math.min(layout.height, Math.max(0, raw.y)),
+                });
+                setDragRings(drag.rings);
                 return;
             }
 
@@ -515,6 +611,16 @@ export function VideoPanel(props: VideoPanelProps) {
                 if (pan.moved && pan.button === 2) {
                     swallowRightClickRef.current = true;
                 }
+                return;
+            }
+            const drag = dragRef.current;
+            if (drag && drag.pointerId === event.pointerId) {
+                dragRef.current = null;
+                setDragRings(null);
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+                props.onOutlineChange(drag.rings);
                 return;
             }
             if (boxStartRef.current) {
@@ -925,10 +1031,11 @@ export function VideoPanel(props: VideoPanelProps) {
         } else if (props.method === "text") {
             hint = "Type a class name and press Enter";
         } else if (props.method === "polygon") {
-            hint =
-                props.polygon.length === 0
-                    ? "Click to place points · Enter closes"
-                    : `${props.polygon.length} point${props.polygon.length === 1 ? "" : "s"} · Enter closes`;
+            hint = props.outline
+                ? "Drag a vertex · click an edge to add one · right-click to remove"
+                : props.polygon.length === 0
+                  ? "Click to place points · Enter closes"
+                  : `${props.polygon.length} point${props.polygon.length === 1 ? "" : "s"} · Enter closes`;
         } else {
             hint = `Drag to paint${props.paintMode === "erase" ? " (erasing)" : ""}`;
         }
@@ -946,6 +1053,8 @@ export function VideoPanel(props: VideoPanelProps) {
         layout
             ? `${layout.x + p.x * layout.scale},${layout.y + p.y * layout.scale}`
             : "";
+    /** What the overlay draws: the live drag if one is running, else the props. */
+    const outlineRings = dragRings ?? props.outline;
 
     return (
         <div className={styles.panel}>
@@ -1075,6 +1184,23 @@ export function VideoPanel(props: VideoPanelProps) {
                                     ))}
                                 </>
                             )}
+                        {outlineRings?.map((ring, ringIndex) => (
+                            <g key={ringIndex}>
+                                <polygon
+                                    className={styles.polygonLine}
+                                    points={ring.map(toScreen).join(" ")}
+                                />
+                                {ring.map((p, i) => (
+                                    <circle
+                                        key={i}
+                                        className={styles.vertex}
+                                        cx={layout.x + p.x * layout.scale}
+                                        cy={layout.y + p.y * layout.scale}
+                                        r={4}
+                                    />
+                                ))}
+                            </g>
+                        ))}
                         {brushCursor && (
                             <circle
                                 className={

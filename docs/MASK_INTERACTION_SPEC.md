@@ -113,6 +113,13 @@ The same physical gesture (dragging) is create-or-correct depending on the phase
 be the _tool selection_, not a hidden mode. Concretely: `Add mask` shows the create tools; `Edit mask`
 shows brush/polygon/erase. This is already the shape of `Toolbar.tsx` (`addMask` / `editMask`) — keep it.
 
+**The empty-frame exception.** One case has nothing to correct: a frame where the selected object has
+no mask. There `Edit mask` falls back to the create tools, so a redraw fills _that object's_ frame
+(Accept replaces its mask) instead of quietly creating a second object for the same thing. The
+exception is visible, not hidden: the create methods are simply _absent_ from the bar while a mask
+exists, so no gesture changes meaning under the user's feet (P1). Selecting a method that is not on
+screen is refused, including from the keyboard letter shortcuts.
+
 ### P4 — Everything converges on a mask
 
 Every prompt type compiles down to the _same_ currency: a binary mask encoded as RLE.
@@ -244,6 +251,14 @@ Two invariants:
 
 - **Gesture:** click vertices; **Enter** or double-click closes; **Backspace** removes the last vertex;
   **Esc** cancels. Clicking within ~10 px of the first vertex closes it.
+- **Gesture, when there is a mask to correct** (`Edit mask`, and the object has a mask on this frame):
+  the tool becomes _outline edit_. The mask's outline is derived from the draft — boundary trace plus
+  Douglas–Peucker simplification, `lib/contour.ts` — and shown as handles: **drag** a vertex to move it,
+  **click an edge** to insert one, **right-click** a vertex to remove it. Every change is baked straight
+  back into the draft, so Save, undo and the brush behave exactly as they do for a stroke (P4). Holes and
+  separate blobs each become their own ring, filled even-odd so a hole subtracts. The outline is derived
+  **once**, when the tool is entered: re-deriving it after every move would let the shape creep under the
+  user's hand, since simplification is lossy by construction.
 - **Meaning:** "this shape" — manual, no model.
 - **Why it stays:** it is the only creation tool that works with the model unavailable or wrong
   (occluded objects, unusual geometry, model outages), and it is required for annotating categories
@@ -533,6 +548,7 @@ Extending the existing shortcuts; new ones are marked **+**.
 | Frames differ in size inside a window  | Reject with a clear message (the tracker requires uniform size)                                     |
 | Two objects overlap on a frame         | No silent resolution: keep both masks, flag the overlap in the reviewer for a human decision        |
 | Object removed while a job is queued   | Drop the job with a notice                                                                          |
+| Deleting an object's **only** mask     | `Delete mask on this frame` would leave the object with no masks, so it deletes the object instead — after the same confirmation the list's trash uses — and lands in Add mask to draw it again |
 
 ---
 

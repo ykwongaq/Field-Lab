@@ -15,6 +15,7 @@ import {
     type FramePoint,
     type PaintMode,
 } from "../lib/raster";
+import { outlineFromRle, ringsToRle } from "../lib/contour";
 import {
     fetchSam3Status,
     segmentFrame,
@@ -136,6 +137,34 @@ const NEW_OBJECT_ID = -1;
 /** How often a running propagation is polled for newly produced masks. */
 const PROPAGATE_POLL_MS = 700;
 
+/**
+ * The draw methods, split by phase (spec P3: prompt creates, brush and polygon
+ * correct — never mixed).
+ *
+ * `Add mask` always offers every method. `Edit mask` offers only the two that
+ * correct an existing mask, *except* on a frame where the selected object has no
+ * mask at all: there is nothing to correct there, so the create methods come back
+ * and a redraw fills that frame of the same object instead of becoming a second
+ * one.
+ */
+const CREATE_METHODS: DrawMethod[] = [
+    "point",
+    "box",
+    "text",
+    "polygon",
+    "brush",
+];
+const CORRECT_METHODS: DrawMethod[] = ["polygon", "brush"];
+
+/** Labels for the method strip; `point` is shown under the model's own name. */
+const METHOD_LABELS: Record<DrawMethod, string> = {
+    point: "Point",
+    box: "Box",
+    text: "Text",
+    polygon: "Polygon",
+    brush: "Brush",
+};
+
 /** The "3/120 frames" read-out for a running propagation. */
 function jobProgressText(run: PropagateRun | null): string {
     return run
@@ -217,7 +246,9 @@ export function Workspace({
     // same tracker propagates the mask it produced.
     const modelName = "SAM 3";
     const [tool, setTool] = useState<Tool>("review");
-    const [method, setMethod] = useState<DrawMethod>("point");
+    // The method the user last picked. What is actually in force may be clamped
+    // to the bar's available set — see `method`, derived below.
+    const [preferredMethod, setMethod] = useState<DrawMethod>("point");
     const [paintMode, setPaintMode] = useState<PaintMode>("add");
     const [brushSize, setBrushSize] = useState(24);
     /**
@@ -237,6 +268,15 @@ export function Workspace({
         () => new Map(),
     );
     const [polygon, setPolygon] = useState<FramePoint[]>([]);
+    /**
+     * The draft a live outline edit belongs to, with the rings the user has
+     * dragged. Claiming the new RLE in the same update as it is pushed is what
+     * keeps the handles still: they are the source of truth, not the raster.
+     */
+    const [draftRings, setDraftRings] = useState<{
+        of: RawRle;
+        rings: FramePoint[][];
+    } | null>(null);
 
     const [prompt, setPrompt] = useState<PromptPoint[]>([]);
     const [box, setBox] = useState<PromptBox | null>(null);
@@ -248,12 +288,17 @@ export function Workspace({
 
     const [className, setClassName] = useState("");
     /**
-     * The object a row's trash button asked to delete, pending confirmation.
+     * The object an open delete confirmation will remove, pending confirmation.
      *
-     * Removing an object is not undoable, so the list opens the one modal shell
-     * rather than deleting on the click.
+     * Removing an object is not undoable, so both the list's trash button and the
+     * mask bar's “delete the only mask” route open the one modal shell rather than
+     * deleting on the click. `then` is the tool to fall back to when the object
+     * removed is the one Edit mask is attached to.
      */
-    const [pendingDelete, setPendingDelete] = useState<number | null>(null);
+    const [pendingDelete, setPendingDelete] = useState<{
+        id: number;
+        then: Tool;
+    } | null>(null);
     // The workspace shows no action toasts of its own; the only notice it
     // renders is the one the shell passes down — currently the frame-list
     // mismatch warning raised while opening a project.
@@ -502,6 +547,7 @@ export function Workspace({
         });
         resetPrompt();
         setPolygon([]);
+        setDraftRings(null);
     }, [resetPrompt]);
 
     /** Replace this frame's draft, pushing the old one onto its undo stack. */
@@ -528,6 +574,7 @@ export function Workspace({
     const resetTransient = useCallback(() => {
         resetPrompt();
         setPolygon([]);
+        setDraftRings(null);
     }, [resetPrompt]);
 
     const targetClass = useMemo(
@@ -639,6 +686,72 @@ export function Workspace({
     const selectedHasMaskHere =
         selected !== null && clip.rawMaskAt(selected, frameIndex) !== null;
 
+    /**
+     * Whether the create methods belong in the bar right now.
+     *
+     * `Add mask` always creates. In instance mode `Edit mask` is correction only
+     * — unless the selected object has no mask on this frame, where the create
+     * methods are the only meaningful gesture: they fill *this* object's frame
+     * (Accept replaces its mask) rather than making a second object for the same
+     * thing. Semantic mode keeps its create path in `Add mask`, where the
+     * class-name box lives.
+     */
+    const canCreateHere =
+        tool === "addMask" || (!semantic && !selectedHasMaskHere);
+    const availableMethods = useMemo<DrawMethod[]>(
+        () => (canCreateHere ? CREATE_METHODS : CORRECT_METHODS),
+        [canCreateHere],
+    );
+
+    /**
+     * The method actually in force.
+     *
+     * The bar's set can shrink when the frame or the selection changes, so a
+     * preference that is no longer offered falls back to the first one that is.
+     * Deriving it here rather than writing it back to state keeps the strip, the
+     * pointer handler, the commit path and the status line on one value by
+     * construction — there is no render in which they can disagree.
+     */
+    const method: DrawMethod = availableMethods.includes(preferredMethod)
+        ? preferredMethod
+        : availableMethods[0];
+
+    /**
+     * The editable outline of the mask on this frame, or null when Polygon is
+     * drawing a new shape rather than correcting one.
+     *
+     * It is derived from the *draft*, so strokes made before switching to Polygon
+     * are part of the shape. Requiring a committed mask on the frame (rather than
+     * just a draft) is what keeps the two polygon behaviours apart: with nothing
+     * to correct the tool stays click-to-place, and drawing a shape must not flip
+     * it into outline editing halfway through.
+     */
+    const outlineRings = useMemo(() => {
+        if (tool !== "editMask" || method !== "polygon") return null;
+        if (!selectedHasMaskHere || !draft) return null;
+        if (draftRings && draftRings.of === draft) return draftRings.rings;
+        return outlineFromRle(draft);
+    }, [tool, method, selectedHasMaskHere, draft, draftRings]);
+
+    /**
+     * Bake edited rings back into the draft.
+     *
+     * The new RLE is claimed by `draftRings` in the same update as it is pushed,
+     * so the handles stay exactly where the user left them instead of being
+     * re-derived — and re-simplified — from the raster on the next render.
+     */
+    const commitOutline = useCallback(
+        (rings: FramePoint[][]) => {
+            const rle = ringsToRle(rings, clip.width, clip.height);
+            // Rings that enclose no pixel are not a mask. Leave the draft alone
+            // rather than erasing: `Delete mask on this frame` is that gesture.
+            if (!rle) return;
+            setDraftRings({ of: rle, rings });
+            pushDraft(rle);
+        },
+        [clip.width, clip.height, pushDraft],
+    );
+
     const propRunRef = useRef(propRun);
     propRunRef.current = propRun;
 
@@ -675,7 +788,6 @@ export function Workspace({
             selected,
             selectedHasMaskHere,
             samAvailable,
-            method,
             propStatus,
             discardPropagation,
             resetTransient,
@@ -690,10 +802,16 @@ export function Workspace({
      * is *composed* into the existing draft with `add`, so a click on top of a bad
      * mask can only ever grow it. Clearing first is what makes the replacement a
      * fresh prediction instead of a union with the mask being rejected.
+     *
+     * Only reachable while the object keeps another mask. When this is its *only*
+     * mask, clearing it would delete the object itself (`removeMask` drops a
+     * tracklet left with no masks), so the bar routes that click through the
+     * delete confirmation instead.
      */
     const clearMaskOnFrame = useCallback(() => {
         if (selectedId === null || !selected) return;
         if (clip.rawMaskAt(selected, frameIndex) === null) return;
+        // Defensive: the bar sends the single-mask case to the confirmation.
         if (selected.maskFrames.count <= 1) {
             return;
         }
@@ -741,6 +859,10 @@ export function Workspace({
     const changeMethod = useCallback(
         (next: DrawMethod) => {
             if (next === method) return;
+            // A method the bar is not offering is refused here too, so the
+            // keyboard letters (P / B / …) cannot select a button that is not on
+            // screen — an Edit-mask frame with a mask has no Point/Box/Text.
+            if (!availableMethods.includes(next)) return;
             const needsModel =
                 next === "point" || next === "box" || next === "text";
             resetPrompt();
@@ -760,7 +882,7 @@ export function Workspace({
                     : null,
             );
         },
-        [method, samAvailable, resetPrompt, sam],
+        [method, availableMethods, samAvailable, resetPrompt, sam],
     );
 
     /**
@@ -1140,7 +1262,8 @@ export function Workspace({
         () =>
             pendingDelete === null
                 ? null
-                : (clip.tracklets.find((t) => t.id === pendingDelete) ?? null),
+                : (clip.tracklets.find((t) => t.id === pendingDelete.id) ??
+                  null),
         [clip.tracklets, pendingDelete],
     );
 
@@ -2285,15 +2408,7 @@ export function Workspace({
                                 role="radiogroup"
                                 aria-label="Drawing method"
                             >
-                                {(
-                                    [
-                                        ["point", modelName],
-                                        ["box", "Box"],
-                                        ["text", "Text"],
-                                        ["polygon", "Polygon"],
-                                        ["brush", "Brush"],
-                                    ] as [DrawMethod, string][]
-                                ).map(([value, label]) => (
+                                {availableMethods.map((value) => (
                                     <button
                                         key={value}
                                         type="button"
@@ -2313,7 +2428,9 @@ export function Workspace({
                                                       : "Drag to paint; Shift/right-drag erases; [ ] resize (B)"
                                         }
                                     >
-                                        {label}
+                                        {value === "point"
+                                            ? modelName
+                                            : METHOD_LABELS[value]}
                                     </button>
                                 ))}
                             </div>
@@ -2385,8 +2502,28 @@ export function Workspace({
                                     <button
                                         type="button"
                                         className="btn"
-                                        onClick={clearMaskOnFrame}
-                                        title="Delete the mask on this frame and draw it again. A redraw then replaces it, instead of being added to the mask you are rejecting."
+                                        onClick={() => {
+                                            if (!selected) return;
+                                            if (
+                                                selected.maskFrames.count <= 1
+                                            ) {
+                                                // The object's only mask: removing
+                                                // it deletes the object, so confirm
+                                                // first and land in Add mask to draw
+                                                // it again.
+                                                setPendingDelete({
+                                                    id: selected.id,
+                                                    then: "addMask",
+                                                });
+                                                return;
+                                            }
+                                            clearMaskOnFrame();
+                                        }}
+                                        title={
+                                            selected.maskFrames.count <= 1
+                                                ? "This is the object's only mask, so deleting it removes the object. You will land in Add mask to draw it again."
+                                                : "Delete the mask on this frame and draw it again. A redraw then replaces it, instead of being added to the mask you are rejecting."
+                                        }
                                     >
                                         Delete mask on this frame
                                     </button>
@@ -2704,6 +2841,7 @@ export function Workspace({
                         prompt={prompt}
                         box={box}
                         polygon={polygon}
+                        outline={outlineRings}
                         draft={draftDecoded}
                         candidate={
                             tool === "propagate"
@@ -2729,6 +2867,7 @@ export function Workspace({
                         onPromptBox={segmentBox}
                         onPolygonPoint={addPolygonPoint}
                         onPolygonClose={closePolygon}
+                        onOutlineChange={commitOutline}
                         onStroke={applyStroke}
                         onSelectTracklet={selectOnCanvas}
                         promptHint={
@@ -2764,7 +2903,9 @@ export function Workspace({
                         onToggleBatch={
                             tool === "propagate" ? togglePropBatch : undefined
                         }
-                        onDelete={setPendingDelete}
+                        onDelete={(id) =>
+                            setPendingDelete({ id, then: "review" })
+                        }
                         onAssign={semantic ? undefined : assignTrackletLabel}
                         onNewLabel={
                             semantic ? undefined : createLabelForTracklet
@@ -2805,7 +2946,7 @@ export function Workspace({
 
             {pendingDelete !== null && (
                 <Dialog
-                    title={`Delete ${vocab.unit} #${pendingDelete}?`}
+                    title={`Delete ${vocab.unit} #${pendingDelete.id}?`}
                     onClose={() => setPendingDelete(null)}
                     footer={
                         <>
@@ -2818,8 +2959,22 @@ export function Workspace({
                             <Button
                                 variant="danger"
                                 onClick={() => {
-                                    deleteTracklet(pendingDelete);
+                                    const { id, then } = pendingDelete;
+                                    // Only the object Edit mask is attached to
+                                    // matters: a row can be deleted while a
+                                    // different object is selected.
+                                    const wasEditing =
+                                        toolRef.current === "editMask" &&
+                                        id === selectedId;
+                                    deleteTracklet(id);
                                     setPendingDelete(null);
+                                    // That object is gone, so Edit mask has
+                                    // nothing to correct: land where the
+                                    // deletion implies (Add mask to redraw,
+                                    // Select for a list deletion). Through
+                                    // changeTool so the paint mode and the
+                                    // prompt are reset with the tool.
+                                    if (wasEditing) changeTool(then);
                                 }}
                             >
                                 Delete {vocab.unit}
