@@ -1068,9 +1068,14 @@ export function Workspace({
         // ----- Add mask
         if (!finalMask) return;
         if (!semantic) {
+            // A text prompt names the concept, so let it name the object too
+            // (commitInstances does the same for a multi-object prompt); an
+            // explicit pick from the label dropdown still wins below.
+            const newLabel = method === "text" ? className : NEW_TRACKLET_LABEL;
             const { clip: next, tracklet } = clip.addTracklet(
                 frameIndex,
                 finalMask,
+                newLabel,
             );
             const chosenLabel = clip.labelById(newLabelId);
             setClip(
@@ -2515,12 +2520,22 @@ export function Workspace({
                                 </select>
                             )}
 
-                            {semantic && tool === "addMask" && (
+                            {/* The name box doubles as the text-prompt box: in
+                                semantic mode the class name is required for
+                                every method, but in instance mode it is only
+                                needed for the Text method, which finds a
+                                concept rather than naming a class. */}
+                            {((semantic && tool === "addMask") ||
+                                (!semantic && method === "text")) && (
                                 <>
                                     <input
                                         className={styles.promptInput}
                                         list="vsr-class-names"
-                                        placeholder="class name (e.g. coral)"
+                                        placeholder={
+                                            semantic
+                                                ? "class name (e.g. coral)"
+                                                : "text prompt (e.g. shark)"
+                                        }
                                         value={className}
                                         onChange={(event) =>
                                             setClassName(event.target.value)
@@ -2540,12 +2555,18 @@ export function Workspace({
                                                 changeTool("review");
                                             }
                                         }}
-                                        aria-label="Class name"
+                                        aria-label={
+                                            semantic
+                                                ? "Class name"
+                                                : "Text prompt"
+                                        }
                                         title={
                                             method === "point" ||
                                             method === "box" ||
                                             method === "text"
-                                                ? "Sent to SAM 3 as the concept to find. Matches an existing class by name, otherwise a new class is created. Enter runs the model."
+                                                ? semantic
+                                                    ? "Sent to SAM 3 as the concept to find. Matches an existing class by name, otherwise a new class is created. Enter runs the model."
+                                                    : "Sent to SAM 3 as the concept to find. It names the objects you add; the label picker overrides it. Enter runs the model."
                                                 : "Class the drawn mask is added to (matched by name; otherwise a new class is created)."
                                         }
                                     />
@@ -2566,7 +2587,11 @@ export function Workspace({
                                                     !className.trim())
                                             }
                                             onClick={runTextPrompt}
-                                            title="Run SAM 3 with the current clicks and class name (Enter in the name box)"
+                                            title={
+                                                semantic
+                                                    ? "Run SAM 3 with the current clicks and class name (Enter in the name box)"
+                                                    : "Run SAM 3 with the text prompt (Enter in the box)"
+                                            }
                                         >
                                             Find
                                         </button>
@@ -2646,9 +2671,13 @@ export function Workspace({
                                     ) : (
                                         "No mask on this frame."
                                     )
-                                ) : method === "point" ||
-                                  method === "box" ||
-                                  method === "text" ? (
+                                ) : method === "text" ? (
+                                    semantic ? (
+                                        "Type the class name, then press Enter."
+                                    ) : (
+                                        "Type a concept, then press Enter — SAM finds every match."
+                                    )
+                                ) : method === "point" || method === "box" ? (
                                     semantic ? (
                                         "Click the class, or type its name."
                                     ) : (

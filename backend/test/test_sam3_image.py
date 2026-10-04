@@ -19,7 +19,6 @@ from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
-
 from src.core.sessions import create_session, frame_name
 from src.domain.prompts import KIND_TEXT, SegmentPrompt
 from src.inference.gate import ModelGate
@@ -100,6 +99,36 @@ class TensorProcessor(StubProcessor):
         return {
             "masks": FakeTensor(payload["masks"]),
             "scores": FakeTensor(payload["scores"]),
+        }
+
+
+class Bfloat16Tensor:
+    """A stand-in for an autocast bf16 tensor: numpy refuses it until widened."""
+
+    def __init__(self, array):
+        self._array = array
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        raise TypeError("Got unsupported ScalarType BFloat16")
+
+    def float(self):
+        return FakeTensor(self._array.astype(np.float32))
+
+
+class Bfloat16Processor(StubProcessor):
+    """Like `StubProcessor`, but hands back bf16 tensors, as autocast makes SAM 3."""
+
+    def set_text_prompt(self, text, state):
+        payload = super().set_text_prompt(text, state)
+        return {
+            "masks": Bfloat16Tensor(payload["masks"].astype(np.float32)),
+            "scores": Bfloat16Tensor(payload["scores"].astype(np.float32)),
         }
 
 
@@ -208,5 +237,22 @@ def test_a_gpu_tensor_result_is_moved_to_the_host(scratch):
         session, 0, SegmentPrompt.from_wire(KIND_TEXT, text="coral")
     )
     # The stub paints rows 3:7 of columns 4:11, so 4 x 7 pixels are set.
+    assert len(result.instances) == 1, result.instances
+    assert result.area == 28, result.area
+
+
+def test_a_bfloat16_result_is_widened_for_numpy(scratch):
+    """Autocast bf16 outputs are unreadable by numpy until widened to fp32.
+
+    A regression check for "TypeError: Got unsupported ScalarType BFloat16": SAM 3
+    runs under `torch.autocast(dtype=bfloat16)`, so a text prompt's scores come
+    back bf16 and `.numpy()` raises instead of copying. `_to_numpy` has to widen
+    them to float32, rather than letting every text prompt answer 500.
+    """
+    rig = Rig(scratch, cache_size=2, cache_clients=1, processor=Bfloat16Processor())
+    session = rig.session(ALICE, "bfloat16")
+    result = rig.service.segment(
+        session, 0, SegmentPrompt.from_wire(KIND_TEXT, text="coral")
+    )
     assert len(result.instances) == 1, result.instances
     assert result.area == 28, result.area

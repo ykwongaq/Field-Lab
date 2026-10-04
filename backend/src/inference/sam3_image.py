@@ -26,7 +26,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-
 from src.core.config import (
     DEFAULT_SAM3_IMAGE_CACHE_CLIENTS,
     DEFAULT_SAM3_IMAGE_CACHE_SIZE,
@@ -318,11 +317,23 @@ def _to_numpy(value: Any) -> Any:
     host memory first." Torch is duck-typed rather than imported because this
     module has to stay importable without it (see the module docstring), and a
     numpy array or a plain list has no `detach` and falls straight through.
+
+    NumPy has no bfloat16 dtype and inference runs under
+    `torch.autocast(dtype=torch.bfloat16)`, so a text prompt's scores arrive as
+    bfloat16 and `.numpy()` raises "Got unsupported ScalarType BFloat16".
+    Widening those to float32 on the host first fixes it; every dtype numpy can
+    read natively (bool masks, float16, integer ids) is returned untouched.
     """
     detach = getattr(value, "detach", None)
-    if callable(detach):
-        return detach().cpu().numpy()
-    return value
+    if not callable(detach):
+        return value
+    tensor = detach().cpu()
+    try:
+        return tensor.numpy()
+    except TypeError:
+        # bfloat16 is the scalar type numpy cannot read, produced by the
+        # autocast context above; float() widens it to float32 on the host.
+        return tensor.float().numpy()
 
 
 def _instances_from_batch(
