@@ -101,3 +101,61 @@
     box-shadow: var(--shadow-1);
     pointer-events: none;
 }
+
+/*
+ * The propagation range band. It shares the track's coordinate system with the
+ * SVG above it, so its edges line up with the frames it covers. The range is
+ * read-only while a run is going, so only the bars take the pointer.
+ */
+.rangeShade {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(8, 12, 16, 0.5);
+    pointer-events: none;
+}
+
+.rangeBand {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    /* Edges only. A fill here would tint the per-frame cells, and a human frame has
+       to keep reading as its own label colour under every overlay. */
+    border-left: 1px solid var(--accent);
+    border-right: 1px solid var(--accent);
+    pointer-events: none;
+}
+
+/* The frame carrying the mask; the range always keeps it inside. */
+.rangeAnchor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: #e74c3c;
+    pointer-events: none;
+}
+
+/* A draggable end of the range: the "two bars" the reviewer slides. */
+.rangeHandle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 9px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+    cursor: ew-resize;
+    touch-action: none;
+}
+
+.rangeHandle:hover,
+.rangeHandleActive {
+    background: var(--accent-hi);
+}
+
+.rangeHandle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}

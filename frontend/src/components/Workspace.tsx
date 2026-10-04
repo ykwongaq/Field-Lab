@@ -31,19 +31,13 @@ import {
     startPropagation,
     type PropagateStatus,
     type PropagatedFrame,
-    type PropagationDirection,
 } from "../lib/propagateApi";
 import { usePanelLayout } from "../hooks/usePanelLayout";
 import { useExport } from "../hooks/useExport";
 import { useWorkspaceShortcuts } from "../hooks/useWorkspaceShortcuts";
 import { useLabelEditing } from "../hooks/useLabelEditing";
 import { VideoPanel } from "./VideoPanel";
-import { PropagationRange } from "./PropagationRange";
-import {
-    PropagationQueue,
-    isLive,
-    type PropQueueEntry,
-} from "./PropagationQueue";
+import { isLive, type PropQueueEntry } from "./PropagationQueue";
 import { TimelineStrip, type TimelineFrameState } from "./TimelineStrip";
 import { TrackletList } from "./TrackletList";
 import { LabelsPanel } from "./LabelsPanel";
@@ -114,8 +108,6 @@ function entryToRun(
     };
 }
 
-const DEFAULT_PROPAGATE_FORWARD = 10;
-
 /**
  * The key every per-frame piece of state is held under.
  *
@@ -135,7 +127,15 @@ function frameKey(objectId: number, frame: number): string {
 const NEW_OBJECT_ID = -1;
 
 /** How often a running propagation is polled for newly produced masks. */
-const PROPAGATE_POLL_MS = 700;
+const PROPAGATE_POLL_MS = 300;
+
+/**
+ * The most frames a playback queue may hold before the oldest are dropped.
+ *
+ * A run that produces faster than the clip plays must not build an unbounded
+ * backlog: skipping frames keeps the playback near the front of the run.
+ */
+const PROP_PLAYBACK_MAX = 300;
 
 /**
  * The draw methods, split by phase (spec P3: prompt creates, brush and polygon
@@ -164,13 +164,6 @@ const METHOD_LABELS: Record<DrawMethod, string> = {
     polygon: "Polygon",
     brush: "Brush",
 };
-
-/** The "3/120 frames" read-out for a running propagation. */
-function jobProgressText(run: PropagateRun | null): string {
-    return run
-        ? ` ${run.framesDone}/${run.framesTotal} frames · ${run.masks.size} previewed`
-        : "…";
-}
 
 /** Wait, but give up promptly when the run is cancelled. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -322,39 +315,29 @@ export function Workspace({
     });
 
     const [propStatus, setPropStatus] = useState<PropagateStatus | null>(null);
-    // Both directions over the whole clip is the default the reviewer wants:
-    // "carry this mask as far as it goes" covers the common case in one click.
-    const [propDirection, setPropDirection] =
-        useState<PropagationDirection>("both");
-    const [propWholeClip, setPropWholeClip] = useState(true);
-    const [propBack, setPropBack] = useState(0);
-    const [propForward, setPropForward] = useState(DEFAULT_PROPAGATE_FORWARD);
+    // The frame range a run covers, defaulting to the whole clip. The two bars
+    // on the timeline narrow it, and the anchor always stays inside.
+    const [propFirst, setPropFirst] = useState(0);
+    const [propLast, setPropLast] = useState(() =>
+        Math.max(0, clip.frameCount - 1),
+    );
     const [propagating, setPropagating] = useState(false);
     const [propError, setPropError] = useState<string | null>(null);
     const [propRun, setPropRun] = useState<PropagateRun | null>(null);
-    const [propSkipExisting, setPropSkipExisting] = useState(true);
     const propAbortRef = useRef<AbortController | null>(null);
     //: Every job of the current batch, so Stop can stop all of them and not just
     //: the one being watched.
     const propJobRef = useRef<string[]>([]);
-    //: A queue row picked by hand, which outranks the automatic follow.
-    const propWatchRef = useRef<string | null>(null);
     /**
-     * A refinement run, prepared but not yet started.
+     * Frames waiting to be drawn, and the job they belong to.
      *
-     * The panel's controls are React state, and state written in the same tick is
-     * not visible to the run started right after it, so a prepared refinement is
-     * handed over through a ref instead. `runPropagation` reads it once and clears
-     * it, which keeps the one-click path working without a second code path.
+     * A window's masks can land in one burst, and the reviewer wants to watch the
+     * run fill the clip in rather than be shown its last frame. The poll loop
+     * appends what it receives here and a frame clock draws them one at a time, so
+     * propagation plays back however the backend batches it.
      */
-    const propOverrideRef = useRef<{
-        target: number;
-        anchor: number;
-        first: number;
-        last: number;
-        pins: Map<number, RawRle>;
-        writePolicy: "skip-existing" | "replace-range";
-    } | null>(null);
+    const propPlaybackRef = useRef<number[]>([]);
+    const propPlaybackJobRef = useRef<string | null>(null);
     /**
      * Objects queued for propagation.
      *
@@ -374,13 +357,6 @@ export function Workspace({
     const [verifiedFrames, setVerifiedFrames] = useState<Set<string>>(
         () => new Set(),
     );
-    /**
-     * `${objectId}:${frame}` → the corrected frame that invalidated this mask.
-     *
-     * Only *derived* frames belong here: correcting frame `k` says nothing about a
-     * mask a human drew, and re-propagating is the act of replacing exactly these.
-     */
-    const [stale, setStale] = useState<Map<string, number>>(() => new Map());
     const dismissNotice = useCallback(() => {
         onDismissNotice?.();
     }, [onDismissNotice]);
@@ -596,82 +572,35 @@ export function Workspace({
     /**
      * Record that a human has just looked at frame `k` of an object.
      *
-     * Two things follow, and together they are the refinement loop:
-     *
-     * 1. `k` becomes *verified*, so a later run may anchor on it and must not
-     *    overwrite it.
-     * 2. Every mask the object holds *after* `k` becomes stale. Those came from a
-     *    run that had not seen this correction, and a correction says nothing
-     *    about the frames before it, so only the downstream ones are invalidated.
-     *
-     * Returns the frames it invalidated, so the caller can say how many.
+     * That is the whole of it: the frame joins the *human* set, so it is painted in
+     * the label colour on the timeline, no later run may overwrite it, and it
+     * seeds the next run as a conditioning mask.
      */
-    const markCorrected = useCallback(
-        (objectId: number, frame: number) => {
-            const tracklet = clip.tracklets.find(
-                (item) => item.id === objectId,
-            );
-            setVerifiedFrames((current) =>
-                new Set(current).add(frameKey(objectId, frame)),
-            );
-            if (!tracklet || tracklet.maskFrames.first < 0) return [];
-            const invalidated: number[] = [];
-            for (
-                let other = Math.max(frame + 1, tracklet.maskFrames.first);
-                other <= tracklet.maskFrames.last;
-                other++
-            ) {
-                if (clip.rawMaskAt(tracklet, other) === null) continue;
-                if (isVerified(objectId, other)) continue;
-                invalidated.push(other);
-            }
-            if (invalidated.length > 0) {
-                setStale((current) => {
-                    const next = new Map(current);
-                    for (const other of invalidated)
-                        next.set(frameKey(objectId, other), frame);
-                    return next;
-                });
-            }
-            return invalidated;
-        },
-        [clip, isVerified],
-    );
-
-    /** The selected object's masks that a correction has invalidated, ascending. */
-    const staleFrames = useMemo(() => {
-        if (!selected) return [];
-        const prefix = `${selected.id}:`;
-        return [...stale.keys()]
-            .filter((key) => key.startsWith(prefix))
-            .map((key) => Number(key.slice(prefix.length)))
-            .filter((frame) => clip.rawMaskAt(selected, frame) !== null)
-            .sort((left, right) => left - right);
-    }, [selected, clip, stale]);
-
-    /** The corrected frame those stale frames came from, if any. */
-    const refineFrom = useMemo(() => {
-        if (!selected || staleFrames.length === 0) return null;
-        return stale.get(frameKey(selected.id, staleFrames[0])) ?? null;
-    }, [selected, staleFrames, stale]);
+    const markCorrected = useCallback((objectId: number, frame: number) => {
+        setVerifiedFrames((current) =>
+            new Set(current).add(frameKey(objectId, frame)),
+        );
+    }, []);
 
     /**
-     * The frames that will seed a refinement run.
+     * The human frames that seed a run.
      *
-     * Verified frames inside the range that still carry a mask: the anchor travels
-     * separately, and a *cleared* frame has no mask to send (absence is not
-     * conditionable), so both are left out.
+     * Every mask a person has drawn or corrected inside the range, the anchor
+     * excepted (it travels as the run's own anchor mask). Model output is never
+     * sent: a window conditioned on its own guess keeps its mistakes, which is
+     * the whole reason a re-run is seeded from human work.
      */
     const pinsFor = useCallback(
-        (objectId: number, from: number, to: number) => {
+        (objectId: number, first: number, last: number, anchor: number) => {
             const tracklet = clip.tracklets.find(
                 (item) => item.id === objectId,
             );
             const pins = new Map<number, RawRle>();
             if (!tracklet || tracklet.maskFrames.first < 0) return pins;
-            const start = Math.max(from + 1, tracklet.maskFrames.first);
-            const end = Math.min(to, tracklet.maskFrames.last);
+            const start = Math.max(first, tracklet.maskFrames.first);
+            const end = Math.min(last, tracklet.maskFrames.last);
             for (let frame = start; frame <= end; frame++) {
+                if (frame === anchor) continue;
                 if (!isVerified(objectId, frame)) continue;
                 const mask = clip.rawMaskAt(tracklet, frame);
                 if (mask) pins.set(frame, mask);
@@ -685,6 +614,31 @@ export function Workspace({
 
     const selectedHasMaskHere =
         selected !== null && clip.rawMaskAt(selected, frameIndex) !== null;
+
+    /**
+     * The mask a *human* drew or corrected on a frame, if any.
+     *
+     * Only such a mask may seed a run: the anchor is written into tracker memory as
+     * ground truth, so anchoring on a frame the tracker itself produced is the one
+     * way to make a run carry its own mistake forward. A *cleared* frame is excluded
+     * — "the object is not here" is a verification, but it is not conditionable.
+     */
+    const humanMaskAt = useCallback(
+        (tracklet: Clip["tracklets"][number], frame: number): RawRle | null =>
+            verifiedFrames.has(frameKey(tracklet.id, frame))
+                ? clip.rawMaskAt(tracklet, frame)
+                : null,
+        [verifiedFrames, clip],
+    );
+    /**
+     * Whether this frame may start a run.
+     *
+     * The anchor is the frame a run is conditioned on, and only human input is
+     * trustworthy enough for that, so a run starts where the reviewer has drawn or
+     * corrected — and the range always holds at least that one human frame.
+     */
+    const selectedHasHumanMaskHere =
+        selected !== null && humanMaskAt(selected, frameIndex) !== null;
 
     /**
      * Whether the create methods belong in the bar right now.
@@ -754,11 +708,16 @@ export function Workspace({
 
     const propRunRef = useRef(propRun);
     propRunRef.current = propRun;
+    //: Assigned once `acceptPropagation` exists (below). `changeTool` commits a
+    //: finished run through it, so leaving the tool keeps the run, not drops it.
+    const acceptPropagationRef = useRef<() => void>(() => {});
 
     const discardPropagation = useCallback((restoreFrame = false) => {
         propAbortRef.current?.abort();
         propAbortRef.current = null;
         propJobRef.current = [];
+        propPlaybackRef.current = [];
+        propPlaybackJobRef.current = null;
         if (restoreFrame && propRunRef.current)
             setFrameIndex(propRunRef.current.anchor);
         setPropagating(false);
@@ -770,14 +729,18 @@ export function Workspace({
     const changeTool = useCallback(
         (next: Tool) => {
             if (next === "editMask" && !selected) return;
-            if (next === "propagate" && !selectedHasMaskHere) return;
+            if (next === "propagate" && !selectedHasHumanMaskHere) return;
             if (next !== "review") {
                 setPlaying(false);
             }
             if (next === "propagate" && !propStatus) {
                 void fetchPropagateStatus().then(setPropStatus);
             }
-            discardPropagation(true);
+            // A finished run is committed on the way out, never thrown away: the
+            // masks a reviewer just watched are work, and leaving the tool is not a
+            // reason to lose them.
+            if (propRunRef.current) acceptPropagationRef.current();
+            else discardPropagation(true);
             setTool(next);
             setPaintMode("add");
             // Drafts survive a tool switch (§6.1): the prompt is what is specific to
@@ -786,7 +749,7 @@ export function Workspace({
         },
         [
             selected,
-            selectedHasMaskHere,
+            selectedHasHumanMaskHere,
             samAvailable,
             propStatus,
             discardPropagation,
@@ -853,7 +816,11 @@ export function Workspace({
     // the object being edited; a create prompt is left alone.
     useEffect(() => {
         if (toolRef.current === "editMask") resetTransient();
-        if (toolRef.current === "propagate") discardPropagationRef.current();
+        if (toolRef.current === "propagate") {
+            // Switching object keeps the run that is in hand by committing it.
+            if (propRunRef.current) acceptPropagationRef.current();
+            else discardPropagationRef.current();
+        }
     }, [selectedId, resetTransient]);
 
     const changeMethod = useCallback(
@@ -1106,6 +1073,10 @@ export function Workspace({
                     ? added.clip.setLabel(added.tracklet.id, chosenLabel.id)
                     : added.clip;
                 created.push(added.tracklet.id);
+                // The prompt was a person's: this first mask is human input, not
+                // machine output, so the timeline paints it in the label colour and
+                // a later run may anchor on it.
+                markCorrected(added.tracklet.id, frameIndex);
             }
             setClip(next);
             setSelectedId(created[created.length - 1] ?? null);
@@ -1126,6 +1097,7 @@ export function Workspace({
             newLabelId,
             refresh,
             discardDraft,
+            markCorrected,
         ],
     );
 
@@ -1172,6 +1144,8 @@ export function Workspace({
                 chosenLabel ? next.setLabel(tracklet.id, chosenLabel.id) : next,
             );
             setSelectedId(tracklet.id);
+            // The drawing is the human input this object is built on.
+            markCorrected(tracklet.id, frameIndex);
             discardDraft();
             // Stay in Add mask. The next object is usually drawn immediately, and
             // returning to Select forced a click on the rail for every one.
@@ -1190,6 +1164,7 @@ export function Workspace({
                 );
                 setClip(next);
                 setSelectedId(targetClass.id);
+                markCorrected(targetClass.id, frameIndex);
             } else {
                 const { clip: next, tracklet } = clip.addClass(
                     frameIndex,
@@ -1198,6 +1173,7 @@ export function Workspace({
                 );
                 setClip(next);
                 setSelectedId(tracklet.id);
+                markCorrected(tracklet.id, frameIndex);
             }
         } catch (cause) {
             setPromptError(
@@ -1272,130 +1248,121 @@ export function Workspace({
     const propagateNote = propStatus?.available
         ? null
         : `The tracker is unavailable (${propStatus?.error ?? "unknown reason"}).`;
-    const propDirectionLabel =
-        propDirection === "both"
-            ? "both ways"
-            : propDirection === "forward"
-              ? "forward only"
-              : "backward only";
 
     const propAnchor = propRun ? propRun.anchor : frameIndex;
     const anchorMask = useMemo(
         () =>
             tool === "propagate" && selected && !propRun
-                ? clip.rawMaskAt(selected, frameIndex)
+                ? humanMaskAt(selected, frameIndex)
                 : null,
-        [tool, selected, propRun, clip, frameIndex],
+        [tool, selected, propRun, humanMaskAt, frameIndex],
     );
 
-    const propRange = useMemo(() => {
-        const back = Math.max(0, Math.min(propBack, propAnchor));
-        const forward = Math.max(
-            0,
-            Math.min(propForward, clip.frameCount - 1 - propAnchor),
-        );
-        // No frame cap any more: the backend splits a long range into overlapping
-        // windows, so a run may cover the whole clip.
-        return {
-            back,
-            forward,
-            first: propAnchor - back,
-            last: propAnchor + forward,
-        };
-    }, [propBack, propForward, propAnchor, clip.frameCount]);
-
     /**
-     * The range chosen on the bar.
+     * The range a run will cover, as absolute frame indices.
      *
      * The anchor is clamped inside it: it holds the mask being propagated, so a
-     * range that excluded it could not run. Whole-clip stays the default, which is
-     * why the checkbox is set rather than cleared when both ends are touched.
+     * run over a range that excluded it could not start. The backend splits a long
+     * range into overlapping windows, so the whole clip is a valid range.
      */
-    const setPropSpan = useCallback(
+    const propRange = useMemo(() => {
+        const first = Math.max(0, Math.min(propFirst, propAnchor));
+        const last = Math.min(
+            clip.frameCount - 1,
+            Math.max(propLast, propAnchor),
+        );
+        return {
+            back: propAnchor - first,
+            forward: last - propAnchor,
+            first,
+            last,
+        };
+    }, [propFirst, propLast, propAnchor, clip.frameCount]);
+
+    /**
+     * Set the range from the timeline's two bars.
+     *
+     * The anchor stays inside — a range that excluded it could not seed a run —
+     * and the range keeps at least two frames, because a run covering only the
+     * anchor has nothing to propagate.
+     */
+    const setPropRange = useCallback(
         (first: number, last: number) => {
-            const clampedFirst = Math.max(0, Math.min(first, propAnchor));
-            const clampedLast = Math.min(
+            let clampedFirst = Math.max(0, Math.min(first, propAnchor));
+            let clampedLast = Math.min(
                 clip.frameCount - 1,
                 Math.max(last, propAnchor),
             );
-            setPropWholeClip(
-                clampedFirst === 0 && clampedLast === clip.frameCount - 1,
-            );
-            setPropBack(Math.max(0, propAnchor - clampedFirst));
-            setPropForward(Math.max(0, clampedLast - propAnchor));
+            if (clampedLast - clampedFirst < 1) {
+                if (clampedLast < clip.frameCount - 1)
+                    clampedLast = clampedFirst + 1;
+                else clampedFirst = Math.max(0, clampedLast - 1);
+            }
+            setPropFirst(clampedFirst);
+            setPropLast(clampedLast);
         },
         [propAnchor, clip.frameCount],
     );
 
-    /** Frames the running job has produced, for the bar's progress band. */
-    const producedFrames = useMemo(
-        () => (propRun ? new Set(propRun.masks.keys()) : null),
-        [propRun],
-    );
+    /**
+     * Draw the run as it arrives.
+     *
+     * Frames the poll loop has received wait here and are painted one per frame
+     * interval, so a burst of masks plays back instead of snapping to its end. The
+     * clock keeps running while a job is live even with the queue empty — the next
+     * batch resumes playback — and drains the remainder once the run settles.
+     */
+    useEffect(() => {
+        if (!propagating && propPlaybackRef.current.length === 0) return;
+        const fps = clip.fps > 0 ? clip.fps : 10;
+        const interval = Math.max(33, Math.round(1000 / Math.min(fps, 30)));
+        let raf = 0;
+        let last = performance.now();
+        let acc = 0;
+        const step = (now: number) => {
+            acc += now - last;
+            last = now;
+            const queue = propPlaybackRef.current;
+            while (acc >= interval && queue.length > 0) {
+                acc -= interval;
+                const frame = queue.shift();
+                if (frame !== undefined) setFrameIndex(frame);
+            }
+            if (queue.length === 0 && !propagating) return;
+            raf = requestAnimationFrame(step);
+        };
+        raf = requestAnimationFrame(step);
+        return () => cancelAnimationFrame(raf);
+    }, [propagating, clip.fps]);
 
     /**
      * The selected object's frame states, for the timeline strip.
      *
-     * One state per frame, in the spec's §8.1 vocabulary. A stored draft wins over
-     * everything (it is the uncommitted thing on that frame), then staleness, then
-     * the committed mask — verified frames read as the stronger mark. Drafts being
-     * *created* have no object yet, so they fill only the frames with no other
-     * state: the point of showing them at all is that unsaved work is never
-     * invisible.
+     * Two marks and a background: a frame a human drew or corrected is `human`
+     * (the object's own colour), a frame the tracker produced is `propagated`
+     * (orange), and the strip's background is every frame with no mask. A run under
+     * review counts as propagated — it is machine output until its object is left.
      */
     const timelineStates = useMemo<TimelineFrameState[]>(() => {
         const count = clip.frameCount;
         const states: TimelineFrameState[] = new Array(count).fill("none");
-        const applyCreateDrafts = () => {
-            for (const key of drafts.keys()) {
-                const separator = key.indexOf(":");
-                if (Number(key.slice(0, separator)) !== NEW_OBJECT_ID) continue;
-                const frame = Number(key.slice(separator + 1));
-                if (frame >= 0 && frame < count && states[frame] === "none")
-                    states[frame] = "draft";
-            }
-        };
-        if (!selected) {
-            applyCreateDrafts();
-            return states;
-        }
+        if (!selected) return states;
         for (let frame = 0; frame < count; frame++) {
-            const key = frameKey(selected.id, frame);
-            if (drafts.has(key)) states[frame] = "draft";
-            else if (stale.has(key)) states[frame] = "stale";
-            else if (clip.rawMaskAt(selected, frame) !== null)
-                states[frame] = verifiedFrames.has(key)
-                    ? "verified"
-                    : "accepted";
+            if (clip.rawMaskAt(selected, frame) === null) continue;
+            states[frame] = verifiedFrames.has(frameKey(selected.id, frame))
+                ? "human"
+                : "propagated";
         }
         if (propRun) {
-            // The run being reviewed is uncommitted too, whether or not its object
-            // is the one selected.
-            for (const frame of propRun.masks.keys()) {
-                if (frame < 0 || frame >= count) continue;
-                if (states[frame] === "none" || states[frame] === "stale")
-                    states[frame] = "preview";
-            }
-            // A finished run that produced nothing on a frame it covered did not
-            // find the object there (occlusion or off-screen).
-            if (!propRun.live) {
-                for (
-                    let frame = propRun.first;
-                    frame <= propRun.last && frame < count;
-                    frame++
-                ) {
-                    if (frame < 0 || frame === propRun.anchor) continue;
-                    if (propRun.masks.has(frame)) continue;
-                    if (states[frame] === "none") states[frame] = "lost";
-                }
+            for (const mask of propRun.masks.values()) {
+                if (mask.area <= 0) continue;
+                if (mask.frameIndex < 0 || mask.frameIndex >= count) continue;
+                if (states[mask.frameIndex] === "none")
+                    states[mask.frameIndex] = "propagated";
             }
         }
-        applyCreateDrafts();
         return states;
-    }, [clip, selected, drafts, stale, verifiedFrames, propRun]);
-
-    /** Window boundaries of the reviewed run, for the timeline's drift ticks. */
-    const timelineBoundaries = useMemo(() => propRun?.windows ?? [], [propRun]);
+    }, [clip, selected, verifiedFrames, propRun]);
 
     /**
      * What a run would cover: the Shift-clicked batch, or just the selected
@@ -1417,10 +1384,10 @@ export function Workspace({
             propTargets.filter((id) => {
                 const tracklet = clip.tracklets.find((item) => item.id === id);
                 return tracklet
-                    ? clip.rawMaskAt(tracklet, frameIndex) !== null
+                    ? humanMaskAt(tracklet, frameIndex) !== null
                     : false;
             }),
-        [propTargets, clip, frameIndex],
+        [propTargets, clip, frameIndex, humanMaskAt],
     );
 
     /**
@@ -1439,28 +1406,14 @@ export function Workspace({
             setPropError("This clip is not open in a backend session.");
             return;
         }
-        const override = propOverrideRef.current;
-        propOverrideRef.current = null;
-        // A refinement overrides the panel's range: it walks forward from the
-        // corrected frame, because that is the only direction the correction has
-        // anything to say about, and it replaces what it covers.
-        const anchor = override?.anchor ?? frameIndex;
-        const first = override?.first ?? (propWholeClip ? 0 : propRange.first);
-        const last =
-            override?.last ??
-            (propWholeClip ? clip.frameCount - 1 : propRange.last);
-        const direction = override ? "forward" : propDirection;
-        const pins = override?.pins ?? new Map<number, RawRle>();
-        const writePolicy =
-            override?.writePolicy ??
-            (propSkipExisting ? "skip-existing" : "replace-range");
-        const targets = override ? [override.target] : propReady;
-        if (
-            !override &&
-            !propWholeClip &&
-            propRange.back + propRange.forward === 0
-        )
-            return;
+        const anchor = frameIndex;
+        const first = propRange.first;
+        const last = propRange.last;
+        // The range itself says which way to walk: one that starts at the anchor
+        // is forward-only, one that ends there is backward-only, otherwise both.
+        const direction = "both";
+        if (last - first < 1) return;
+        const targets = propReady;
         if (targets.length === 0) {
             setPropError(
                 `Nothing to propagate: no selected ${vocab.unit} has a mask on frame ${anchor + 1}.`,
@@ -1471,6 +1424,8 @@ export function Workspace({
 
         const controller = new AbortController();
         propAbortRef.current = controller;
+        // The run drives the frame itself, so clip playback would fight it.
+        setPlaying(false);
         setPropagating(true);
         setPropError(
             skipped.length === 0
@@ -1479,7 +1434,8 @@ export function Workspace({
         );
         setPropRun(null);
         setPropQueue([]);
-        propWatchRef.current = null;
+        propPlaybackRef.current = [];
+        propPlaybackJobRef.current = null;
         const entries: PropQueueEntry[] = [];
         try {
             // Queue every object up front. The queue lives on the backend, so it
@@ -1488,6 +1444,9 @@ export function Workspace({
                 const tracklet = clip.tracklets.find((item) => item.id === id);
                 const mask = tracklet ? clip.rawMaskAt(tracklet, anchor) : null;
                 if (!tracklet || !mask) continue;
+                // Seed the run with every mask a person has verified in the range:
+                // that is what makes a re-run continue from the corrections.
+                const pins = pinsFor(id, first, last, anchor);
                 const job = await startPropagation({
                     sessionId,
                     anchorFrame: anchor,
@@ -1512,17 +1471,19 @@ export function Workspace({
                     framesTotal: job.progress.framesTotal,
                     elapsedMs: 0,
                     error: null,
-                    writePolicy,
+                    writePolicy: "replace-range",
                     pinned: pins.size,
                     windows: [],
                     masks: new Map(),
-                    newest: null,
                 });
             }
             if (entries.length === 0) return;
             propJobRef.current = entries.map((entry) => entry.jobId);
             setPropQueue([...entries]);
-            const since = new Map<string, number>();
+            // The frames already held per job, as its lowest and highest index:
+            // propagation walks outward from the anchor, so a poll asks for what
+            // is newer than the top *and* older than the bottom.
+            const cursor = new Map<string, { min: number; max: number }>();
             let watching = 0;
             let live = entries.map((entry) => entry.jobId);
             while (live.length > 0) {
@@ -1530,31 +1491,37 @@ export function Workspace({
                 // answer immediately with their position, so this stays cheap
                 // even with a long queue.
                 const states = await Promise.all(
-                    live.map((jobId) =>
-                        getPropagationJob(jobId, {
-                            since: since.get(jobId) ?? -1,
+                    live.map((jobId) => {
+                        const held = cursor.get(jobId);
+                        return getPropagationJob(jobId, {
+                            since: held?.max ?? -1,
+                            until: held?.min,
                             signal: controller.signal,
-                        }),
-                    ),
+                        });
+                    }),
                 );
+                const arrived = new Map<string, number[]>();
                 for (const state of states) {
                     const entry = entries.find(
                         (item) => item.jobId === state.jobId,
                     );
                     if (!entry) continue;
+                    const batch: number[] = [];
                     for (const item of state.masks) {
                         entry.masks.set(item.frameIndex, item);
-                        // The last frame of a batch is the one the tracker just
-                        // wrote, so that is the frame the canvas follows.
-                        entry.newest = item.frameIndex;
-                        since.set(
-                            state.jobId,
-                            Math.max(
-                                since.get(state.jobId) ?? -1,
-                                item.frameIndex,
-                            ),
-                        );
+                        batch.push(item.frameIndex);
+                        const held = cursor.get(state.jobId);
+                        if (held) {
+                            held.min = Math.min(held.min, item.frameIndex);
+                            held.max = Math.max(held.max, item.frameIndex);
+                        } else {
+                            cursor.set(state.jobId, {
+                                min: item.frameIndex,
+                                max: item.frameIndex,
+                            });
+                        }
                     }
+                    arrived.set(state.jobId, batch);
                     entry.state = state.state;
                     entry.framesDone = state.progress.framesDone;
                     entry.framesTotal = state.progress.framesTotal;
@@ -1573,18 +1540,26 @@ export function Workspace({
                     const next = entries.findIndex(isLive);
                     if (next >= 0) watching = next;
                 }
-                // A row picked by hand wins over that choice, or the next poll
-                // would snap the canvas back while it is being reviewed.
-                const shown =
-                    entries.find(
-                        (entry) => entry.jobId === propWatchRef.current,
-                    ) ?? entries[watching];
+                // Follow whichever run the queue is working on.
+                const shown = entries[watching];
+                // Hand this run's new frames to the frame clock. Switching rows
+                // drops the previous run's queue so a new row starts clean.
+                if (shown.jobId !== propPlaybackJobRef.current) {
+                    propPlaybackJobRef.current = shown.jobId;
+                    propPlaybackRef.current = [];
+                }
+                const newFrames = arrived.get(shown.jobId);
+                if (newFrames && newFrames.length > 0) {
+                    const queue = propPlaybackRef.current;
+                    queue.push(...newFrames);
+                    // A run that outpaces playback must not build an unbounded
+                    // backlog: drop the oldest frames and catch up to the front.
+                    if (queue.length > PROP_PLAYBACK_MAX) {
+                        queue.splice(0, queue.length - PROP_PLAYBACK_MAX);
+                    }
+                }
                 setPropQueue([...entries]);
                 setPropRun(entryToRun(shown, propStatus));
-                // Follow the tracker as it works. Jumping to the frame it just
-                // wrote is what makes the run look like a playing video showing
-                // the newest result, rather than a still frame on the anchor.
-                if (shown.newest !== null) setFrameIndex(shown.newest);
                 if (live.length === 0) break;
                 await sleep(PROPAGATE_POLL_MS, controller.signal);
             }
@@ -1620,76 +1595,14 @@ export function Workspace({
         propReady,
         propTargets,
         propRange,
-        propWholeClip,
-        propDirection,
-        propSkipExisting,
         frameIndex,
         frames,
         clip,
         propStatus,
         vocab.unit,
         vocab.units,
+        pinsFor,
     ]);
-
-    /** Pull a queued run's masks onto the canvas; they are already in memory. */
-    const watchQueueJob = useCallback(
-        (jobId: string) => {
-            const entry = propQueue.find((item) => item.jobId === jobId);
-            if (!entry) return;
-            propWatchRef.current = jobId;
-            setPropRun(entryToRun(entry, propStatus));
-            const landing = [...entry.masks.keys()]
-                .sort((a, b) => a - b)
-                .find((frame) => frame !== entry.anchor);
-            if (landing !== undefined) setFrameIndex(landing);
-        },
-        [propQueue, propStatus],
-    );
-
-    /**
-     * Re-run the tracker from a frame a human has just corrected.
-     *
-     * This is the same job the panel submits; what makes it a refinement is what
-     * it is *seeded* with. The corrected frame becomes the anchor, every other
-     * frame a human verified in the range travels as a pin, and the result
-     * replaces the range — because those frames hold precisely the stale masks
-     * this run exists to correct.
-     *
-     * Nothing from the run being replaced is used as input. That is deliberate:
-     * anchoring a window on the previous window's own guess is how a mistake
-     * travels the length of a clip, and the reference implementation refuses to
-     * do it for the same reason.
-     */
-    const repropagateFrom = useCallback(
-        (from: number) => {
-            if (propagating) return;
-            if (selectedId === null) return;
-            const last = clip.frameCount - 1;
-            if (from >= last) {
-                return;
-            }
-            const pins = pinsFor(selectedId, from, last);
-            propOverrideRef.current = {
-                target: selectedId,
-                anchor: from,
-                first: from,
-                last,
-                pins,
-                writePolicy: "replace-range",
-            };
-            setPropBatch([]);
-            setFrameIndex(from);
-            setTool("propagate");
-            void runPropagation();
-        },
-        [propagating, selectedId, clip.frameCount, pinsFor, runPropagation],
-    );
-
-    /** Jump to the next frame a correction invalidated. */
-    const nextStale = useCallback(() => {
-        const next = staleFrames.find((frame) => frame > frameIndex);
-        if (next !== undefined) setFrameIndex(next);
-    }, [staleFrames, frameIndex]);
 
     /** Queue or unqueue a tracklet: Shift-click in the tracklet list. */
     const togglePropBatch = useCallback((id: number) => {
@@ -1698,17 +1611,6 @@ export function Workspace({
                 ? current.filter((item) => item !== id)
                 : [...current, id],
         );
-    }, []);
-
-    /**
-     * Stop one queued run.
-     *
-     * Its frames stay in the queue: a stopped run is still worth reviewing, it
-     * just will not produce any more.
-     */
-    const cancelQueuedJob = useCallback((jobId: string) => {
-        propJobRef.current = propJobRef.current.filter((id) => id !== jobId);
-        void cancelPropagation(jobId).catch(() => undefined);
     }, []);
 
     const cancelRunningPropagation = useCallback(() => {
@@ -1726,41 +1628,34 @@ export function Workspace({
 
     const propPreview =
         tool === "propagate" ? (propRun?.masks.get(frameIndex) ?? null) : null;
+    /**
+     * The colour a propagated preview is drawn in: the object's own label colour.
+     *
+     * The video shows a mask the same way whether a person drew it or the tracker
+     * did; the orange is the timeline's job, not the canvas's.
+     */
+    const propPreviewColor = useMemo(
+        () =>
+            propRun
+                ? clip.tracklets.find((t) => t.id === propRun.trackletId)?.color
+                : undefined,
+        [propRun, clip.tracklets],
+    );
+    /**
+     * What the run produced, split into what Accept will write and what it leaves.
+     *
+     * A run replaces the range it covers, but a frame a human has verified is never
+     * overwritten — including one they *cleared*, because clearing is the statement
+     * that the object is not there.
+     */
     const propSummary = useMemo(() => {
-        // Keyed to the run being reviewed, not to the selected object: in a batch
-        // those are two different objects as soon as another row is watched.
         if (!propRun) return null;
-        const tracklet = clip.tracklets.find(
-            (item) => item.id === propRun.trackletId,
-        );
-        if (!tracklet) return null;
         const found = [...propRun.masks.values()].filter((m) => m.area > 0);
-        const conflicts = found.filter(
-            (m) => clip.rawMaskAt(tracklet, m.frameIndex) !== null,
+        const accepted = found.filter(
+            (m) => !isVerified(propRun.trackletId, m.frameIndex),
         );
-        // A refinement replaces the range, which is the only thing that makes
-        // sense for it: the frames it covers hold the stale masks it was run to
-        // correct. A first pass uses the panel's checkbox, which is why the
-        // checkbox still decides it there.
-        const replace =
-            propRun.writePolicy === "replace-range" || !propSkipExisting;
-        // A frame a human verified is never overwritten, and that includes the
-        // frames they *cleared*: clearing is a statement that the object is not
-        // there, and a run must not fill it back in.
-        const accepted = found.filter((m) => {
-            if (isVerified(propRun.trackletId, m.frameIndex)) return false;
-            if (replace) return true;
-            return clip.rawMaskAt(tracklet, m.frameIndex) === null;
-        });
-        return {
-            total: propRun.masks.size,
-            found: found.length,
-            empty: propRun.masks.size - found.length,
-            conflicts: conflicts.length,
-            replace,
-            accepted,
-        };
-    }, [propRun, clip, propSkipExisting, isVerified]);
+        return { found: found.length, accepted };
+    }, [propRun, isVerified]);
 
     const stepPropagated = useCallback(
         (delta: 1 | -1) => {
@@ -1778,6 +1673,15 @@ export function Workspace({
         [propRun, frameIndex],
     );
 
+    /**
+     * Write the run into the clip.
+     *
+     * A run replaces the range it covers: every frame it produced becomes the
+     * object's mask there, and a frame it produced *nothing* for loses a derived
+     * mask it used to hold — the tracker saw no object, so the old mask is gone.
+     * Two frames are never touched: one a human verified (that is the input, not
+     * the output) and the anchor (the caller's own mask).
+     */
     const acceptPropagation = useCallback(() => {
         if (!propRun || !propSummary) return;
         const tracklet = clip.tracklets.find(
@@ -1785,42 +1689,30 @@ export function Workspace({
         );
         if (!tracklet) return;
         let next = clip;
+        const stored = new Set<number>();
         for (const item of propSummary.accepted) {
             next = next.replaceMask(
                 propRun.trackletId,
                 item.frameIndex,
                 item.rle,
             );
+            stored.add(item.frameIndex);
         }
-        // A stale frame the tracker did not find the object on loses its mask: the
-        // run was conditioned on the correction and still saw nothing there, so the
-        // old mask is the drift this run exists to remove.
+        // The frames the run did not fill in lose their derived mask. The anchor is
+        // skipped, so the object always keeps at least the mask the run started
+        // from (and `removeMask` would drop a tracklet left with none).
         const dropped: number[] = [];
-        if (propSummary.replace) {
-            for (let frame = propRun.first; frame <= propRun.last; frame++) {
-                if (next.rawMaskAt(tracklet, frame) === null) continue;
-                if (!stale.has(frameKey(propRun.trackletId, frame))) continue;
-                if (propSummary.accepted.some((i) => i.frameIndex === frame))
-                    continue;
-                dropped.push(frame);
-            }
-            for (const frame of dropped)
-                next = next.removeMask(propRun.trackletId, frame);
+        for (let frame = propRun.first; frame <= propRun.last; frame++) {
+            if (frame === propRun.anchor) continue;
+            if (stored.has(frame)) continue;
+            if (isVerified(propRun.trackletId, frame)) continue;
+            if (clip.rawMaskAt(tracklet, frame) === null) continue;
+            dropped.push(frame);
         }
+        for (const frame of dropped)
+            next = next.removeMask(propRun.trackletId, frame);
         setClip(next);
         refresh();
-        const stored = new Set(
-            propSummary.accepted.map((item) => item.frameIndex),
-        );
-        // Those frames are no longer stale: they now hold the corrected result.
-        setStale((current) => {
-            const remaining = new Map(current);
-            for (const frame of stored)
-                remaining.delete(frameKey(propRun.trackletId, frame));
-            for (const frame of dropped)
-                remaining.delete(frameKey(propRun.trackletId, frame));
-            return remaining;
-        });
         const jobId = propRun.jobId;
         // Accepting one object must not disturb the rest of the batch, so only
         // the frames just stored are dropped from that run's entry.
@@ -1845,9 +1737,24 @@ export function Workspace({
             remaining.find(
                 (entry) => entry.state === "done" && entry.masks.size > 0,
             ) ?? remaining.find((entry) => entry.masks.size > 0);
+        // The next run plays in its own right; the accepted one is done.
+        propPlaybackRef.current = [];
+        propPlaybackJobRef.current = nextEntry?.jobId ?? null;
         setPropRun(nextEntry ? entryToRun(nextEntry, propStatus) : null);
         if (!nextEntry && !propQueue.some(isLive)) setTool("review");
-    }, [propRun, propSummary, propQueue, clip, refresh, propStatus]);
+    }, [
+        propRun,
+        propSummary,
+        propQueue,
+        clip,
+        refresh,
+        propStatus,
+        isVerified,
+    ]);
+
+    //: Assigned here, below `acceptPropagation`; `changeTool` commits a finished
+    //: run through it, so leaving the tool keeps the run instead of discarding it.
+    acceptPropagationRef.current = acceptPropagation;
 
     useEffect(() => {
         if (!playing) return;
@@ -1882,9 +1789,9 @@ export function Workspace({
             method,
             polygonLength: polygon.length,
             hasSelection: selected !== null,
-            selectedHasMaskHere,
+            selectedHasHumanMaskHere,
             hasPropRun: propRun !== null,
-            refineFrom,
+            propagating,
         },
         {
             stepFrame,
@@ -1895,7 +1802,6 @@ export function Workspace({
             undo,
             acceptPropagation,
             runPropagation,
-            repropagateFrom,
             setPlaying,
             setBrushSize,
         },
@@ -1958,8 +1864,13 @@ export function Workspace({
                 <Button
                     variant="ghost"
                     icon="folder"
+                    disabled={propagating}
                     aria-label="Open another project"
-                    title="Open another project"
+                    title={
+                        propagating
+                            ? "Stop the run before opening another project"
+                            : "Open another project"
+                    }
                     onClick={() => {
                         if (confirmDraftsDiscarded()) onReset();
                     }}
@@ -1968,7 +1879,12 @@ export function Workspace({
                 <Button
                     variant="primary"
                     icon="download"
-                    disabled={exportBusyId !== null}
+                    disabled={exportBusyId !== null || propagating}
+                    title={
+                        propagating
+                            ? "Stop the run before exporting — its masks are not saved yet"
+                            : undefined
+                    }
                     onClick={() => {
                         // Leaving with drafts open prompts once, before
                         // anything is written.
@@ -2006,8 +1922,9 @@ export function Workspace({
                     sam={sam}
                     modelName={modelName}
                     canEdit={selected !== null}
-                    canPropagate={selectedHasMaskHere}
+                    canPropagate={selectedHasHumanMaskHere}
                     propagateModel={propagateModel}
+                    busy={propagating}
                     onToolChange={changeTool}
                     onRefreshStatus={refreshSam}
                 />
@@ -2019,192 +1936,24 @@ export function Workspace({
                                 Propagate · {selected.label} #{selected.id} ·
                                 from frame {propAnchor + 1}
                             </span>
-                            <span className={styles.promptStatus}>
-                                Shift-click to queue
-                            </span>
-
-                            {staleFrames.length > 0 && (
-                                <>
-                                    <span className={styles.promptError}>
-                                        {staleFrames.length} stale frame
-                                        {staleFrames.length === 1 ? "" : "s"}
-                                    </span>
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        disabled={propagating}
-                                        onClick={nextStale}
-                                        title="Jump to the next frame a correction invalidated"
-                                    >
-                                        Next stale
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        disabled={propagating}
-                                        onClick={() => {
-                                            // Keep the corrections, drop the marks
-                                            // that say they are unverified.
-                                            setStale(new Map());
-                                        }}
-                                        title="Drop the stale marks without re-propagating"
-                                    >
-                                        Ignore
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn btnPrimary"
-                                        disabled={
-                                            propagating ||
-                                            !propagateAvailable ||
-                                            (refineFrom ?? frameIndex) >=
-                                                clip.frameCount - 1
-                                        }
-                                        onClick={() =>
-                                            repropagateFrom(
-                                                refineFrom ?? frameIndex,
-                                            )
-                                        }
-                                        title="Ctrl+Enter — re-run the tracker from the corrected frame, seeded with every frame you verified and nothing else"
-                                    >
-                                        Re-propagate from{" "}
-                                        {(refineFrom ?? frameIndex) + 1}
-                                    </button>
-                                </>
-                            )}
-
                             {!propRun ? (
                                 <>
-                                    <label className={styles.rangeField}>
-                                        Back
-                                        <input
-                                            type="number"
-                                            className={`${styles.promptInput} ${styles.numberInput}`}
-                                            min={0}
-                                            max={propAnchor}
-                                            value={propBack}
-                                            disabled={propagating}
-                                            onChange={(event) =>
-                                                setPropBack(
-                                                    Math.max(
-                                                        0,
-                                                        Math.floor(
-                                                            Number(
-                                                                event.target
-                                                                    .value,
-                                                            ) || 0,
-                                                        ),
-                                                    ),
-                                                )
-                                            }
-                                            title="Frames before the anchor to track (backward)"
-                                        />
-                                    </label>
-                                    <label className={styles.rangeField}>
-                                        Forward
-                                        <input
-                                            type="number"
-                                            className={`${styles.promptInput} ${styles.numberInput}`}
-                                            min={0}
-                                            max={
-                                                clip.frameCount - 1 - propAnchor
-                                            }
-                                            value={propForward}
-                                            disabled={propagating}
-                                            onChange={(event) =>
-                                                setPropForward(
-                                                    Math.max(
-                                                        0,
-                                                        Math.floor(
-                                                            Number(
-                                                                event.target
-                                                                    .value,
-                                                            ) || 0,
-                                                        ),
-                                                    ),
-                                                )
-                                            }
-                                            title="Frames after the anchor to track (forward)"
-                                        />
-                                    </label>
-                                    <label className={styles.rangeField}>
-                                        <span>Direction</span>
-                                        <select
-                                            className={styles.promptInput}
-                                            value={propDirection}
-                                            onChange={(event) =>
-                                                setPropDirection(
-                                                    event.target
-                                                        .value as PropagationDirection,
-                                                )
-                                            }
-                                        >
-                                            <option value="both">
-                                                Both ways
-                                            </option>
-                                            <option value="forward">
-                                                After the anchor
-                                            </option>
-                                            <option value="backward">
-                                                Before the anchor
-                                            </option>
-                                        </select>
-                                    </label>
-                                    <label className={styles.rangeField}>
-                                        <span>Range</span>
-                                        <input
-                                            type="checkbox"
-                                            checked={propWholeClip}
-                                            onChange={(event) =>
-                                                setPropWholeClip(
-                                                    event.target.checked,
-                                                )
-                                            }
-                                            title="Propagate over the whole clip instead of a fixed number of frames"
-                                        />
-                                        <span className={styles.promptStatus}>
-                                            whole clip
-                                        </span>
-                                    </label>
                                     <span className={styles.promptStatus}>
-                                        {propWholeClip
-                                            ? `Frames 1–${clip.frameCount} (${propDirectionLabel})`
-                                            : `Frames ${propRange.first + 1}–${propRange.last + 1} (${propDirectionLabel})`}
-                                        {propStatus && propagateAvailable
-                                            ? ` · ${propagateModel} on ${propStatus.device}`
-                                            : ""}
+                                        Frames {propRange.first + 1}–
+                                        {propRange.last + 1} · drag the bars on
+                                        the timeline to set the range
                                     </span>
                                     {propagateNote && (
-                                        <span className={styles.promptStatus}>
+                                        <span className={styles.promptError}>
                                             {propagateNote}
                                         </span>
                                     )}
-                                    <PropagationRange
-                                        frameCount={clip.frameCount}
-                                        anchor={propAnchor}
-                                        first={propRange.first}
-                                        last={propRange.last}
-                                        direction={propDirection}
-                                        produced={producedFrames}
-                                        running={propagating}
-                                        onChange={setPropSpan}
-                                    />
                                     {!anchorMask && (
                                         <span className={styles.promptError}>
-                                            {vocab.unit
-                                                .charAt(0)
-                                                .toUpperCase() +
-                                                vocab.unit.slice(1)}{" "}
-                                            #{selected.id} has no mask on this
-                                            frame — move to a frame where it
-                                            does.
-                                        </span>
-                                    )}
-                                    {propStatus && !propagateAvailable && (
-                                        <span className={styles.promptError}>
-                                            {propagateModel} unavailable:{" "}
-                                            {propStatus.error ??
-                                                "unknown reason"}
+                                            Frame {frameIndex + 1} is not human
+                                            input — start from a frame you drew
+                                            or corrected (its timeline cell is
+                                            in the object's colour).
                                         </span>
                                     )}
                                     {propError && (
@@ -2212,28 +1961,13 @@ export function Workspace({
                                             {propError}
                                         </span>
                                     )}
-                                    {propagating && (
-                                        <span className={styles.promptStatus}>
-                                            Propagating
-                                            {jobProgressText(propRun)}
-                                            <button
-                                                type="button"
-                                                className="btn"
-                                                onClick={
-                                                    cancelRunningPropagation
-                                                }
-                                            >
-                                                Cancel
-                                            </button>
-                                        </span>
-                                    )}
                                     <span className={styles.spacer} />
                                     {propagating ? (
                                         <button
                                             type="button"
                                             className="btn"
-                                            onClick={() => discardPropagation()}
-                                            title="Stop the running propagation"
+                                            onClick={cancelRunningPropagation}
+                                            title="Stop the run; frames already produced stay for review"
                                         >
                                             Stop
                                         </button>
@@ -2254,9 +1988,7 @@ export function Workspace({
                                             propagating ||
                                             propReady.length === 0 ||
                                             !propagateAvailable ||
-                                            propRange.back +
-                                                propRange.forward ===
-                                                0
+                                            propRange.last - propRange.first < 1
                                         }
                                         onClick={() => void runPropagation()}
                                         title={
@@ -2275,123 +2007,24 @@ export function Workspace({
                             ) : (
                                 <>
                                     <span className={styles.promptStatus}>
-                                        {propRun.backend === "sam3"
-                                            ? "SAM 3"
-                                            : "SAM 2"}{" "}
-                                        · {propSummary?.total ?? 0} frames in{" "}
-                                        {(propRun.elapsedMs / 1000).toFixed(1)}{" "}
-                                        s · {propSummary?.found ?? 0} with a
-                                        mask
-                                        {propSummary && propSummary.empty > 0
-                                            ? `, ${propSummary.empty} empty (left unchanged)`
-                                            : ""}
+                                        {propagating
+                                            ? `Propagating · ${propRun.framesDone}/${propRun.framesTotal} frames`
+                                            : `${propSummary?.found ?? 0} frame${(propSummary?.found ?? 0) === 1 ? "" : "s"} propagated · leaving the tool keeps them`}
                                     </span>
-                                    <span className={styles.promptStatus}>
-                                        {frameIndex === propRun.anchor
-                                            ? "Anchor frame (unchanged)"
-                                            : propPreview
-                                              ? propPreview.area > 0
-                                                  ? `Frame ${frameIndex + 1}: ${propPreview.area.toLocaleString()} px${
-                                                        clip.rawMaskAt(
-                                                            selected,
-                                                            frameIndex,
-                                                        )
-                                                            ? propSkipExisting
-                                                                ? " · has a mask, will be skipped"
-                                                                : " · replaces the existing mask"
-                                                            : ""
-                                                    }`
-                                                  : `Frame ${frameIndex + 1}: nothing found`
-                                              : `Frame ${frameIndex + 1} is outside the range ${propRun.first + 1}–${propRun.last + 1}`}
-                                    </span>
-                                    {propSummary &&
-                                        propSummary.conflicts > 0 && (
-                                            <label
-                                                className={styles.rangeField}
-                                            >
-                                                <input
-                                                    type="checkbox"
-                                                    checked={propSkipExisting}
-                                                    onChange={(event) =>
-                                                        setPropSkipExisting(
-                                                            event.target
-                                                                .checked,
-                                                        )
-                                                    }
-                                                />
-                                                Skip {propSummary.conflicts}{" "}
-                                                frame
-                                                {propSummary.conflicts === 1
-                                                    ? ""
-                                                    : "s"}{" "}
-                                                that already{" "}
-                                                {propSummary.conflicts === 1
-                                                    ? "has"
-                                                    : "have"}{" "}
-                                                a mask
-                                            </label>
-                                        )}
                                     <span className={styles.spacer} />
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        onClick={() => stepPropagated(-1)}
-                                        title="Previous propagated frame (← also steps frames)"
-                                    >
-                                        ◀ Prev
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        onClick={() => stepPropagated(1)}
-                                        title="Next propagated frame (→ also steps frames)"
-                                    >
-                                        Next ▶
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        onClick={() => discardPropagation(true)}
-                                        title="Forget this result and set up another run"
-                                    >
-                                        Discard
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn"
-                                        onClick={() => changeTool("review")}
-                                        title="Esc"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        type="button"
-                                        className="btn btnPrimary"
-                                        disabled={
-                                            !propSummary ||
-                                            propSummary.accepted.length === 0
-                                        }
-                                        onClick={acceptPropagation}
-                                        title="Enter"
-                                    >
-                                        Accept{" "}
-                                        {propSummary?.accepted.length ?? 0} mask
-                                        {propSummary?.accepted.length === 1
-                                            ? ""
-                                            : "s"}
-                                    </button>
+                                    {propagating && (
+                                        <button
+                                            type="button"
+                                            className="btn"
+                                            onClick={cancelRunningPropagation}
+                                            title="Stop the run; frames already produced stay for review"
+                                        >
+                                            Stop
+                                        </button>
+                                    )}
                                 </>
                             )}
                         </div>
-                    )}
-                    {tool === "propagate" && (
-                        <PropagationQueue
-                            entries={propQueue}
-                            watchingId={propRun?.jobId ?? null}
-                            onWatch={watchQueueJob}
-                            onCancel={cancelQueuedJob}
-                            onCancelAll={cancelRunningPropagation}
-                        />
                     )}
                     {(tool === "addMask" || tool === "editMask") && (
                         <div className={styles.promptBar} role="toolbar">
@@ -2808,11 +2441,24 @@ export function Workspace({
                         frameIndex={frameIndex}
                         states={timelineStates}
                         color={selected?.color}
-                        boundaries={timelineBoundaries}
                         label={
                             selected
                                 ? `${vocab.unit} #${selected.id} · ${selected.label}`
                                 : `No ${vocab.unit} selected`
+                        }
+                        rangeFirst={
+                            tool === "propagate" ? propRange.first : undefined
+                        }
+                        rangeLast={
+                            tool === "propagate" ? propRange.last : undefined
+                        }
+                        rangeAnchor={
+                            tool === "propagate" ? propAnchor : undefined
+                        }
+                        onRangeChange={
+                            tool === "propagate" && !propRun && !propagating
+                                ? setPropRange
+                                : undefined
                         }
                         onSeek={setFrameIndex}
                     />
@@ -2843,6 +2489,9 @@ export function Workspace({
                         polygon={polygon}
                         outline={outlineRings}
                         draft={draftDecoded}
+                        candidateColor={
+                            tool === "propagate" ? propPreviewColor : undefined
+                        }
                         candidate={
                             tool === "propagate"
                                 ? propPreview

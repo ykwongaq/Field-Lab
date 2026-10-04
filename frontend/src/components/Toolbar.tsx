@@ -16,6 +16,8 @@ interface ToolbarProps {
     canEdit: boolean;
     canPropagate: boolean;
     propagateModel: string;
+    /** True while a propagation is running, which locks the rail. */
+    busy?: boolean;
     onToolChange: (tool: Tool) => void;
     onRefreshStatus: () => void;
 }
@@ -46,8 +48,10 @@ export function Toolbar(props: ToolbarProps) {
             icon={icon}
             shortcut={shortcut}
             active={props.tool === value}
-            disabled={!enabled}
-            title={title}
+            disabled={!enabled || props.busy === true}
+            title={
+                props.busy === true ? `${title} — stop the run first` : title
+            }
             onClick={() => props.onToolChange(value)}
         />
     );

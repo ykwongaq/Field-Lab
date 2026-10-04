@@ -28,7 +28,6 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
-
 from src.core.config import DEFAULT_PROPAGATE_MAX_JOBS_PER_CLIENT
 from src.core.errors import InvalidRequest, NotFound
 
@@ -166,19 +165,29 @@ class PropagationJob:
     # ── caller-facing API (read from request threads) ───────────────────
 
     def snapshot(
-        self, *, since: Optional[int] = None
+        self,
+        *,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
     ) -> Tuple[Dict[int, np.ndarray], JobProgress]:
         """A consistent copy of the masks and progress so far.
 
-        `since` returns only frames above that index, which keeps a poller's
-        payload proportional to what is new rather than to the whole run.
+        `since` returns only frames above that index and `until` only frames below
+        it. Both are needed: propagation walks *outward* from the anchor, so a run
+        that goes both ways produces frames below everything already sent as well
+        as above it, and a single monotonic cursor would silently drop the second
+        half. Either way the payload stays proportional to what is new rather than
+        to the whole run.
         """
         with self._lock:
-            if since is None:
+            if since is None and until is None:
                 masks = dict(self._masks)
             else:
                 masks = {
-                    frame: mask for frame, mask in self._masks.items() if frame > since
+                    frame: mask
+                    for frame, mask in self._masks.items()
+                    if (since is not None and frame > since)
+                    or (until is not None and frame < until)
                 }
             progress = JobProgress(**self.progress.as_dict())
             return masks, progress

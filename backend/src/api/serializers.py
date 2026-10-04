@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
-
 from src.core.config import Settings
 from src.core.jobs import JobState, PropagationJob
 from src.core.sessions import Session
@@ -126,19 +125,21 @@ def job_response(
     job: PropagationJob,
     *,
     since: Optional[int] = None,
+    until: Optional[int] = None,
     include_masks: bool = True,
     queue_position: int = 0,
 ) -> JobResponse:
     """Describe a propagation job, optionally with the masks it has produced.
 
-    `since` keeps a poll cheap: the caller passes the highest frame it already
-    has and receives only what is newer, so a long run does not re-send the whole
-    clip on every poll.
+    `since`/`until` keep a poll cheap: the caller passes the highest and lowest
+    frame it already has and receives only what lies outside that span, so a run
+    that propagates outward from its anchor does not re-send — or drop — either
+    end of the clip.
     """
     masks: Dict[int, np.ndarray] = {}
     progress = JobProgressResponse(**job.progress.as_dict())
     if include_masks:
-        masks, snapshot = job.snapshot(since=since)
+        masks, snapshot = job.snapshot(since=since, until=until)
         progress = JobProgressResponse(**snapshot.as_dict())
 
     summary = job.summary()

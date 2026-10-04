@@ -3,75 +3,44 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import styles from "./TimelineStrip.module.css";
 
 /**
- * Per-frame state of one object.
+ * Per-frame state of one object, in the three marks the timeline uses.
  *
- * The first five are the spec's §8.1 frame states (`MASK_INTERACTION_SPEC.md`);
- * the last two are the refinements this build needs on top of them:
- *
- * * `verified` — an `accepted` frame that a human drew, corrected or cleared by
- *   hand. It reads as solid, against the translucent `accepted` a bulk accept
- *   leaves behind, because only a verified frame may anchor a second run.
- * * `preview` — a mask a propagation run has produced that is not committed yet,
- *   which the spec calls a "propagated draft".
- *
- * `lost` is the tracker reporting no object on a frame it covered (occlusion or
- * off-screen). It is derived, not stored: a frame the finished run never produced
- * a mask for is a frame it did not find the object on.
+ * * `human` — a mask a person drew, corrected or cleared by hand. It is painted
+ *   in the object's own (label) colour, and only a human frame may seed a run.
+ * * `propagated` — a mask the tracker produced. It is painted orange on the strip
+ *   as a standing reminder that nobody has checked it, while the mask itself is
+ *   still drawn on the video in the label colour.
+ * * `none` — no mask. The strip's background is what "the tracker found nothing
+ *   here" looks like.
  */
-export type TimelineFrameState =
-    | "none"
-    | "accepted"
-    | "verified"
-    | "draft"
-    | "preview"
-    | "stale"
-    | "lost";
+export type TimelineFrameState = "none" | "propagated" | "human";
 
 /** How one frame's state is painted inside the strip's 0..1 tall viewBox. */
 interface CellPaint {
     fill: string;
     opacity: number;
-    /** Vertical band, so `lost` can read as a short dash rather than a block. */
-    y: number;
-    height: number;
 }
 
 const NEUTRAL = "#20262d";
 const OBJECT_FALLBACK = "#5c8fc9";
-const DRAFT = "#c9a05a";
-const PREVIEW = "#dcb673";
-const STALE = "#5b6a7a";
-const LOST = "#47535e";
-const BOUNDARY = "#8b96a3";
+/** The one colour reserved for "a machine produced this, not a person". */
+const PROPAGATED = "#e2803a";
 
 /** The paint for one state. `colour` is the selected object's own colour. */
 function paint(state: TimelineFrameState, colour: string): CellPaint {
     switch (state) {
-        case "accepted":
-            // Committed in bulk: the object's colour, held back so a verified
-            // frame can read as the stronger mark it is.
-            return { fill: colour, opacity: 0.72, y: 0, height: 1 };
-        case "verified":
-            return { fill: colour, opacity: 1, y: 0, height: 1 };
-        case "draft":
-            return { fill: DRAFT, opacity: 1, y: 0, height: 1 };
-        case "preview":
-            return { fill: PREVIEW, opacity: 1, y: 0, height: 1 };
-        case "stale":
-            return { fill: STALE, opacity: 0.6, y: 0, height: 1 };
-        case "lost":
-            return { fill: LOST, opacity: 1, y: 0.35, height: 0.3 };
+        case "human":
+            return { fill: colour, opacity: 1 };
+        case "propagated":
+            return { fill: PROPAGATED, opacity: 1 };
         default:
-            return { fill: NEUTRAL, opacity: 1, y: 0, height: 1 };
+            return { fill: NEUTRAL, opacity: 1 };
     }
 }
 
 const LEGEND: { state: TimelineFrameState; label: string }[] = [
-    { state: "accepted", label: "accepted" },
-    { state: "verified", label: "verified" },
-    { state: "draft", label: "draft" },
-    { state: "stale", label: "stale" },
-    { state: "lost", label: "not found" },
+    { state: "human", label: "human" },
+    { state: "propagated", label: "propagated" },
 ];
 
 export interface TimelineStripProps {
@@ -79,27 +48,55 @@ export interface TimelineStripProps {
     frameIndex: number;
     /** One state per frame, indexed by frame. */
     states: TimelineFrameState[];
-    /** The selected object's colour; accepted frames are painted with it. */
+    /** The selected object's colour; human frames are painted with it. */
     color?: string;
-    /**
-     * Window boundaries of the running job, as frame indices.
-     *
-     * A long run is chunked into overlapping windows, and the hand-off between
-     * them is where a track can drift, so the boundaries are worth showing.
-     */
-    boundaries?: number[];
     /** What the strip is showing, for the caption. */
     label?: string;
+    /**
+     * The propagation range, as inclusive frame indices.
+     *
+     * When present the strip holds back the frames outside it, so the range the
+     * next run will cover is read off the same band the reviewer scrubs on
+     * instead of typed into a separate form.
+     */
+    rangeFirst?: number;
+    rangeLast?: number;
+    /** The frame carrying the mask; the range never excludes it. */
+    rangeAnchor?: number;
+    /**
+     * Called when a handle is dragged. Its presence is what shows the two bars;
+     * a read-only range (during a run or a review) passes nothing and only the
+     * band is drawn.
+     */
+    onRangeChange?: (first: number, last: number) => void;
     onSeek: (frame: number) => void;
 }
 
+type RangeHandle = "first" | "last";
+
+/** Width of a range bar, in pixels; also the inset that keeps one on-screen. */
+const RANGE_HANDLE_W = 9;
+
 export function TimelineStrip(props: TimelineStripProps) {
-    const { frameCount, frameIndex, states, color, boundaries, label, onSeek } =
-        props;
+    const {
+        frameCount,
+        frameIndex,
+        states,
+        color,
+        label,
+        rangeFirst,
+        rangeLast,
+        rangeAnchor,
+        onRangeChange,
+        onSeek,
+    } = props;
     const trackRef = useRef<HTMLDivElement>(null);
     const [dragging, setDragging] = useState(false);
+    const [rangeDrag, setRangeDrag] = useState<RangeHandle | null>(null);
 
     const objectColour = color ?? OBJECT_FALLBACK;
+    const hasRange = rangeFirst !== undefined && rangeLast !== undefined;
+    const anchor = rangeAnchor ?? frameIndex;
 
     /**
      * Adjacent frames in the same state collapse into one rectangle.
@@ -154,10 +151,11 @@ export function TimelineStrip(props: TimelineStripProps) {
 
     const onPointerMove = useCallback(
         (event: ReactPointerEvent<HTMLDivElement>) => {
-            if (!dragging) return;
+            // A handle has the pointer; seeking now would fight the drag.
+            if (rangeDrag || !dragging) return;
             onSeek(frameAt(event.clientX));
         },
-        [dragging, frameAt, onSeek],
+        [rangeDrag, dragging, frameAt, onSeek],
     );
 
     const endDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -165,12 +163,49 @@ export function TimelineStrip(props: TimelineStripProps) {
         setDragging(false);
     }, []);
 
+    /** Map a frame index onto the strip's horizontal percentage. */
+    const percent = useCallback(
+        (frame: number) => (frameCount ? (frame / frameCount) * 100 : 0),
+        [frameCount],
+    );
+
+    const startRangeDrag = useCallback(
+        (handle: RangeHandle) => (event: ReactPointerEvent<HTMLDivElement>) => {
+            if (!onRangeChange) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            setRangeDrag(handle);
+        },
+        [onRangeChange],
+    );
+
+    const moveRangeHandle = useCallback(
+        (handle: RangeHandle) => (event: ReactPointerEvent<HTMLDivElement>) => {
+            if (rangeDrag !== handle || !onRangeChange) return;
+            const frame = frameAt(event.clientX);
+            if (handle === "first") {
+                // Never past the anchor: it carries the mask and a range that
+                // excluded it could not seed a run.
+                onRangeChange(Math.min(frame, anchor), rangeLast as number);
+            } else {
+                onRangeChange(rangeFirst as number, Math.max(frame, anchor));
+            }
+        },
+        [rangeDrag, onRangeChange, frameAt, anchor, rangeFirst, rangeLast],
+    );
+
+    const endRangeDrag = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+            setRangeDrag(null);
+        },
+        [],
+    );
+
     if (frameCount <= 0) return null;
 
     const playheadPercent = ((frameIndex + 0.5) / frameCount) * 100;
-    // A boundary tick should read as a hairline: roughly a pixel at the width the
-    // strip is usually drawn at, in the viewBox's frame units.
-    const tickWidth = Math.max(1, frameCount / 400);
 
     return (
         <div className={styles.wrap}>
@@ -234,28 +269,130 @@ export function TimelineStrip(props: TimelineStripProps) {
                             <rect
                                 key={run.start}
                                 x={run.start}
-                                y={cell.y}
+                                y={0}
                                 width={run.length}
-                                height={cell.height}
+                                height={1}
                                 fill={cell.fill}
                                 opacity={cell.opacity}
                             />
                         );
                     })}
-                    {(boundaries ?? []).map((frame) =>
-                        frame > 0 && frame < frameCount ? (
-                            <rect
-                                key={`boundary-${frame}`}
-                                x={frame - tickWidth / 2}
-                                y={0}
-                                width={tickWidth}
-                                height={1}
-                                fill={BOUNDARY}
-                                opacity={0.45}
-                            />
-                        ) : null,
-                    )}
                 </svg>
+                {hasRange && (
+                    <>
+                        {/* Frames outside the range are held back. */}
+                        {rangeFirst! > 0 && (
+                            <div
+                                className={styles.rangeShade}
+                                style={{
+                                    left: 0,
+                                    width: `${percent(rangeFirst!)}%`,
+                                }}
+                            />
+                        )}
+                        {rangeLast! < frameCount - 1 && (
+                            <div
+                                className={styles.rangeShade}
+                                style={{
+                                    left: `${percent(rangeLast! + 1)}%`,
+                                    right: 0,
+                                }}
+                            />
+                        )}
+                        {/* The edges of the range. The cells are left alone: a
+                            human frame must keep its own label colour. */}
+                        <div
+                            className={styles.rangeBand}
+                            style={{
+                                left: `${percent(rangeFirst!)}%`,
+                                width: `${percent(rangeLast! + 1) - percent(rangeFirst!)}%`,
+                            }}
+                        />
+                        <div
+                            className={styles.rangeAnchor}
+                            style={{ left: `${percent(anchor + 0.5)}%` }}
+                            title={`Anchor: frame ${anchor + 1}`}
+                        />
+                        {onRangeChange &&
+                            (["first", "last"] as RangeHandle[]).map(
+                                (handle) => (
+                                    <div
+                                        key={handle}
+                                        role="slider"
+                                        aria-label={
+                                            handle === "first"
+                                                ? "First frame of the propagation range"
+                                                : "Last frame of the propagation range"
+                                        }
+                                        aria-valuemin={0}
+                                        aria-valuemax={frameCount - 1}
+                                        aria-valuenow={
+                                            handle === "first"
+                                                ? rangeFirst
+                                                : rangeLast
+                                        }
+                                        tabIndex={0}
+                                        className={`${styles.rangeHandle} ${rangeDrag === handle ? styles.rangeHandleActive : ""}`}
+                                        style={
+                                            handle === "first"
+                                                ? {
+                                                      left: `${percent(rangeFirst!)}%`,
+                                                  }
+                                                : {
+                                                      left: `calc(${percent(rangeLast! + 1)}% - ${RANGE_HANDLE_W}px)`,
+                                                  }
+                                        }
+                                        title={`${handle === "first" ? "First" : "Last"} frame of the range: ${
+                                            (handle === "first"
+                                                ? rangeFirst!
+                                                : rangeLast!) + 1
+                                        }. Drag to resize.`}
+                                        onPointerDown={startRangeDrag(handle)}
+                                        onPointerMove={moveRangeHandle(handle)}
+                                        onPointerUp={endRangeDrag}
+                                        onPointerCancel={endRangeDrag}
+                                        onKeyDown={(event) => {
+                                            if (!onRangeChange) return;
+                                            const step = event.shiftKey
+                                                ? 10
+                                                : 1;
+                                            const delta =
+                                                event.key === "ArrowLeft"
+                                                    ? -step
+                                                    : event.key === "ArrowRight"
+                                                      ? step
+                                                      : 0;
+                                            if (!delta) return;
+                                            event.preventDefault();
+                                            if (handle === "first") {
+                                                onRangeChange(
+                                                    Math.max(
+                                                        0,
+                                                        Math.min(
+                                                            rangeFirst! + delta,
+                                                            anchor,
+                                                        ),
+                                                    ),
+                                                    rangeLast!,
+                                                );
+                                            } else {
+                                                onRangeChange(
+                                                    rangeFirst!,
+                                                    Math.min(
+                                                        frameCount - 1,
+                                                        Math.max(
+                                                            rangeLast! + delta,
+                                                            anchor,
+                                                        ),
+                                                    ),
+                                                );
+                                            }
+                                        }}
+                                    />
+                                ),
+                            )}
+                    </>
+                )}
                 <div
                     className={styles.playhead}
                     style={{ left: `${playheadPercent}%` }}

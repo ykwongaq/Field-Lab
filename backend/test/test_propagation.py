@@ -18,11 +18,10 @@ import time
 import numpy as np
 import pytest
 from PIL import Image
-
 from src.core.errors import InvalidRequest, NotFound
 from src.core.jobs import JobRegistry
 from src.core.sessions import create_session, frame_name
-from src.domain.windows import DIRECTION_BACKWARD, DIRECTION_FORWARD
+from src.domain.windows import DIRECTION_BACKWARD, DIRECTION_BOTH, DIRECTION_FORWARD
 from src.inference.sam3_video import (
     PropagateConfig,
     PropagateError,
@@ -303,6 +302,47 @@ def test_backward_runs_are_planned_the_other_way(make_session):
     assert predictor.streams[0]["propagation_direction"] == DIRECTION_BACKWARD
 
 
+def test_a_both_run_covers_frames_before_the_anchor(make_session):
+    """A range that starts before the anchor is covered on that side too.
+
+    A single-window run is one session asked to walk both ways; a longer one gets a
+    backward chain of its own. Either way the frames below the anchor are produced,
+    which is the case a range like `1..5` starting from frame 2 depends on.
+    """
+    # Fits in one window: the whole range is one "both" session.
+    session = make_session(5, "both-single")
+    predictor = StubPredictor()
+    engine, plan, produced = run(
+        session,
+        predictor,
+        anchor=1,
+        mask=ANCHOR_MASK,
+        direction=DIRECTION_BOTH,
+        first=0,
+        last=4,
+    )
+    assert plan.windows_total == 1, "the range fits one session"
+    assert predictor.streams[0]["propagation_direction"] == DIRECTION_BOTH
+    assert set(produced) == {0, 1, 2, 3, 4}, sorted(produced)
+    assert 0 in produced, "the frame before the anchor is covered"
+
+    # Longer than a window: the planner adds a backward chain down to `first`.
+    session = make_session(24, "both-multi")
+    predictor = StubPredictor()
+    engine, plan, produced = run(
+        session,
+        predictor,
+        anchor=12,
+        mask=ANCHOR_MASK,
+        direction=DIRECTION_BOTH,
+        first=0,
+        last=23,
+    )
+    assert plan.windows_total > 1, "the long range is chunked"
+    assert set(produced) == set(range(0, 24)), sorted(produced)
+    assert plan.covers(0), "the backward chain reaches the range start"
+
+
 def test_anchor_mask_shape(make_session):
     """A leading singleton channel is fine; anything else is not a mask."""
     session = make_session(4, "shape")
@@ -474,6 +514,38 @@ def test_the_runner_counts_verified_frames_out_of_progress(make_session, scratch
     assert job.plan["frames_to_produce"] == 10, job.plan
     assert job.plan["frames_produced"] == 10, job.plan
     assert job.plan["pinned"] == 1, job.plan
+
+
+def test_a_poll_cursor_reads_both_ends_of_an_outward_run():
+    """Propagation walks outward, so a poll must ask below its lowest frame too.
+
+    A forward chain publishes above the anchor first and a backward chain then
+    publishes below it. A single `since` cursor would drop that second half,
+    because those frames sit below the highest index already sent.
+    """
+    from src.core.jobs import PropagationJob
+
+    job = PropagationJob(
+        id="job-cursor",
+        session_id="s",
+        client_id=OWNER,
+        anchor=5,
+        direction="both",
+        first=0,
+        last=10,
+    )
+    mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
+    mask[0, 0] = True
+    job.add_masks({6: mask, 7: mask, 8: mask})
+    first, _ = job.snapshot(since=-1)
+    assert set(first) == {6, 7, 8}, sorted(first)
+    # The backward chain now produces frames below everything already sent.
+    job.add_masks({4: mask, 3: mask})
+    newer_only, _ = job.snapshot(since=8)
+    assert newer_only == {}, "a `since`-only cursor hides the backward half"
+    both_ends, _ = job.snapshot(since=8, until=6)
+    assert set(both_ends) == {3, 4}, sorted(both_ends)
+    assert 5 not in both_ends, "the anchor is the caller's mask, not a prediction"
 
 
 def test_a_verified_frame_the_run_never_visits_is_rejected(make_session, scratch):

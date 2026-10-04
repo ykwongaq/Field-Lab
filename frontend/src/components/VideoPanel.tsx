@@ -80,6 +80,13 @@ interface VideoPanelProps {
     outline: FramePoint[][] | null;
     draft: DecodedMask | null;
     candidate: DecodedMask | null;
+    /**
+     * Colour for the candidate overlay. Unset means the prompt colours (orange to
+     * add, red to erase); a propagation passes the object's own label colour, so a
+     * preview is drawn on the video exactly like a committed mask and only the
+     * timeline tells the two apart.
+     */
+    candidateColor?: string;
     editingTrackletId: number | null;
     onPromptPoint: (point: PromptPoint) => void;
     /** A box drag finished; the reviewer segments the object inside it. */
@@ -949,9 +956,10 @@ export function VideoPanel(props: VideoPanelProps) {
                 {
                     mask: props.candidate,
                     color:
-                        props.paintMode === "add"
+                        props.candidateColor ??
+                        (props.paintMode === "add"
                             ? CANDIDATE_ADD_COLOR
-                            : CANDIDATE_ERASE_COLOR,
+                            : CANDIDATE_ERASE_COLOR),
                 },
             ];
             for (const { mask, color } of overlays) {
@@ -1010,6 +1018,7 @@ export function VideoPanel(props: VideoPanelProps) {
         props.prompt,
         props.draft,
         props.candidate,
+        props.candidateColor,
         props.editingTrackletId,
         maskTracklets,
     ]);

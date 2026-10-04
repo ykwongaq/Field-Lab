@@ -13,11 +13,10 @@ tracker state instead of growing with the number of objects.
 
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 from fastapi import APIRouter
-
 from src.api.deps import ClientDep, JobsDep, PropagateDep, SettingsDep, require_sam3
 from src.api.serializers import job_is_active, job_response
 from src.core.errors import InvalidRequest
@@ -29,8 +28,8 @@ from src.schemas.propagate import (
     JobListResponse,
     JobResponse,
     PinnedMask,
-    PropagationRequest,
     PropagateStatus,
+    PropagationRequest,
 )
 from src.schemas.sam import ModelStatus
 
@@ -218,16 +217,22 @@ def get_job(
     jobs: JobsDep,
     client_id: ClientDep,
     since: int = -1,
+    until: Optional[int] = None,
     include_masks: bool = True,
 ) -> JobResponse:
-    """Poll one job, optionally fetching only the masks newer than `since`.
+    """Poll one job, optionally fetching only the frames outside a held span.
 
-    `since` is the highest frame index the caller already holds, which is what
-    keeps a poll's payload proportional to the new frames rather than to the
-    whole run.
+    `since` is the highest frame index the caller already holds and `until` the
+    lowest, so a run that propagates outward from its anchor can be followed in
+    both directions without re-sending or dropping either end.
     """
     job = jobs.get(job_id, client_id=client_id)
-    return job_response(job, since=since, include_masks=include_masks)
+    return job_response(
+        job,
+        since=since,
+        until=until,
+        include_masks=include_masks,
+    )
 
 
 @router.delete("/jobs/{job_id}", response_model=JobResponse)

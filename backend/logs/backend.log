@@ -118,3 +118,99 @@ TypeError: can't convert cuda:0 device type tensor to numpy. Use Tensor.cpu() to
 2026-10-01 01:02:40,748 WARNING vsr: SAM 3 could not be preloaded: ModuleNotFoundError: No module named 'psutil'
 2026-10-01 01:04:20,998 INFO    vsr: SAM 3 preloaded and held resident: image, video
 2026-10-01 01:28:01,853 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-03 11:50:29,392 INFO    vsr: Removed 3 leftover session(s)
+2026-10-03 11:51:29,288 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-03 22:10:03,999 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 13:20:54,229 INFO    vsr: Removed 2 leftover session(s)
+2026-10-04 13:21:52,391 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 13:47:31,646 ERROR   vsr: Unhandled TypeError while serving POST /api/sam3/segment
+Traceback (most recent call last):
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\telemetry\_asgi.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\middleware\cors.py", line 149, in simple_response
+    await self.app(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\routing.py", line 676, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 2786, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 1817, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 2869, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 1843, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 1308, in handle
+    await effective_context.app(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 165, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 151, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 727, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\routing.py", line 362, in run_endpoint_function
+    return await run_in_threadpool(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+        _run_sync_endpoint, function=dependant.call, arguments=values
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\starlette\concurrency.py", line 34, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\anyio\to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        func, args, abandon_on_cancel=abandon_on_cancel, limiter=limiter
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\anyio\_backends\_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+  File "C:\Users\arkwa\miniconda3\envs\video-segmenter\Lib\site-packages\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    return function(**arguments)
+  File "C:\Users\arkwa\Documents\HKUST\Mphil\Research\VideoSegmenter\backend\src\api\routes\sam3.py", line 86, in sam3_segment
+    result = service.segment(session, request.frame_index, prompt)
+  File "C:\Users\arkwa\Documents\HKUST\Mphil\Research\VideoSegmenter\backend\src\inference\sam3_image.py", line 150, in segment
+    result = self._text_prompt(processor, base, prompt)
+  File "C:\Users\arkwa\Documents\HKUST\Mphil\Research\VideoSegmenter\backend\src\inference\sam3_image.py", line 220, in _text_prompt
+    instances = _instances_from_batch(masks, scores, base.height, base.width)
+  File "C:\Users\arkwa\Documents\HKUST\Mphil\Research\VideoSegmenter\backend\src\inference\sam3_image.py", line 355, in _instances_from_batch
+    flat = np.asarray(_to_numpy(scores)).reshape(-1)
+                      ~~~~~~~~~^^^^^^^^
+  File "C:\Users\arkwa\Documents\HKUST\Mphil\Research\VideoSegmenter\backend\src\inference\sam3_image.py", line 324, in _to_numpy
+    return detach().cpu().numpy()
+           ~~~~~~~~~~~~~~~~~~~~^^
+TypeError: Got unsupported ScalarType BFloat16
+2026-10-04 13:51:02,828 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 13:56:38,371 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 15:12:29,988 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 15:13:33,703 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 15:20:36,153 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 15:21:26,380 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 15:33:44,640 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 16:57:07,387 INFO    vsr: SAM 3 preloaded and held resident: image, video
+2026-10-04 17:00:27,509 INFO    vsr: SAM 3 preloaded and held resident: image, video

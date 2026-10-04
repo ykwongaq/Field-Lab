@@ -256,19 +256,24 @@ export async function startPropagation(
 /**
  * Poll one job.
  *
- * `since` is the highest frame index already held; only newer masks come back,
- * so a poll costs the same whether the run is 50 frames in or 5,000.
+ * `since`/`until` are the highest and lowest frame indices already held, so only
+ * frames outside that span come back. Both bounds matter: propagation walks
+ * outward from the anchor, so a run that goes both ways keeps producing frames
+ * below everything already sent as well as above it, and a single cursor would
+ * drop the second half.
  */
 export async function getPropagationJob(
     jobId: string,
     options: {
         since?: number;
+        until?: number;
         includeMasks?: boolean;
         signal?: AbortSignal;
     } = {},
 ): Promise<PropagationJob> {
     const query = new URLSearchParams();
     if (options.since !== undefined) query.set("since", String(options.since));
+    if (options.until !== undefined) query.set("until", String(options.until));
     if (options.includeMasks === false) query.set("include_masks", "false");
     const suffix = query.toString() ? `?${query}` : "";
     const response = await apiFetch(

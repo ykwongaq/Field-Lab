@@ -11,12 +11,12 @@ export interface WorkspaceShortcutState {
     polygonLength: number;
     /** Whether an object is selected, which gates the Edit-mask shortcut. */
     hasSelection: boolean;
-    /** Whether the selected object has a mask on this frame, which gates Propagate. */
-    selectedHasMaskHere: boolean;
+    /** Whether the selected object has a mask a human drew here, which gates Propagate. */
+    selectedHasHumanMaskHere: boolean;
     /** Whether a propagation result is under review, which makes Enter accept it. */
     hasPropRun: boolean;
-    /** The corrected frame a refinement would start from, or `null`. */
-    refineFrom: number | null;
+    /** Whether a run is still producing frames, which locks the keyboard. */
+    propagating: boolean;
 }
 
 /** The actions the key map can trigger. */
@@ -29,7 +29,6 @@ export interface WorkspaceShortcutHandlers {
     undo: () => void;
     acceptPropagation: () => void;
     runPropagation: () => Promise<void>;
-    repropagateFrom: (frame: number) => void;
     setPlaying: Dispatch<SetStateAction<boolean>>;
     setBrushSize: Dispatch<SetStateAction<number>>;
 }
@@ -56,9 +55,9 @@ export function useWorkspaceShortcuts(
         method,
         polygonLength,
         hasSelection,
-        selectedHasMaskHere,
+        selectedHasHumanMaskHere,
         hasPropRun,
-        refineFrom,
+        propagating,
     } = state;
     const {
         stepFrame,
@@ -69,7 +68,6 @@ export function useWorkspaceShortcuts(
         undo,
         acceptPropagation,
         runPropagation,
-        repropagateFrom,
         setPlaying,
         setBrushSize,
     } = handlers;
@@ -87,16 +85,9 @@ export function useWorkspaceShortcuts(
             // handler closes it and no shortcut may reach the workspace behind.
             if (exportOpen) return;
 
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                // Re-propagate from the corrected frame. Works from any tool, so a
-                // reviewer who has just pressed Enter on a correction can press it
-                // again without hunting for the propagate panel.
-                if (refineFrom !== null) {
-                    event.preventDefault();
-                    repropagateFrom(refineFrom);
-                }
-                return;
-            }
+            // A live run owns the keyboard: it drives the frame itself and its only
+            // exit is the bar's Stop button, so no shortcut may switch tools.
+            if (propagating) return;
 
             if (tool === "propagate") {
                 switch (event.key) {
@@ -157,7 +148,7 @@ export function useWorkspaceShortcuts(
                         changeTool(tool === "editMask" ? "review" : "editMask");
                     break;
                 case "t":
-                    if (selectedHasMaskHere || tool === "propagate")
+                    if (selectedHasHumanMaskHere || tool === "propagate")
                         changeTool(
                             tool === "propagate" ? "review" : "propagate",
                         );
@@ -189,13 +180,12 @@ export function useWorkspaceShortcuts(
         closePolygon,
         commitMask,
         undo,
-        selectedHasMaskHere,
+        selectedHasHumanMaskHere,
         hasPropRun,
+        propagating,
         acceptPropagation,
         runPropagation,
-        refineFrom,
         exportOpen,
-        repropagateFrom,
         setPlaying,
         setBrushSize,
     ]);

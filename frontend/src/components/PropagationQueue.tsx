@@ -46,14 +46,6 @@ export interface PropQueueEntry {
     windows: number[];
     /** Frames produced so far, keyed by frame index. */
     masks: Map<number, PropagatedFrame>;
-    /**
-     * The frame the tracker wrote most recently.
-     *
-     * The canvas follows this one, which is what makes a run look like it is
-     * playing: the reviewer sees each result as it arrives instead of sitting on
-     * the anchor with nothing to look at.
-     */
-    newest: number | null;
 }
 
 const STATE_LABEL: Record<JobState, string> = {
@@ -102,7 +94,15 @@ export function PropagationQueue({
     return (
         <div
             style={{
-                flex: "1 1 100%",
+                // A row in the video column, not a flexible pane: `0 0 auto` keeps
+                // it to the height of its rows so the stage below keeps the space.
+                // (Its old `1 1 100%` — copied from the in-bar range control, where
+                // it meant "next line, full width" — made the queue grow to fill
+                // the column and collapsed the video to nothing.)
+                flex: "0 0 auto",
+                // A long queue scrolls rather than shouldering the video aside.
+                maxHeight: "30%",
+                overflowY: "auto",
                 display: "flex",
                 flexDirection: "column",
                 gap: 3,
