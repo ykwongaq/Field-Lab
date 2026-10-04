@@ -367,7 +367,7 @@ The browser never materialises a full mask bitmap. Decoded masks are stored as *
 | Cache        | What                            | Capacity   | Why                                                                                                                                                                                                                                    |
 | ------------ | ------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `FrameCache` | Decoded `ImageBitmap` per frame | ~40 (LRU)  | JPEG decode to a full-res bitmap is the expensive step; a small LRU plus preloading (±15 frames around the playhead) keeps scrubbing smooth while bounding memory. Bitmaps are `close()`d on eviction to free GPU/CPU memory promptly. |
-| `MaskCache`  | Decoded foreground runs         | ~512 (LRU) | Bounded so a clip with hundreds of tracklets cannot grow unbounded.                                                                                                                                                                       |
+| `MaskCache`  | Decoded foreground runs         | ~512 (LRU) | Bounded so a clip with hundreds of tracklets cannot grow unbounded.                                                                                                                                                                    |
 
 Preloading is fire-and-forget (`void this.get(index).catch(...)`), so a missing/corrupt frame degrades gracefully instead of blocking the UI.
 
@@ -447,7 +447,7 @@ python make_projects.py \
 | `npm run preview` | Locally preview the production build.                     |
 | `npm run lint`    | Lint with oxlint.                                         |
 
-For a static deployment, serve `frontend/dist` from any static host. In production the `/api` proxy does **not** apply, so either set the backend URL in `maskApi.ts` (`ENDPOINT`) or reverse-proxy `/api/decode/masks` to the FastAPI service.
+For a static deployment, serve `frontend/dist` from any static host. In production Vite's `/api` proxy does **not** apply, so the backend URL has to be baked into the bundle at build time: set `VITE_API_BASE_URL` in `frontend/.env.production` (a committed template already points there), then rebuild with `npm run build`. `src/lib/apiBase.ts` prefixes that value onto every API call; leaving it unset keeps same-origin relative URLs, which is what the dev proxy expects. For a dev build against a remote backend, put the same variable in `frontend/.env.local` (git-ignored) and restart Vite. The backend must also allow the frontend's origin — see `server.cors_origins` in `backend/config/server.json`.
 
 ---
 
@@ -464,15 +464,15 @@ Recommended review loop:
 
 ### Keyboard shortcuts
 
-| Key       | Action                            |
-| --------- | --------------------------------- |
-| `Space`   | Play / pause                      |
-| `←` / `→` | Step one frame back / forward     |
-| `A`       | Add mask tool                     |
-| `E`       | Edit mask tool                    |
-| `T`       | Track (propagate) tool            |
-| `Esc`     | Back to Select / cancel           |
-| `Enter`   | Confirm the current step          |
+| Key       | Action                        |
+| --------- | ----------------------------- |
+| `Space`   | Play / pause                  |
+| `←` / `→` | Step one frame back / forward |
+| `A`       | Add mask tool                 |
+| `E`       | Edit mask tool                |
+| `T`       | Track (propagate) tool        |
+| `Esc`     | Back to Select / cancel       |
+| `Enter`   | Confirm the current step      |
 
 > Shortcuts are disabled while typing in an input/textarea/select.
 

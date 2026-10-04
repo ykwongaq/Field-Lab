@@ -15,6 +15,9 @@ env/
 # Environment / secrets
 .env
 .env.*
+# ...but keep the templates that document the variables
+!.env.example
+!frontend/.env.production
 
 # Test & lint caches
 .pytest_cache/
