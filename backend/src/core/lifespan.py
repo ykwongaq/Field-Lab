@@ -10,18 +10,13 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, List
 
 from fastapi import FastAPI
-
 from src.core.config import Settings, get_settings
-from src.core.errors import Unavailable
 from src.core.sessions import sweep_sessions
 from src.core.singleton import LOCK_NAME
 from src.core.singleton import acquire as acquire_instance_lock
 from src.core.storage import ensure_dir
 from src.domain.extract import missing_binaries
-from src.inference.registry import (
-    warmup_models,
-    shutdown_services,
-)
+from src.inference.registry import shutdown_services, warmup_models
 
 logger = logging.getLogger("vsr")
 
@@ -65,8 +60,10 @@ async def _sweep_forever(settings: Settings) -> None:
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Prepare the directories, preload SAM 3, reap leftovers, then serve.
 
-    A failed preload is only logged: the API stays up so `/api/sam3/status` can
-    explain what is wrong instead of the whole process refusing to start.
+    SAM 3 is loaded here, before the service accepts a single request, so the
+    first prompt and the first propagation find the models already resident. A
+    preload failure is fatal on purpose: the process refuses to start rather
+    than come up without the model it exists to serve.
 
     A *second process*, on the other hand, is refused outright. The model gate,
     the job queue and the session sweeper are all per process, so a second one
@@ -111,16 +108,11 @@ async def _serving(settings: Settings) -> AsyncIterator[None]:
             " and ".join(missing),
         )
 
-    if settings.enable_sam3 and settings.sam3_eager:
-        try:
-            loaded = warmup_models()
-            logger.info(
-                "SAM 3 preloaded and held resident: %s", ", ".join(loaded) or "nothing"
-            )
-        except Unavailable as exc:
-            logger.warning("SAM 3 could not be preloaded: %s", exc)
-        except Exception as exc:  # noqa: BLE001 - never refuse to start for this
-            logger.warning("SAM 3 preload failed: %s: %s", type(exc).__name__, exc)
+    # Loaded unconditionally, on the way up: there is no lazy fallback and no
+    # "enabled"/"eager" gate. If the models cannot be loaded the process must not
+    # start, so a failure here propagates and stops the service.
+    loaded = warmup_models()
+    logger.info("SAM 3 preloaded and held resident: %s", ", ".join(loaded) or "nothing")
 
     sweeper = asyncio.create_task(_sweep_forever(settings))
     try:

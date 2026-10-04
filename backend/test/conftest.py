@@ -45,11 +45,11 @@ os.environ.setdefault("VSR_LOG_DIR", str(SESSION_ROOT / "logs"))
 os.environ.setdefault("VSR_PROJECTS_DIR", str(SESSION_ROOT / "projects"))
 
 # SAM 3 has to look *enabled*, because `/api/sam3/*` checks that before anything
-# else and the routes under test are stubbed rather than skipped. It must never
-# load weights during a run, though, which is what `eager` would do on the way
-# up; the stub service answers every prompt and the real models stay on disk.
+# else and the routes under test are stubbed rather than skipped. The stub
+# service answers every prompt and the real models stay on disk: the lifespan
+# preloads them on the way up, so that preload is patched out in the
+# `_stub_model_preload` fixture below.
 os.environ.setdefault("SAM3_ENABLED", "1")
-os.environ["SAM3_EAGER"] = "0"
 
 FFMPEG = shutil.which("ffmpeg")
 FFPROBE = shutil.which("ffprobe")
@@ -73,6 +73,21 @@ def pytest_sessionfinish(session, exitstatus) -> None:
 
 
 # ── fixtures ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _stub_model_preload():
+    """Keep the lifespan from loading real SAM 3 weights during the suite.
+
+    The app preloads its models unconditionally on startup, and the API tests
+    enter that lifespan through `TestClient`. The stub service answers the
+    requests instead, so the preload is replaced with a no-op here and the
+    checkpoints are left on disk.
+    """
+    from unittest import mock
+
+    with mock.patch("src.core.lifespan.warmup_models", return_value=[]):
+        yield
 
 
 @pytest.fixture(scope="session")
@@ -201,7 +216,6 @@ def api_client(client_id):
     so a test that never speaks HTTP does not import it at all.
     """
     from fastapi.testclient import TestClient
-
     from src.main import app
 
     with TestClient(app) as client:
