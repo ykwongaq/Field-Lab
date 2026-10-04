@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { Clip } from "../lib/clip";
 import type { FrameSource } from "../lib/frames";
 import type { LabelStore } from "../lib/labelStore";
@@ -22,8 +22,6 @@ export interface UseExportParams {
     frames: FrameSource;
     zip: ZipArchive;
     store: LabelStore;
-    /** Called once a file has been written, for the workspace's success notice. */
-    onExported: (fileName: string) => void;
 }
 
 export interface ExportController {
@@ -45,28 +43,18 @@ export interface ExportController {
  * folder, one packed from frames has no video, and a video-only archive records
  * no frame names at all — hence the per-option availability checks.
  *
- * The success notice is left to the caller: it belongs with the workspace's
- * other notices, not with the export machinery.
+ * A finished export only closes the chooser: there is no success toast.
  */
 export function useExport({
     clip,
     frames,
     zip,
     store,
-    onExported,
 }: UseExportParams): ExportController {
     const [exportOpen, setExportOpen] = useState(false);
     const [exportBusyId, setExportBusyId] = useState<string | null>(null);
     const [exportProgress, setExportProgress] = useState<string | null>(null);
     const [exportError, setExportError] = useState<string | null>(null);
-
-    // Read the notification callback through a ref so `runExport` keeps a stable
-    // identity even when the caller passes an inline arrow. Synced in an effect,
-    // not during render, so the ref is never read while rendering.
-    const onExportedRef = useRef(onExported);
-    useEffect(() => {
-        onExportedRef.current = onExported;
-    }, [onExported]);
 
     /**
      * Run one export choice.
@@ -91,7 +79,6 @@ export function useExport({
                 );
                 downloadBlob(file.fileName, file.blob);
                 setExportOpen(false);
-                onExportedRef.current(file.fileName);
             } catch (cause) {
                 setExportError(
                     cause instanceof Error ? cause.message : String(cause),

@@ -29,8 +29,6 @@ export interface UseLabelEditingParams {
     refresh: () => void;
     /** Move the selection, for "jump to the first object of this label". */
     selectTracklet: (id: number) => void;
-    /** Report a label deletion in the workspace's notice bar. */
-    onNotice: (text: string) => void;
 }
 
 export interface LabelEditing {
@@ -72,7 +70,6 @@ export function useLabelEditing({
     store,
     refresh,
     selectTracklet,
-    onNotice,
 }: UseLabelEditingParams): LabelEditing {
     const [newLabelId, setNewLabelId] = useState<number | null>(null);
     const [labelEditor, setLabelEditor] = useState<LabelEditorTarget | null>(
@@ -168,9 +165,6 @@ export function useLabelEditing({
 
     const deleteLabel = useCallback(
         (labelId: number) => {
-            const affected = clip.tracklets.filter(
-                (tracklet) => tracklet.labelId === labelId,
-            ).length;
             const next = clip.deleteLabel(labelId);
             if (next === clip) {
                 setPendingLabelDelete(null);
@@ -187,15 +181,8 @@ export function useLabelEditing({
             setClip(next);
             setPendingLabelDelete(null);
             refresh();
-            onNotice(
-                affected === 0
-                    ? "Label deleted."
-                    : `Label deleted — ${affected} ${
-                          affected === 1 ? "object is" : "objects are"
-                      } now unlabelled.`,
-            );
         },
-        [clip, store, setClip, refresh, onNotice],
+        [clip, store, setClip, refresh],
     );
 
     /** Select the first object that uses a label. */

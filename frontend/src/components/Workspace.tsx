@@ -254,14 +254,13 @@ export function Workspace({
      * rather than deleting on the click.
      */
     const [pendingDelete, setPendingDelete] = useState<number | null>(null);
-    const [localNotice, setLocalNotice] = useState<WorkspaceNotice | null>(
-        null,
-    );
-    const notice = localNotice ?? externalNotice;
+    // The workspace shows no action toasts of its own; the only notice it
+    // renders is the one the shell passes down — currently the frame-list
+    // mismatch warning raised while opening a project.
+    const notice = externalNotice;
 
     // The export chooser's state, runner and per-project options. It is created
-    // here, ahead of the keyboard effect that reads `exportOpen`, and its
-    // success notice is routed back into the workspace's own notice state.
+    // here, ahead of the keyboard effect that reads `exportOpen`.
     const {
         exportOpen,
         exportBusyId,
@@ -275,11 +274,6 @@ export function Workspace({
         frames,
         zip,
         store,
-        onExported: (fileName) =>
-            setLocalNotice({
-                kind: "success",
-                text: `Exported ${fileName}.`,
-            }),
     });
 
     const [propStatus, setPropStatus] = useState<PropagateStatus | null>(null);
@@ -343,9 +337,8 @@ export function Workspace({
      */
     const [stale, setStale] = useState<Map<string, number>>(() => new Map());
     const dismissNotice = useCallback(() => {
-        if (localNotice) setLocalNotice(null);
-        else onDismissNotice?.();
-    }, [localNotice, onDismissNotice]);
+        onDismissNotice?.();
+    }, [onDismissNotice]);
 
     const fetchStatus = fetchSam3Status;
     const refreshSam = useCallback(() => {
@@ -438,7 +431,6 @@ export function Workspace({
         store,
         refresh,
         selectTracklet,
-        onNotice: (text) => setLocalNotice({ kind: "info", text }),
     });
 
     const resetPrompt = useCallback(() => {
@@ -703,10 +695,6 @@ export function Workspace({
         if (selectedId === null || !selected) return;
         if (clip.rawMaskAt(selected, frameIndex) === null) return;
         if (selected.maskFrames.count <= 1) {
-            setLocalNotice({
-                kind: "info",
-                text: `That is the only frame with a mask. Redraw it, or delete the ${vocab.unit}.`,
-            });
             return;
         }
         setClip(clip.removeMask(selectedId, frameIndex));
@@ -722,10 +710,6 @@ export function Workspace({
         );
         resetTransient();
         setTool("editMask");
-        setLocalNotice({
-            kind: "info",
-            text: `Cleared frame ${frameIndex + 1}.`,
-        });
     }, [
         selectedId,
         selected,
@@ -734,7 +718,6 @@ export function Workspace({
         markCorrected,
         refresh,
         resetTransient,
-        vocab.unit,
     ]);
 
     const toolRef = useRef(tool);
@@ -1010,12 +993,6 @@ export function Workspace({
             // one be drawn straight away. A text prompt fired from Edit mask is
             // the only other way in, and that still returns to Review.
             if (tool !== "addMask") setTool("review");
-            setLocalNotice({
-                kind: "success",
-                text: `Added ${created.length} ${
-                    created.length === 1 ? vocab.unit : `${vocab.unit}s`
-                }.`,
-            });
         },
         [
             candidate,
@@ -1027,7 +1004,6 @@ export function Workspace({
             newLabelId,
             refresh,
             discardDraft,
-            vocab.unit,
         ],
     );
 
@@ -1054,14 +1030,6 @@ export function Workspace({
             if (stillThere) markCorrected(selectedId, frameIndex);
             discardDraft();
             setTool("review");
-            setLocalNotice({
-                kind: finalMask ? "success" : "info",
-                text: finalMask
-                    ? `Saved mask on frame ${frameIndex + 1}.`
-                    : stillThere
-                      ? `Removed the mask on frame ${frameIndex + 1}.`
-                      : `Removed ${vocab.unit} #${selectedId}.`,
-            });
             return;
         }
 
@@ -1087,10 +1055,6 @@ export function Workspace({
             // returning to Select forced a click on the rail for every one.
             // `discardDraft` already cleared the draft, the clicks and the
             // polygon, so the bar is back to a clean prompt.
-            setLocalNotice({
-                kind: "success",
-                text: `Added ${vocab.unit} #${tracklet.id}.`,
-            });
             return;
         }
 
@@ -1104,10 +1068,6 @@ export function Workspace({
                 );
                 setClip(next);
                 setSelectedId(targetClass.id);
-                setLocalNotice({
-                    kind: "success",
-                    text: `Added to class "${targetClass.label}".`,
-                });
             } else {
                 const { clip: next, tracklet } = clip.addClass(
                     frameIndex,
@@ -1116,10 +1076,6 @@ export function Workspace({
                 );
                 setClip(next);
                 setSelectedId(tracklet.id);
-                setLocalNotice({
-                    kind: "success",
-                    text: `Created class "${label}".`,
-                });
             }
         } catch (cause) {
             setPromptError(
@@ -1143,7 +1099,6 @@ export function Workspace({
         refresh,
         discardDraft,
         markCorrected,
-        vocab.unit,
         semantic,
         method,
         candidate,
@@ -1176,12 +1131,8 @@ export function Workspace({
             );
             setClip(next);
             refresh();
-            setLocalNotice({
-                kind: "info",
-                text: `Removed ${vocab.unit} #${id}.`,
-            });
         },
-        [clip, refresh, vocab.unit],
+        [clip, refresh],
     );
 
     /** The object named by the open delete confirmation, if any. */
@@ -1592,10 +1543,6 @@ export function Workspace({
             if (selectedId === null) return;
             const last = clip.frameCount - 1;
             if (from >= last) {
-                setLocalNotice({
-                    kind: "info",
-                    text: "Nothing after the last frame to re-propagate.",
-                });
                 return;
             }
             const pins = pinsFor(selectedId, from, last);
@@ -1652,10 +1599,6 @@ export function Workspace({
         propAbortRef.current = null;
         setPropagating(false);
         setPropError(null);
-        setLocalNotice({
-            kind: "info",
-            text: "Propagation cancelled.",
-        });
     }, []);
 
     const propPreview =
@@ -1743,7 +1686,6 @@ export function Workspace({
         }
         setClip(next);
         refresh();
-        const count = propSummary.accepted.length;
         const stored = new Set(
             propSummary.accepted.map((item) => item.frameIndex),
         );
@@ -1782,22 +1724,7 @@ export function Workspace({
             ) ?? remaining.find((entry) => entry.masks.size > 0);
         setPropRun(nextEntry ? entryToRun(nextEntry, propStatus) : null);
         if (!nextEntry && !propQueue.some(isLive)) setTool("review");
-        setLocalNotice({
-            kind: count > 0 ? "success" : "info",
-            text:
-                count > 0
-                    ? `Tracked ${count} frame${count === 1 ? "" : "s"} for ${vocab.unit} #${tracklet.id}.`
-                    : "Nothing stored: the range already had masks.",
-        });
-    }, [
-        propRun,
-        propSummary,
-        propQueue,
-        clip,
-        refresh,
-        propStatus,
-        vocab.unit,
-    ]);
+    }, [propRun, propSummary, propQueue, clip, refresh, propStatus]);
 
     useEffect(() => {
         if (!playing) return;
@@ -1996,10 +1923,6 @@ export function Workspace({
                                             // Keep the corrections, drop the marks
                                             // that say they are unverified.
                                             setStale(new Map());
-                                            setLocalNotice({
-                                                kind: "info",
-                                                text: "Cleared the stale marks.",
-                                            });
                                         }}
                                         title="Drop the stale marks without re-propagating"
                                     >
