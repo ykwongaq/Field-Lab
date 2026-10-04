@@ -156,7 +156,7 @@ const CREATE_METHODS: DrawMethod[] = [
 ];
 const CORRECT_METHODS: DrawMethod[] = ["polygon", "brush"];
 
-/** Labels for the method strip; `point` is shown under the model's own name. */
+/** Labels for the method strip. */
 const METHOD_LABELS: Record<DrawMethod, string> = {
     point: "Point",
     box: "Box",
@@ -2076,9 +2076,7 @@ export function Workspace({
                                                       : "Drag to paint; Shift/right-drag erases; [ ] resize (B)"
                                         }
                                     >
-                                        {value === "point"
-                                            ? modelName
-                                            : METHOD_LABELS[value]}
+                                        {METHOD_LABELS[value]}
                                     </button>
                                 ))}
                             </div>
