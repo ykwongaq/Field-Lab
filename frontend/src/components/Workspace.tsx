@@ -1082,10 +1082,9 @@ export function Workspace({
             setSelectedId(created[created.length - 1] ?? null);
             refresh();
             discardDraft();
-            // Creating objects is an Add-mask act, so stay there and let the next
-            // one be drawn straight away. A text prompt fired from Edit mask is
-            // the only other way in, and that still returns to Review.
-            if (tool !== "addMask") setTool("review");
+            // Creating objects is an Add-mask act, so stay put and let the next
+            // one be drawn straight away, whichever create tool the prompt was
+            // fired from. Switching tools is the user's call, never the app's.
         },
         [
             candidate,
@@ -1123,7 +1122,11 @@ export function Workspace({
             refresh();
             if (stillThere) markCorrected(selectedId, frameIndex);
             discardDraft();
-            setTool("review");
+            // Stay in Edit mask so the next frame of the same object can be
+            // corrected straight away. Only when the edit removed the object
+            // itself (an empty redraw on a one-mask object) is here no longer
+            // valid: the selection falls back and Select is the safe landing.
+            if (!stillThere) setTool("review");
             return;
         }
 
@@ -1741,7 +1744,9 @@ export function Workspace({
         propPlaybackRef.current = [];
         propPlaybackJobRef.current = nextEntry?.jobId ?? null;
         setPropRun(nextEntry ? entryToRun(nextEntry, propStatus) : null);
-        if (!nextEntry && !propQueue.some(isLive)) setTool("review");
+        // When the queue drains Track stays selected: another run, or leaving
+        // with Esc, is a deliberate step rather than an automatic jump back to
+        // Select.
     }, [
         propRun,
         propSummary,
@@ -1930,6 +1935,16 @@ export function Workspace({
                 />
 
                 <section className={styles.videoCol}>
+                    {/* Select has no controls, but every other tool draws a bar
+                        here. Keep the empty row so switching tools never shifts
+                        the stage up or down. */}
+                    {tool === "review" && (
+                        <div
+                            className={styles.promptBar}
+                            aria-hidden="true"
+                            data-placeholder="true"
+                        />
+                    )}
                     {tool === "propagate" && selected && (
                         <div className={styles.promptBar} role="toolbar">
                             <span className={styles.promptTitle}>
