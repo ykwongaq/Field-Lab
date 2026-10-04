@@ -1083,54 +1083,60 @@ export class Clip {
     }
 
     /**
-     * Semantic projects: write the whole project archive back out — frames and
-     * video copied from `zip` untouched, the annotation JSON replaced, and a
-     * label-map PNG for every frame whose masks changed (or that never had one).
+     * Write the whole project archive back out.
+     *
+     * The annotation JSON is always replaced with the current tracklets. A
+     * semantic project additionally rewrites a label-map PNG for every frame
+     * whose masks changed (or that never had one); an instance project keeps its
+     * masks inside the annotation JSON, so every other entry is copied as-is.
+     * Frames and video are copied from `zip` untouched in both cases, which is
+     * what makes the result safe to reopen and carry on from.
      */
     async exportProjectZip(
         zip: ZipArchive,
         taxonomies: TaxonomyOverrides = {},
         onProgress?: LoadProgress,
     ): Promise<Blob> {
-        if (this.mode !== "semantic") {
-            throw new Error("exportProjectZip is for semantic projects only.");
-        }
         const dataset = this.toDataset(taxonomies);
-        const labelMaps = dataset.videos[0].label_maps ?? [];
+        const semantic = this.mode === "semantic";
         const writer = new ZipWriter();
         writer.addText(this.annotationEntry, JSON.stringify(dataset, null, 2));
 
-        // Label maps: reuse the stored PNG when the frame did not change.
-        const toWrite: number[] = [];
-        for (let i = 0; i < labelMaps.length; i++) {
-            const entry = labelMaps[i];
-            if (!entry) continue;
-            const unchanged =
-                !this.dirtyFrames.has(i) &&
-                this.labelMaps?.[i] === entry &&
-                zip.hasEntry(entry);
-            if (unchanged) writer.addRaw(await zip.rawEntry(entry));
-            else toWrite.push(i);
-        }
-        let done = 0;
-        for (const i of toWrite) {
-            const entry = labelMaps[i] as string;
-            const png = await encodeLabelMapPng(
-                this.labelMapOf(i),
-                this.width,
-                this.height,
-            );
-            await writer.addBlob(entry, png);
-            done += 1;
-            onProgress?.(done, toWrite.length);
+        if (semantic) {
+            const labelMaps = dataset.videos[0].label_maps ?? [];
+            // Label maps: reuse the stored PNG when the frame did not change.
+            const toWrite: number[] = [];
+            for (let i = 0; i < labelMaps.length; i++) {
+                const entry = labelMaps[i];
+                if (!entry) continue;
+                const unchanged =
+                    !this.dirtyFrames.has(i) &&
+                    this.labelMaps?.[i] === entry &&
+                    zip.hasEntry(entry);
+                if (unchanged) writer.addRaw(await zip.rawEntry(entry));
+                else toWrite.push(i);
+            }
+            let done = 0;
+            for (const i of toWrite) {
+                const entry = labelMaps[i] as string;
+                const png = await encodeLabelMapPng(
+                    this.labelMapOf(i),
+                    this.width,
+                    this.height,
+                );
+                await writer.addBlob(entry, png);
+                done += 1;
+                onProgress?.(done, toWrite.length);
+            }
         }
 
-        // Everything else (frames/, video/, extras) is copied as-is. Old label
-        // maps of frames that no longer have masks are dropped on purpose.
+        // Everything else (frames/, video/, metadata, extras) is copied as-is.
+        // For a semantic project, old label maps of frames that no longer have
+        // masks are dropped on purpose.
         for (const name of zip.getEntries()) {
             if (writer.has(name)) continue;
             if (name === this.annotationEntry) continue;
-            if (/^masks\/[^/]+\.png$/i.test(name)) continue;
+            if (semantic && /^masks\/[^/]+\.png$/i.test(name)) continue;
             if (name.endsWith("/")) continue; // directory placeholders
             writer.addRaw(await zip.rawEntry(name));
         }

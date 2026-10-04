@@ -187,10 +187,11 @@ export function exportAnnotation(
 /**
  * Build a complete project archive from the current state.
  *
- * This is what a semantic project exports: its masks are label-map PNGs that
- * `annotation.json` refers to by entry name, so only a full archive (frames,
- * label maps, annotation and metadata) is self-consistent — and reopening it
- * resumes from the saved state.
+ * The result keeps the archive's frames and video and replaces the annotation
+ * with the current tracklets. A semantic project's masks are label-map PNGs that
+ * `annotation.json` refers to by entry name, so its archive is rewritten too; an
+ * instance project's masks live in the annotation JSON. Either way, reopening
+ * the saved archive resumes from the state it was saved in.
  */
 export async function exportProjectArchive(
     clip: Clip,

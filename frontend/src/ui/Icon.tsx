@@ -35,6 +35,7 @@ export type IconName =
     | "folder"
     | "film"
     | "download"
+    | "save"
     | "lock"
     | "target"
     | "brush"
@@ -161,6 +162,13 @@ const PATHS: Record<IconName, ReactNode> = {
             <path d="M12 4v12" />
             <path d="M7.5 11.5L12 16l4.5-4.5" />
             <path d="M4 20h16" />
+        </>
+    ),
+    save: (
+        <>
+            <path d="M5 3h11l3 3v15H5V3z" />
+            <path d="M8 3v5h7V3" />
+            <path d="M8 21v-6h8v6" />
         </>
     ),
     lock: (

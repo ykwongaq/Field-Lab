@@ -34,6 +34,7 @@ import {
 } from "../lib/propagateApi";
 import { usePanelLayout } from "../hooks/usePanelLayout";
 import { useExport } from "../hooks/useExport";
+import { useSaveProject } from "../hooks/useSaveProject";
 import { useWorkspaceShortcuts } from "../hooks/useWorkspaceShortcuts";
 import { useLabelEditing } from "../hooks/useLabelEditing";
 import { VideoPanel } from "./VideoPanel";
@@ -292,10 +293,18 @@ export function Workspace({
         id: number;
         then: Tool;
     } | null>(null);
-    // The workspace shows no action toasts of its own; the only notice it
-    // renders is the one the shell passes down — currently the frame-list
-    // mismatch warning raised while opening a project.
-    const notice = externalNotice;
+    // The workspace shows no action toasts of its own, except the outcome of a
+    // save: the shell's notice (currently the frame-list mismatch warning) shows
+    // through unless a save has something of its own to report.
+    const [saveNotice, setSaveNotice] = useState<WorkspaceNotice | null>(null);
+    /**
+     * The `clip.editCount` the last save captured.
+     *
+     * The leave-guard compares against it, so a saved project stops prompting on
+     * unload; the next edit pushes `editCount` past it and the guard arms again.
+     */
+    const [savedEditCount, setSavedEditCount] = useState(0);
+    const notice = saveNotice ?? externalNotice;
 
     // The export chooser's state, runner and per-project options. It is created
     // here, ahead of the keyboard effect that reads `exportOpen`.
@@ -310,6 +319,14 @@ export function Workspace({
     } = useExport({
         clip,
         frames,
+        zip,
+        store,
+    });
+
+    // "Save" packs the current state back into a `.project` archive and
+    // downloads it, so the annotated result can be reopened later.
+    const { saveBusy, saveProgress, saveProject } = useSaveProject({
+        clip,
         zip,
         store,
     });
@@ -358,6 +375,7 @@ export function Workspace({
         () => new Set(),
     );
     const dismissNotice = useCallback(() => {
+        setSaveNotice(null);
         onDismissNotice?.();
     }, [onDismissNotice]);
 
@@ -379,14 +397,16 @@ export function Workspace({
     }, [fetchStatus]);
 
     useEffect(() => {
-        // An uncommitted draft is as worth guarding as a committed edit.
-        if (clip.editCount === 0 && drafts.size === 0) return;
+        // An uncommitted draft is as worth guarding as a committed edit — but
+        // work already written to a file is not unsaved, so the guard only arms
+        // for edits made since the last save.
+        if (clip.editCount === savedEditCount && drafts.size === 0) return;
         const onBeforeUnload = (event: BeforeUnloadEvent) => {
             event.preventDefault();
         };
         window.addEventListener("beforeunload", onBeforeUnload);
         return () => window.removeEventListener("beforeunload", onBeforeUnload);
-    }, [clip.editCount, drafts.size]);
+    }, [clip.editCount, drafts.size, savedEditCount]);
 
     const refresh = useCallback(() => setTick((value) => value + 1), []);
 
@@ -1826,6 +1846,24 @@ export function Workspace({
         );
     }, [drafts.size, vocab.unit]);
 
+    /**
+     * Save the annotated project.
+     *
+     * The committed state is packed back into a `.project` archive and handed to
+     * the browser, so the review can be resumed later. Uncommitted drafts would
+     * not be in the file, so they are guarded exactly like export.
+     */
+    const handleSave = useCallback(async () => {
+        if (!confirmDraftsDiscarded()) return;
+        const result = await saveProject();
+        if (result.ok) setSavedEditCount(clip.editCount);
+        setSaveNotice(
+            result.ok
+                ? { kind: "success", text: `Saved ${result.fileName}.` }
+                : { kind: "info", text: result.error },
+        );
+    }, [clip.editCount, confirmDraftsDiscarded, saveProject]);
+
     return (
         <div className={styles.workspace}>
             <header className={styles.header}>
@@ -1883,8 +1921,24 @@ export function Workspace({
 
                 <Button
                     variant="primary"
+                    icon="save"
+                    disabled={saveBusy || propagating || exportBusyId !== null}
+                    title={
+                        propagating
+                            ? "Stop the run before saving — its masks are not saved yet"
+                            : saveProgress
+                              ? `Saving ${saveProgress}…`
+                              : "Download the annotated project as a .project archive"
+                    }
+                    onClick={() => void handleSave()}
+                >
+                    {saveBusy ? "Saving…" : "Save"}
+                </Button>
+
+                <Button
+                    variant="default"
                     icon="download"
-                    disabled={exportBusyId !== null || propagating}
+                    disabled={exportBusyId !== null || propagating || saveBusy}
                     title={
                         propagating
                             ? "Stop the run before exporting — its masks are not saved yet"
