@@ -29,6 +29,19 @@
     display: block;
 }
 
+/*
+ * Select tool: the marching-ants outline of the selected object. Sits above the
+ * frame canvas and never takes the pointer — the canvas below owns every drag.
+ */
+.ants {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    pointer-events: none;
+}
+
 /* "Add mask" / "Edit mask": the frame is a prompt target. */
 .prompting .canvas {
     cursor: crosshair;

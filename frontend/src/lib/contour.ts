@@ -1,4 +1,4 @@
-import type { RawRle } from "../types";
+import type { ForegroundRun, RawRle } from "../types";
 import { bitmapToRle, rleArea, rleToBitmap } from "./rle";
 import type { FramePoint } from "./raster";
 
@@ -81,10 +81,86 @@ function headingOf(dx: number, dy: number): number {
  */
 export function traceRings(rle: RawRle): FramePoint[][] {
     const { data, width, height } = gridOf(rle);
-    if (width === 0 || height === 0) return [];
-    const at = (x: number, y: number): number =>
-        x >= 0 && y >= 0 && x < width && y < height ? data[x * height + y] : 0;
+    return walkRings(
+        (x, y) =>
+            x >= 0 && y >= 0 && x < width && y < height
+                ? data[x * height + y]
+                : 0,
+        width,
+        height,
+    );
+}
 
+/**
+ * The mask's rings, traced from the decoder's foreground runs rather than from a
+ * full bitmap.
+ *
+ * Runs arrive as one 1 px-wide vertical strip per column, so the walk only has
+ * to visit the mask's bounding box: a small object in a 1080p frame then costs a
+ * fraction of the full-frame sweep `traceRings` makes. The box is a superset of
+ * the mask, and a sampler that reports background outside it is exactly right —
+ * so the box never has to be precise to stay correct.
+ */
+export function traceRuns(
+    runs: ForegroundRun[],
+    width: number,
+    height: number,
+): FramePoint[][] {
+    if (runs.length === 0 || width <= 0 || height <= 0) return [];
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const run of runs) {
+        const bottom = run.y + run.length - 1;
+        if (run.x < x0) x0 = run.x;
+        if (run.x > x1) x1 = run.x;
+        if (run.y < y0) y0 = run.y;
+        if (bottom > y1) y1 = bottom;
+    }
+    if (x1 < x0 || y1 < y0) return [];
+    const boxWidth = x1 - x0 + 1;
+    const boxHeight = y1 - y0 + 1;
+    const data = new Uint8Array(boxWidth * boxHeight);
+    for (const run of runs) {
+        const from = (run.x - x0) * boxHeight + (run.y - y0);
+        data.fill(1, from, from + run.length);
+    }
+    return walkRings(
+        (x, y) => {
+            const bx = x - x0;
+            const by = y - y0;
+            return bx >= 0 && by >= 0 && bx < boxWidth && by < boxHeight
+                ? data[bx * boxHeight + by]
+                : 0;
+        },
+        width,
+        height,
+        x0,
+        y0,
+        x1,
+        y1,
+    );
+}
+
+/**
+ * Link every crack edge of the foreground into closed rings.
+ *
+ * Coordinates are frame pixels throughout; `boxX0…boxY1` only limits the sweep
+ * to the part of the frame known to hold foreground. The sampler still answers
+ * in frame coordinates, so a boxed trace returns the same rings as a full one,
+ * just faster.
+ */
+function walkRings(
+    at: (x: number, y: number) => number,
+    width: number,
+    height: number,
+    boxX0 = 0,
+    boxY0 = 0,
+    boxX1 = width - 1,
+    boxY1 = height - 1,
+): FramePoint[][] {
+    if (width === 0 || height === 0) return [];
     const stride = height + 1;
     /** corner index → the corners each outgoing edge points at (-1 = used). */
     const edges = new Map<number, number[]>();
@@ -96,8 +172,8 @@ export function traceRings(rle: RawRle): FramePoint[][] {
         else edges.set(from, [to]);
     };
 
-    for (let x = 0; x < width; x++) {
-        for (let y = 0; y < height; y++) {
+    for (let x = boxX0; x <= boxX1; x++) {
+        for (let y = boxY0; y <= boxY1; y++) {
             if (!at(x, y)) continue;
             // Clockwise in screen coordinates, so the foreground stays inside and
             // the turns below are all right turns.
@@ -278,15 +354,45 @@ export function outlineFromRle(
     rle: RawRle,
     maxVertices = MAX_VERTICES,
 ): FramePoint[][] {
-    const traced = traceRings(rle).filter(
+    return toOutline(traceRings(rle), maxVertices);
+}
+
+/**
+ * The outline of a mask already decoded to runs — the same shape `outlineFromRle`
+ * gives, without the full-frame trace (see `traceRuns`).
+ *
+ * The tolerance is fixed rather than raised until the vertex count fits: this
+ * outline has to keep hugging the mask, so it may not wander a long way to save
+ * points. A pixel of tolerance is invisible against the fill, but it collapses
+ * the pixel staircase into near-straight runs, which is what keeps dashes evenly
+ * spaced along a diagonal edge.
+ */
+export function outlineFromRuns(
+    runs: ForegroundRun[],
+    width: number,
+    height: number,
+    epsilon = MIN_EPSILON,
+): FramePoint[][] {
+    return simplifyRings(traceRuns(runs, width, height), epsilon).filter(
+        (ring) =>
+            ring.length >= 3 && Math.abs(signedArea(ring)) >= MIN_RING_AREA,
+    );
+}
+
+/** Drop the rings too small to matter and simplify the rest to a budget. */
+function toOutline(
+    traced: FramePoint[][],
+    maxVertices: number,
+): FramePoint[][] {
+    const rings = traced.filter(
         (ring) => Math.abs(signedArea(ring)) >= MIN_RING_AREA,
     );
-    if (traced.length === 0) return [];
+    if (rings.length === 0) return [];
     let epsilon = MIN_EPSILON;
-    let simplified = simplifyRings(traced, epsilon);
+    let simplified = simplifyRings(rings, epsilon);
     while (countVertices(simplified) > maxVertices && epsilon < MAX_EPSILON) {
         epsilon *= 1.4;
-        simplified = simplifyRings(traced, epsilon);
+        simplified = simplifyRings(rings, epsilon);
     }
     return simplified.filter((ring) => ring.length >= 3);
 }

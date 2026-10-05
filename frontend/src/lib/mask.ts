@@ -1,4 +1,5 @@
 import type { ForegroundRun } from "../types";
+import type { FramePoint } from "./raster";
 
 /**
  * Boundary stroke width, as a fraction of the frame's shortest side.
@@ -23,6 +24,26 @@ export function boundaryWidthFor(width: number, height: number): number {
         MAX_BOUNDARY_PX,
         Math.max(MIN_BOUNDARY_PX, shortest * BOUNDARY_FRACTION),
     );
+}
+
+/**
+ * A closed path through every ring, ready to stroke or fill.
+ *
+ * Each ring is closed, so a dash pattern wraps around the whole loop instead of
+ * stopping short at the vertex it started from; holes become separate subpaths
+ * and read as holes under an even-odd fill.
+ */
+export function ringsToPath(rings: FramePoint[][]): Path2D {
+    const path = new Path2D();
+    for (const ring of rings) {
+        if (ring.length < 3) continue;
+        path.moveTo(ring[0].x, ring[0].y);
+        for (let i = 1; i < ring.length; i++) {
+            path.lineTo(ring[i].x, ring[i].y);
+        }
+        path.closePath();
+    }
+    return path;
 }
 
 /**

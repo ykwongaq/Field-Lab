@@ -163,3 +163,59 @@ export function screenToFrame(
         y: (y - layout.y) / layout.scale,
     };
 }
+
+/** The part of a frame the container shows, and where it lands on screen. */
+export interface VisibleSlice {
+    /** Source rectangle, in frame pixels. */
+    sx: number;
+    sy: number;
+    sw: number;
+    sh: number;
+    /** Destination rectangle, in container CSS pixels. */
+    dx: number;
+    dy: number;
+    dw: number;
+    dh: number;
+    /** `true` when the frame is being shrunk, so resampling should smooth. */
+    smooth: boolean;
+}
+
+/**
+ * The visible part of the frame for a layout, or `null` when nothing is on
+ * screen.
+ *
+ * Only the slice inside the container is returned. Zoomed in, a full-frame draw
+ * would touch every source pixel on every repaint, and the overlay layers may
+ * repaint far more often than the frame itself does.
+ */
+export function visibleSlice(
+    layout: FrameLayout,
+    viewport: Size,
+): VisibleSlice | null {
+    const { x, y, scale, width, height } = layout;
+    if (
+        !(scale > 0) ||
+        !(width > 0) ||
+        !(height > 0) ||
+        !(viewport.w > 0) ||
+        !(viewport.h > 0)
+    ) {
+        return null;
+    }
+    const sx = Math.max(0, -x / scale);
+    const sy = Math.max(0, -y / scale);
+    const sw = Math.min(width - sx, viewport.w / scale);
+    const sh = Math.min(height - sy, viewport.h / scale);
+    if (!(sw > 0) || !(sh > 0)) return null;
+    return {
+        sx,
+        sy,
+        sw,
+        sh,
+        dx: x + sx * scale,
+        dy: y + sy * scale,
+        dw: sw * scale,
+        dh: sh * scale,
+        smooth: scale < 1,
+    };
+}

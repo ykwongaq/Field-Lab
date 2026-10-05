@@ -6,7 +6,7 @@ import type {
 import type { Clip } from "../lib/clip";
 import type { FrameSource } from "../lib/frames";
 import { FrameCache } from "../lib/frameCache";
-import { MaskRenderer, boundaryWidthFor } from "../lib/mask";
+import { MaskRenderer, boundaryWidthFor, ringsToPath } from "../lib/mask";
 import { MaskCache, type MaskRequest } from "../lib/maskApi";
 import { formatTimecode } from "../lib/format";
 import { SELECTED_COLOR } from "../lib/palette";
@@ -23,6 +23,7 @@ import {
     moveVertex,
     nearestEdge,
     nearestVertex,
+    outlineFromRuns,
     removeVertex,
 } from "../lib/contour";
 import type { DecodedMask, PromptPoint, RawRle, Tracklet } from "../types";
@@ -35,6 +36,7 @@ import {
     frameLayout,
     panBy,
     screenToFrame,
+    visibleSlice,
     wheelZoomFactor,
     zoomAbout,
     type FrameLayout,
@@ -53,6 +55,8 @@ const CLOSE_POLYGON_RADIUS = 9;
 /** Screen-space radii for grabbing a vertex or an edge of an existing outline. */
 const VERTEX_HIT_RADIUS = 7;
 const EDGE_HIT_RADIUS = 6;
+/** One marching-ants dash cycle, in milliseconds. */
+const ANTS_PERIOD = 600;
 
 interface VideoPanelProps {
     clip: Clip;
@@ -105,6 +109,8 @@ interface VideoPanelProps {
 export function VideoPanel(props: VideoPanelProps) {
     const wrapRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    //: The marching-ants layer, above the frame canvas and repainted on its own.
+    const antsRef = useRef<HTMLCanvasElement>(null);
     //: A pending "layout has not settled" retry, so it can be cancelled with the
     //: draw it belongs to.
     const retryRef = useRef<number | null>(null);
@@ -139,6 +145,18 @@ export function VideoPanel(props: VideoPanelProps) {
     ) {
         edgeRef.current = new MaskRenderer(maskWidth, maskHeight);
     }
+    // The selected object's outline, kept between animation frames (and across
+    // pans and zooms): tracing it is the only costly part of the effect, and it
+    // only changes when the clip, the object or the frame does.
+    const antsPathRef = useRef<Path2D | null>(null);
+    const antsKeyRef = useRef<{
+        clip: Clip;
+        trackletId: number;
+        frameIndex: number;
+    } | null>(null);
+    // Where the dashes have marched to, kept across replans so a pan or zoom does
+    // not snap them back to the start.
+    const antsPhaseRef = useRef(0);
     const maskCacheRef = useRef<MaskCache | null>(null);
     if (!maskCacheRef.current) {
         maskCacheRef.current = new MaskCache();
@@ -872,37 +890,30 @@ export function VideoPanel(props: VideoPanelProps) {
             // Only the visible slice of the source is ever resampled. Zoomed in,
             // a full-frame drawImage would touch every source pixel on every
             // repaint, and panning repaints on every pointer move.
-            const sourceX = Math.max(0, -drawX / scale);
-            const sourceY = Math.max(0, -drawY / scale);
-            const sourceWidth = Math.min(frameWidth - sourceX, width / scale);
-            const sourceHeight = Math.min(
-                frameHeight - sourceY,
-                height / scale,
-            );
-            const canBlit = scale > 0 && sourceWidth > 0 && sourceHeight > 0;
+            const slice = visibleSlice(nextLayout, { w: width, h: height });
             // Resample only when shrinking. Magnified, both the frame and the mask
             // show their true pixels: a blurred boundary is the wrong thing to put
             // in front of someone deciding whether a mask is accurate.
-            const smooth = scale < 1;
+            const smooth = slice ? slice.smooth : false;
             const blit = (
                 source: CanvasImageSource,
                 alpha: number,
                 smooth: boolean,
             ) => {
-                if (!canBlit) return;
+                if (!slice) return;
                 ctx.save();
                 ctx.globalAlpha = alpha;
                 ctx.imageSmoothingEnabled = smooth;
                 ctx.drawImage(
                     source,
-                    sourceX,
-                    sourceY,
-                    sourceWidth,
-                    sourceHeight,
-                    drawX + sourceX * scale,
-                    drawY + sourceY * scale,
-                    sourceWidth * scale,
-                    sourceHeight * scale,
+                    slice.sx,
+                    slice.sy,
+                    slice.sw,
+                    slice.sh,
+                    slice.dx,
+                    slice.dy,
+                    slice.dw,
+                    slice.dh,
                 );
                 ctx.restore();
             };
@@ -977,11 +988,15 @@ export function VideoPanel(props: VideoPanelProps) {
             }
             if (selectedMask) {
                 maskRenderer.drawRuns(selectedMask.runs, SELECTED_COLOR);
-                edgeRenderer.strokeRuns(
-                    selectedMask.runs,
-                    SELECTED_COLOR,
-                    boundaryWidth,
-                );
+                // Select mode hands this outline to the marching-ants layer, so
+                // the two never fight over the same edge.
+                if (props.tool !== "review") {
+                    edgeRenderer.strokeRuns(
+                        selectedMask.runs,
+                        SELECTED_COLOR,
+                        boundaryWidth,
+                    );
+                }
             }
 
             blit(maskRenderer.canvasElement, props.maskOpacity, smooth);
@@ -1061,6 +1076,164 @@ export function VideoPanel(props: VideoPanelProps) {
         maskTracklets,
     ]);
 
+    // Select mode: the selected object's outline becomes marching ants.
+    //
+    // The outline is stroked as a real path with a dash pattern, so the dashes
+    // are segments *of the boundary* and `lineDashOffset` walks them along it:
+    // they follow a curve, turn a corner and circulate a hole, which a pattern
+    // sliding in one direction cannot do. The path is traced once per (clip,
+    // object, frame) and cached, so each animation frame is a single vector
+    // stroke on a small transparent layer — no frame redraw, no pixel work. The
+    // loop runs only while Select has an object with a mask on this frame; every
+    // other tool clears the layer and stops it.
+    useEffect(() => {
+        const canvas = antsRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const backingWidth = Math.max(1, Math.round(viewport.w * dpr));
+        const backingHeight = Math.max(1, Math.round(viewport.h * dpr));
+        if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+            canvas.width = backingWidth;
+            canvas.height = backingHeight;
+        }
+
+        let raf = 0;
+        const stop = () => {
+            if (raf) cancelAnimationFrame(raf);
+            raf = 0;
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        };
+
+        const tracklet =
+            props.tool === "review"
+                ? props.clip.tracklets.find(
+                      (t) => t.id === props.selectedTrackletId,
+                  )
+                : undefined;
+        const payload = tracklet
+            ? props.clip.rawMaskAt(tracklet, props.frameIndex)
+            : null;
+        const layout =
+            payload && viewport.w > 0 && viewport.h > 0
+                ? frameLayout(
+                      viewport,
+                      { w: props.clip.width, h: props.clip.height },
+                      view,
+                  )
+                : null;
+        if (
+            !tracklet ||
+            !payload ||
+            !layout ||
+            !visibleSlice(layout, viewport)
+        ) {
+            stop();
+            return;
+        }
+
+        // Band width and dash pitch are frame pixels, so the ants thicken and
+        // lengthen with the outline as it is zoomed, exactly as the solid
+        // boundaries do. A dash of four band widths reads clearly without
+        // turning the outline into a dotted line.
+        const thickness = boundaryWidthFor(props.clip.width, props.clip.height);
+        const dash = thickness * 4;
+        const cycle = dash * 2;
+
+        // The path outlives pans and zooms; only a changed clip, object or frame
+        // makes it stale.
+        const cached = antsKeyRef.current;
+        const fresh =
+            cached !== null &&
+            cached.clip === props.clip &&
+            cached.trackletId === tracklet.id &&
+            cached.frameIndex === props.frameIndex;
+        let path: Path2D | null = fresh ? antsPathRef.current : null;
+
+        let cancelled = false;
+        let last = 0;
+        const step = (now: number) => {
+            if (cancelled || !path) return;
+            // One dash cycle per `ANTS_PERIOD`, so the ants travel at the same
+            // rate at any zoom and on any refresh rate.
+            const elapsed = last === 0 ? 0 : Math.min(64, now - last);
+            last = now;
+            antsPhaseRef.current =
+                (antsPhaseRef.current + (elapsed / ANTS_PERIOD) * cycle) %
+                cycle;
+
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, viewport.w, viewport.h);
+            ctx.save();
+            // Frame coordinates -> screen, so the stroke is crisp at any zoom.
+            ctx.translate(layout.x, layout.y);
+            ctx.scale(layout.scale, layout.scale);
+            ctx.lineWidth = thickness;
+            ctx.strokeStyle = SELECTED_COLOR;
+            ctx.lineJoin = "round";
+            ctx.setLineDash([dash, dash]);
+            // Negative, so the dashes advance along the path rather than against
+            // it — the direction of travel follows the boundary.
+            ctx.lineDashOffset = -antsPhaseRef.current;
+            ctx.stroke(path);
+            ctx.restore();
+            raf = requestAnimationFrame(step);
+        };
+
+        if (path) {
+            raf = requestAnimationFrame(step);
+        } else {
+            const maskCache = maskCacheRef.current;
+            if (!maskCache) {
+                stop();
+                return;
+            }
+            void maskCache
+                .resolveBatch([
+                    {
+                        trackletId: tracklet.id,
+                        frameIndex: props.frameIndex,
+                        payload,
+                    },
+                ])
+                .then((decoded) => {
+                    if (cancelled) return;
+                    const mask = decoded[0];
+                    if (!mask) {
+                        stop();
+                        return;
+                    }
+                    const built = ringsToPath(
+                        outlineFromRuns(mask.runs, mask.width, mask.height),
+                    );
+                    antsPathRef.current = built;
+                    antsKeyRef.current = {
+                        clip: props.clip,
+                        trackletId: tracklet.id,
+                        frameIndex: props.frameIndex,
+                    };
+                    path = built;
+                    raf = requestAnimationFrame(step);
+                })
+                .catch(() => stop());
+        }
+
+        return () => {
+            cancelled = true;
+            stop();
+        };
+    }, [
+        props.tool,
+        props.selectedTrackletId,
+        props.frameIndex,
+        props.clip,
+        view,
+        viewport,
+    ]);
+
     let hint: string | null = null;
     if (props.tool === "propagate") {
         hint = props.promptHint ?? null;
@@ -1136,6 +1309,11 @@ export function VideoPanel(props: VideoPanelProps) {
                         if (!drawing) return;
                         if (props.method !== "brush") handleCanvasClick(event);
                     }}
+                />
+                <canvas
+                    ref={antsRef}
+                    className={styles.ants}
+                    aria-hidden="true"
                 />
                 {drawing && layout && (
                     <svg
