@@ -203,20 +203,35 @@ export function VideoPanel(props: VideoPanelProps) {
     const boxStartRef = useRef<FramePoint | null>(null);
 
     /**
-     * The objects whose masks the canvas draws.
+     * The objects whose masks the canvas draws, by tool.
      *
-     * Every object is shown at once by default: seeing the neighbours is how you
-     * tell whether two animals' masks are being confused, and it is why there is
-     * no "show all masks" switch. While tracking, the run being reviewed is
-     * noise, so only the object in hand is drawn.
+     * - **Select** shows every object: seeing the neighbours is how you tell
+     *   whether two animals' masks are being confused.
+     * - **Add** shows none. A new object is drawn against the bare frame, so an
+     *   existing mask can neither hide the subject nor suggest where its edge is;
+     *   the live draft and the model's candidate are layered on separately.
+     * - **Edit** shows only the object being corrected — the neighbours are noise
+     *   when the job is to fix one mask. Its own committed mask is held back too
+     *   (the loop below skips `editingTrackletId`), so what you see is the draft.
+     * - **Track** shows only the object being carried across frames, so the run
+     *   under review is not lost among the rest.
      *
-     * The selected object is painted in `SELECTED_COLOR` on top of the rest (see
-     * the paint effect); every other mask keeps its own tracklet colour.
+     * In Select the selected object is painted in `SELECTED_COLOR` on top of the
+     * rest (see the paint effect); every other mask keeps its tracklet colour.
      */
     const maskTracklets = useCallback((): Tracklet[] => {
-        if (props.tool !== "propagate") return props.clip.tracklets;
-        const focus = props.editingTrackletId ?? props.selectedTrackletId;
-        return props.clip.tracklets.filter((t) => t.id === focus);
+        switch (props.tool) {
+            case "review":
+                return props.clip.tracklets;
+            case "addMask":
+                return [];
+            case "editMask":
+            case "propagate": {
+                const focus =
+                    props.editingTrackletId ?? props.selectedTrackletId;
+                return props.clip.tracklets.filter((t) => t.id === focus);
+            }
+        }
     }, [
         props.tool,
         props.clip.tracklets,

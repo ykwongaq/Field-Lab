@@ -319,8 +319,8 @@ The most performance-sensitive part. Each paint:
 
 1. **Sizes the canvas** to the container via a `ResizeObserver`, multiplied by `devicePixelRatio` for crisp rendering.
 2. **Loads the frame** through the `FrameCache` (decode-on-demand + LRU), computes a letterboxed draw rect, and paints the `ImageBitmap`.
-3. **Resolves masks** for the current frame: every tracklet's mask is drawn; the selected one is painted on top in a reserved colour (`SELECTED_COLOR`, deliberately kept out of the tracklet palette so it can only ever mean "the object you are working on"). While the Track tool is open, only the object in hand is drawn. Cache hits come from `MaskCache`; misses are decoded in one batched `POST /api/decode/masks`.
-4. **Composites the overlay** — draws the current frame to the main canvas, then draws the `MaskRenderer`'s offscreen mask canvas on top with `globalAlpha = maskOpacity` (the selected mask uses a stronger alpha so it reads as the focus).
+3. **Resolves masks** for the current frame, according to the active tool: **Select** draws every tracklet, the selected one painted on top in a reserved colour (`SELECTED_COLOR`, deliberately kept out of the tracklet palette so it can only ever mean "the object you are working on"); **Add** draws none, leaving only the live draft and the model's candidate; **Edit** and **Track** draw only the object in hand. Cache hits come from `MaskCache`; misses are decoded in one batched `POST /api/decode/masks`.
+4. **Composites the overlay** — draws the current frame to the main canvas, then the `MaskRenderer`'s offscreen fill canvas at `globalAlpha = maskOpacity`, then a second offscreen buffer holding every mask's boundary at full alpha, so the overlay dims without ever dimming the outline. Each boundary is the mask eroded by a resolution-scaled width (0.2% of the shortest side, clamped to 1–8 frame px).
 
 Controls: play/pause, step, a frame scrubber with `m:ss.cc` timecode, an overlay-opacity slider, and zoom controls.
 
@@ -362,7 +362,7 @@ This keeps the bundle small and guarantees frame bytes never hit the network. If
 The browser never materialises a full mask bitmap. Decoded masks are stored as **runs** `{x, y, length}` (1 px-wide vertical strips), which is:
 
 - **Compact in memory** — a thin animal may need only a few dozen runs per frame instead of `width × height` pixels.
-- **Trivial to rasterise** — `MaskRenderer.drawRuns` issues one `fillRect(x, y, 1, length)` per run into an **offscreen** canvas at full mask resolution, then the offscreen canvas is composited onto the frame with opacity. This matches the column-major layout of the source RLE, avoiding any transpose/reflow.
+- **Trivial to rasterise** — `MaskRenderer.drawRuns` issues one `fillRect(x, y, 1, length)` per run into an **offscreen** canvas at full mask resolution, then the offscreen canvas is composited onto the frame with opacity. This matches the column-major layout of the source RLE, avoiding any transpose/reflow. `MaskRenderer.strokeRuns` outlines the same runs by subtracting an eroded copy of the mask (whole-canvas `drawImage` compositing, so its cost is independent of the run count); the outline is blitted fully opaque so the opacity slider never washes it out.
 - **Cacheable** — `MaskCache` (default 512 entries, insertion-order eviction) stores the decoded `DecodedMask` keyed by `` `${trackletId}:${frameIndex}` ``, so scrubbing back and forth rarely re-hits the network.
 
 ### 3. Two-tier caching for smooth scrubbing
