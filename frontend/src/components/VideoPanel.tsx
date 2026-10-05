@@ -6,7 +6,7 @@ import type {
 import type { Clip } from "../lib/clip";
 import type { FrameSource } from "../lib/frames";
 import { FrameCache } from "../lib/frameCache";
-import { MaskRenderer } from "../lib/mask";
+import { MaskRenderer, boundaryWidthFor } from "../lib/mask";
 import { MaskCache, type MaskRequest } from "../lib/maskApi";
 import { formatTimecode } from "../lib/format";
 import { SELECTED_COLOR } from "../lib/palette";
@@ -128,6 +128,16 @@ export function VideoPanel(props: VideoPanelProps) {
         maskRef.current.canvasElement.height !== maskHeight
     ) {
         maskRef.current = new MaskRenderer(maskWidth, maskHeight);
+    }
+    // Boundaries get their own buffer: they are blitted fully opaque, while the
+    // fill beneath them follows the overlay-opacity slider.
+    const edgeRef = useRef<MaskRenderer | null>(null);
+    if (
+        !edgeRef.current ||
+        edgeRef.current.canvasElement.width !== maskWidth ||
+        edgeRef.current.canvasElement.height !== maskHeight
+    ) {
+        edgeRef.current = new MaskRenderer(maskWidth, maskHeight);
     }
     const maskCacheRef = useRef<MaskCache | null>(null);
     if (!maskCacheRef.current) {
@@ -783,7 +793,8 @@ export function VideoPanel(props: VideoPanelProps) {
         const draw = async (attempt = 0) => {
             const canvas = canvasRef.current;
             const maskRenderer = maskRef.current;
-            if (!canvas || !maskRenderer) return;
+            const edgeRenderer = edgeRef.current;
+            if (!canvas || !maskRenderer || !edgeRenderer) return;
 
             // Measure the wrapper here rather than trusting the observer's state.
             // Setting canvas.width clears the canvas, so a stale 0x0 reading would
@@ -922,32 +933,44 @@ export function VideoPanel(props: VideoPanelProps) {
             if (cancelled || paintedFrameRef.current !== props.frameIndex)
                 return;
 
-            // Every object first, then the selected one on top in the reserved
-            // colour and at a stronger alpha: "the one you are working on" is
-            // unmistakable without hiding what surrounds it.
+            // Fill every object at the overlay opacity — the selected one last,
+            // in the reserved colour, so "the one you are working on" stands out
+            // without hiding what surrounds it. The outline is drawn into its own
+            // buffer and blitted opaque afterwards, so it reads as a crisp edge
+            // no matter how faint the fill is.
+            const boundaryWidth = boundaryWidthFor(
+                props.clip.width,
+                props.clip.height,
+            );
             let selectedMask: DecodedMask | null = null;
             maskRenderer.clear();
+            edgeRenderer.clear();
             for (let i = 0; i < requestTracklets.length; i++) {
                 const decoded = decodedList[i];
                 if (!decoded) continue;
-                if (requestTracklets[i].id === props.selectedTrackletId) {
+                const tracklet = requestTracklets[i];
+                if (tracklet.id === props.selectedTrackletId) {
                     selectedMask = decoded;
                     continue;
                 }
-                maskRenderer.drawRuns(decoded.runs, requestTracklets[i].color);
+                maskRenderer.drawRuns(decoded.runs, tracklet.color);
+                edgeRenderer.strokeRuns(
+                    decoded.runs,
+                    tracklet.color,
+                    boundaryWidth,
+                );
+            }
+            if (selectedMask) {
+                maskRenderer.drawRuns(selectedMask.runs, SELECTED_COLOR);
+                edgeRenderer.strokeRuns(
+                    selectedMask.runs,
+                    SELECTED_COLOR,
+                    boundaryWidth,
+                );
             }
 
             blit(maskRenderer.canvasElement, props.maskOpacity, smooth);
-
-            if (selectedMask) {
-                maskRenderer.clear();
-                maskRenderer.drawRuns(selectedMask.runs, SELECTED_COLOR);
-                blit(
-                    maskRenderer.canvasElement,
-                    Math.max(0.8, props.maskOpacity),
-                    smooth,
-                );
-            }
+            blit(edgeRenderer.canvasElement, 1, smooth);
 
             if (props.tool === "review") return;
 

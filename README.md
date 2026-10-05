@@ -176,6 +176,7 @@ The annotation file follows the **`VideoSegmentation` layout** emitted by pycoco
     "categories": [
         {
             "id": 55,
+            "name": "Geoffroy's spider monkey", // common_name, else deepest rank, else null
             "taxon_id": 123456,
             "kingdom": "Animalia",
             "phylum": "Chordata",
@@ -193,8 +194,10 @@ The annotation file follows the **`VideoSegmentation` layout** emitted by pycoco
 Notes for developers:
 
 - **`segmentations` is indexed by frame.** `segmentations[i]` describes frame `i`; a `null` entry means the tracklet is not present on that frame. This lets the UI jump straight to `maskFrames.first`/`last` when a tracklet is selected.
+- **Per-frame rows are also accepted.** Some upstream (COCO-style) pipelines emit one annotation per `(frame, object)` — a single `segmentation` plus the frame number in `image_id` — instead of one per tracklet. `lib/clip.ts` groups those rows by `object_id` and places each mask at its `image_id` (a frame index into `file_names`), so both layouts load identically. Such files have no `categories` block; the class name then comes from each row's `noun_phrase`.
 - **RLE `counts`** may be either the compressed base64-ish string produced by `pycocotools.mask.encode`, or (rarely) an uncompressed list of run lengths. The backend normalises the latter with `mask_utils.frPyObjects` before decoding.
 - **Taxonomy** lives on `categories` (shared across clips). A tracklet's `label` shown in the UI resolves as `noun_phrase` → `species` → `object <id>`.
+- **`categories[].name`** is the export name: the `common_name` when one is given, else the deepest specified taxonomic rank (species → genus → … → kingdom), else `null` when nothing is named.
 - The `Clip` parser (`lib/clip.ts`) validates that a `video` record and a non-empty `file_names` array exist, then promotes every matching annotation into a UI `Tracklet` with a stable colour, a derived label, and cached `maskFrames` bookkeeping.
 
 ---

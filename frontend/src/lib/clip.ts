@@ -123,6 +123,61 @@ function maskFramesOf(
     return { first, last, count };
 }
 
+/**
+ * This video's annotations in the tracklet form the rest of the loader reads.
+ *
+ * The app's own layout lists one annotation per tracklet, with `segmentations`
+ * indexed by frame. Some upstream (COCO-style) pipelines instead emit one row
+ * per (frame, object), each carrying a single `segmentation` and the frame
+ * number in `image_id`; read as-is, every row would become a mask-less
+ * tracklet. Those rows are grouped by `object_id` and each mask placed at its
+ * `image_id` — a frame index into `file_names` — so both layouts load alike.
+ */
+function annotationsForVideo(
+    annotations: RawAnnotation[],
+    videoId: number,
+    frameCount: number,
+): RawAnnotation[] {
+    const rows = annotations.filter((a) => a.video_id === videoId);
+    const perFrame = rows.some(
+        (a) =>
+            typeof a.image_id === "number" && !Array.isArray(a.segmentations),
+    );
+    if (!perFrame) return rows;
+
+    const byObject = new Map<number, RawAnnotation[]>();
+    for (const row of rows) {
+        const group = byObject.get(row.object_id);
+        if (group) group.push(row);
+        else byObject.set(row.object_id, [row]);
+    }
+
+    const tracklets: RawAnnotation[] = [];
+    for (const [objectId, objectRows] of byObject) {
+        // Every row of one object names the same thing; the first is typical.
+        const first = objectRows[0];
+        const segmentations: (RawRle | null)[] = new Array(frameCount).fill(
+            null,
+        );
+        for (const row of objectRows) {
+            const frame = row.image_id;
+            if (frame === undefined || frame < 0 || frame >= frameCount)
+                continue;
+            const seg = row.segmentation ?? row.segmentations?.[0] ?? null;
+            if (seg && seg.counts) segmentations[frame] = seg;
+        }
+        tracklets.push({
+            id: objectId,
+            video_id: videoId,
+            object_id: objectId,
+            category_id: first.category_id,
+            noun_phrase: first.noun_phrase,
+            segmentations,
+        });
+    }
+    return tracklets;
+}
+
 interface ClipInit {
     name: string;
     width: number;
@@ -316,6 +371,14 @@ export class Clip {
             (raw.categories ?? []).map((category) => [category.id, category]),
         );
 
+        // Read this video's annotations into the tracklet form, whichever of the
+        // two layouts the archive used (see `annotationsForVideo`).
+        const videoAnnotations = annotationsForVideo(
+            raw.annotations ?? [],
+            video.id,
+            frameNames.length,
+        );
+
         const maxOf = (values: number[]) =>
             values.length ? Math.max(...values) : 0;
 
@@ -370,8 +433,7 @@ export class Clip {
             return label;
         };
 
-        const tracklets: Tracklet[] = (raw.annotations ?? [])
-            .filter((a) => a.video_id === video.id)
+        const tracklets: Tracklet[] = videoAnnotations
             .sort((a, b) => a.id - b.id)
             .map((a, i) => {
                 const segmentations: (RawRle | null)[] = (
@@ -446,10 +508,8 @@ export class Clip {
             mode === "semantic" && Array.isArray(video.label_maps)
                 ? frameNames.map((_, i) => video.label_maps?.[i] ?? null)
                 : null;
-        let nextTrackletId =
-            maxOf((raw.annotations ?? []).map((a) => a.id)) + 1;
-        let nextObjectId =
-            maxOf((raw.annotations ?? []).map((a) => a.object_id)) + 1;
+        let nextTrackletId = maxOf(videoAnnotations.map((a) => a.id)) + 1;
+        let nextObjectId = maxOf(videoAnnotations.map((a) => a.object_id)) + 1;
         if (labelMaps) {
             const byCategory = new Map(tracklets.map((t) => [t.categoryId, t]));
             const frameCount = frameNames.length;

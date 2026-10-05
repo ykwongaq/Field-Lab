@@ -47,7 +47,18 @@ export interface RawAnnotation {
     category_id: number;
     noun_phrase: string;
 
+    /**
+     * Tracklet layout: one entry per frame (`segmentations[i]` is frame `i`).
+     * A `null` entry means the object is not visible on that frame.
+     */
     segmentations?: (RawRle | null)[];
+    /**
+     * Per-frame (COCO-style) layout: the frame the row's single `segmentation`
+     * belongs to. Read as a frame index and folded into `segmentations` on open.
+     */
+    image_id?: number;
+    /** Per-frame (COCO-style) layout: the one mask on `image_id`. */
+    segmentation?: RawRle | null;
 }
 
 export interface RawCategory {
