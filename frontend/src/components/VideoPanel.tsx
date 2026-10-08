@@ -225,9 +225,9 @@ export function VideoPanel(props: VideoPanelProps) {
      *
      * - **Select** shows every object: seeing the neighbours is how you tell
      *   whether two animals' masks are being confused.
-     * - **Add** shows none. A new object is drawn against the bare frame, so an
-     *   existing mask can neither hide the subject nor suggest where its edge is;
-     *   the live draft and the model's candidate are layered on separately.
+     * - **Add** shows every object too, so a new mask is drawn against the
+     *   existing ones rather than a bare frame. The live draft and the model's
+     *   candidate are layered on top separately.
      * - **Edit** shows only the object being corrected — the neighbours are noise
      *   when the job is to fix one mask. Its own committed mask is held back too
      *   (the loop below skips `editingTrackletId`), so what you see is the draft.
@@ -240,9 +240,8 @@ export function VideoPanel(props: VideoPanelProps) {
     const maskTracklets = useCallback((): Tracklet[] => {
         switch (props.tool) {
             case "review":
-                return props.clip.tracklets;
             case "addMask":
-                return [];
+                return props.clip.tracklets;
             case "editMask":
             case "propagate": {
                 const focus =
