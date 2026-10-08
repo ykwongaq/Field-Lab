@@ -1337,10 +1337,20 @@ export function Workspace({
             setSelectedId((current) =>
                 current === id ? (fallback?.id ?? null) : current,
             );
+            // The object is gone, so every propagation trace of it must go too.
+            // A run under review (or queued) belonged to this object, and leaving
+            // it in state would paint its frames onto whatever object is created
+            // or selected next — e.g. a new one-frame tracklet that then reads as
+            // the deleted object's propagated result.
+            if (propRunRef.current?.trackletId === id) discardPropagation();
+            setPropQueue((current) =>
+                current.filter((entry) => entry.trackletId !== id),
+            );
+            setPropBatch((current) => current.filter((item) => item !== id));
             setClip(next);
             refresh();
         },
-        [clip, refresh],
+        [clip, refresh, discardPropagation],
     );
 
     /** The object named by the open delete confirmation, if any. */
@@ -1456,7 +1466,11 @@ export function Workspace({
                 ? "human"
                 : "propagated";
         }
-        if (propRun) {
+        // The run under review counts as propagated — but only on its own
+        // object's timeline. A run that belongs to a different object (a batch
+        // member, or one whose object has been deleted) must never paint this
+        // object's frames.
+        if (propRun && selected && propRun.trackletId === selected.id) {
             for (const mask of propRun.masks.values()) {
                 if (mask.area <= 0) continue;
                 if (mask.frameIndex < 0 || mask.frameIndex >= count) continue;
