@@ -17,11 +17,6 @@ const TAXONOMY_FIELDS: {
     { key: "family", label: "Family", placeholder: "Atelidae" },
     { key: "genus", label: "Genus", placeholder: "Ateles" },
     { key: "species", label: "Species", placeholder: "Ateles geoffroyi" },
-    {
-        key: "commonName",
-        label: "Common name",
-        placeholder: "Geoffroy's Spider Monkey",
-    },
 ];
 
 export interface LabelEditorProps {
@@ -50,7 +45,24 @@ export function LabelEditor({
     onSave,
     onClose,
 }: LabelEditorProps) {
-    const [name, setName] = useState(label?.name ?? "");
+    // The label's name is the common name it is saved and exported under. The
+    // field starts on the taxonomy's own common name; a label with no taxonomy
+    // at all keeps its existing name, while a rank-only label starts empty so
+    // that editing a rank can never turn the old value into a stale name.
+    const hasRank = (
+        [
+            "kingdom",
+            "phylum",
+            "class",
+            "order",
+            "family",
+            "genus",
+            "species",
+        ] as const
+    ).some((rank) => taxonomy[rank].trim() !== "");
+    const [name, setName] = useState(
+        taxonomy.commonName.trim() || (hasRank ? "" : label?.name || ""),
+    );
     const [color, setColor] = useState(initialColor);
     const [draft, setDraft] = useState<Taxonomy>(taxonomy);
 
@@ -75,7 +87,14 @@ export function LabelEditor({
                         onClick={() =>
                             onSave({
                                 name: name.trim() || "unlabelled object",
-                                taxonomy: draft,
+                                // The name field is the common name: write it
+                                // onto the taxonomy too, since the export names
+                                // a category from `common_name` (else the
+                                // deepest rank) and ignores the label name.
+                                taxonomy: {
+                                    ...draft,
+                                    commonName: name.trim(),
+                                },
                                 color,
                             })
                         }
@@ -154,39 +173,22 @@ export function LabelEditor({
 
                 <div className={styles.rows}>
                     {TAXONOMY_FIELDS.map(
-                        ({ key, label: fieldLabel, placeholder }) =>
-                            key === "commonName" ? (
-                                <label key={key} className={styles.row}>
-                                    <span className={styles.rowLabel}>
-                                        {fieldLabel}
-                                    </span>
-                                    <input
-                                        className="input"
-                                        value={draft[key]}
-                                        placeholder={placeholder}
-                                        onChange={(event) =>
-                                            setField(key, event.target.value)
-                                        }
-                                    />
-                                </label>
-                            ) : (
-                                <div key={key} className={styles.row}>
-                                    <span className={styles.rowLabel}>
-                                        {fieldLabel}
-                                    </span>
-                                    <TaxonAutocomplete
-                                        value={draft[key]}
-                                        label={fieldLabel}
-                                        rank={key.toUpperCase()}
-                                        placeholder={placeholder}
-                                        commonName={draft.commonName}
-                                        onChange={(value) =>
-                                            setField(key, value)
-                                        }
-                                        onApply={setDraft}
-                                    />
-                                </div>
-                            ),
+                        ({ key, label: fieldLabel, placeholder }) => (
+                            <div key={key} className={styles.row}>
+                                <span className={styles.rowLabel}>
+                                    {fieldLabel}
+                                </span>
+                                <TaxonAutocomplete
+                                    value={draft[key]}
+                                    label={fieldLabel}
+                                    rank={key.toUpperCase()}
+                                    placeholder={placeholder}
+                                    commonName={name}
+                                    onChange={(value) => setField(key, value)}
+                                    onApply={setDraft}
+                                />
+                            </div>
+                        ),
                     )}
                 </div>
             </div>
