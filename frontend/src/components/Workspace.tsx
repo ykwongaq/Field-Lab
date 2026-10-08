@@ -110,6 +110,68 @@ function entryToRun(
 }
 
 /**
+ * What a finished run needs to be written into the clip.
+ *
+ * Both the live run under review and a queued batch entry satisfy it, so one
+ * writer serves the single-object and the batch path.
+ */
+interface WritableRun {
+    trackletId: number;
+    /** The frame carrying the mask the run started from; never overwritten. */
+    anchor: number;
+    first: number;
+    last: number;
+    masks: Map<number, PropagatedFrame>;
+}
+
+/**
+ * Write finished runs into the clip.
+ *
+ * A run replaces the range it covers: every frame it produced becomes the
+ * object's mask there, and a frame it produced nothing for loses a derived mask
+ * it used to hold — the tracker saw no object, so the old mask is gone. Two
+ * frames are never touched: one a human verified (that is the input, not the
+ * output) and the anchor (the mask the run started from).
+ *
+ * `partial` is a run that was stopped before it covered its range. It only adds
+ * what it produced and removes nothing: the frames it never reached were never
+ * looked at, so they still say what they said before.
+ */
+function writeRuns(
+    clip: Clip,
+    runs: WritableRun[],
+    isVerified: (objectId: number, frame: number) => boolean,
+    partial: boolean,
+): Clip {
+    let next = clip;
+    for (const run of runs) {
+        if (!next.tracklets.some((item) => item.id === run.trackletId))
+            continue;
+        const stored = new Set<number>();
+        for (const mask of run.masks.values()) {
+            if (mask.area <= 0) continue;
+            if (isVerified(run.trackletId, mask.frameIndex)) continue;
+            next = next.replaceMask(run.trackletId, mask.frameIndex, mask.rle);
+            stored.add(mask.frameIndex);
+        }
+        if (partial) continue;
+        // Re-read the tracklet: the writes above replaced it with a new object.
+        const tracklet = next.tracklets.find(
+            (item) => item.id === run.trackletId,
+        );
+        if (!tracklet) continue;
+        for (let frame = run.first; frame <= run.last; frame++) {
+            if (frame === run.anchor) continue;
+            if (stored.has(frame)) continue;
+            if (isVerified(run.trackletId, frame)) continue;
+            if (next.rawMaskAt(tracklet, frame) === null) continue;
+            next = next.removeMask(run.trackletId, frame);
+        }
+    }
+    return next;
+}
+
+/**
  * The key every per-frame piece of state is held under.
  *
  * Drafts, staleness and provenance are all about one object on one frame, so they
@@ -129,6 +191,9 @@ const NEW_OBJECT_ID = -1;
 
 /** How often a running propagation is polled for newly produced masks. */
 const PROPAGATE_POLL_MS = 300;
+
+/** How long the "why is this greyed out" hint stays on screen, in ms. */
+const PROP_HINT_MS = 4000;
 
 /**
  * The most frames a playback queue may hold before the oldest are dropped.
@@ -294,8 +359,9 @@ export function Workspace({
         then: Tool;
     } | null>(null);
     // The workspace shows no action toasts of its own, except the outcome of a
-    // save: the shell's notice (currently the frame-list mismatch warning) shows
-    // through unless a save has something of its own to report.
+    // save or a propagation run: the shell's notice (currently the frame-list
+    // mismatch warning) shows through unless one of those has something of its
+    // own to report.
     const [saveNotice, setSaveNotice] = useState<WorkspaceNotice | null>(null);
     /**
      * The `clip.editCount` the last save captured.
@@ -355,6 +421,27 @@ export function Workspace({
      */
     const propPlaybackRef = useRef<number[]>([]);
     const propPlaybackJobRef = useRef<string | null>(null);
+    /**
+     * The transient "why is this greyed out" hint, and the button it points at.
+     *
+     * The coordinates are viewport-relative, because the hint is laid out with
+     * `position: fixed` — the tool bar clips its own overflow, so a box nested
+     * inside it would be cut off. The frame and tool it was raised for travel
+     * with it, so stepping away retires it without an effect.
+     */
+    const [propHint, setPropHint] = useState<{
+        x: number;
+        y: number;
+        frame: number;
+        tool: Tool;
+    } | null>(null);
+    const propButtonRef = useRef<HTMLButtonElement | null>(null);
+    // It is transient: it answers the click, then gets out of the way.
+    useEffect(() => {
+        if (!propHint) return;
+        const timer = window.setTimeout(() => setPropHint(null), PROP_HINT_MS);
+        return () => window.clearTimeout(timer);
+    }, [propHint]);
     /**
      * Objects queued for propagation.
      *
@@ -1273,13 +1360,6 @@ export function Workspace({
         : `The tracker is unavailable (${propStatus?.error ?? "unknown reason"}).`;
 
     const propAnchor = propRun ? propRun.anchor : frameIndex;
-    const anchorMask = useMemo(
-        () =>
-            tool === "propagate" && selected && !propRun
-                ? humanMaskAt(selected, frameIndex)
-                : null,
-        [tool, selected, propRun, humanMaskAt, frameIndex],
-    );
 
     /**
      * The range a run will cover, as absolute frame indices.
@@ -1414,6 +1494,64 @@ export function Workspace({
     );
 
     /**
+     * Whether this frame can seed anything at all.
+     *
+     * A run is conditioned on human input, so a frame nothing verified covers is
+     * not an anchor. The action stays on the bar when that happens rather than
+     * disappearing: it is greyed out, and pressing it says why.
+     */
+    const propagateBlocked = !propagating && propReady.length === 0;
+    /**
+     * Whether the action is unavailable for a reason the frame cannot fix.
+     *
+     * A stopped tracker or a range of one frame is a dead end the bar already
+     * states outright, so the button is disabled rather than click-to-explain.
+     */
+    const propagateLocked =
+        propagating ||
+        (!propagateBlocked &&
+            (!propagateAvailable || propRange.last - propRange.first < 1));
+
+    /**
+     * Write finished runs into the clip.
+     *
+     * Nothing is ever left waiting for an Accept: a run lands the moment it
+     * finishes, so leaving the tool cannot be the only way to keep the masks. A
+     * frame's provenance is untouched — what the run wrote still reads as
+     * `propagated` on the timeline until a person verifies it, and a frame a
+     * person verified was never the run's to write.
+     */
+    const commitRuns = useCallback(
+        (runs: WritableRun[], partial: boolean) => {
+            if (runs.length === 0) return;
+            const found = runs.reduce(
+                (total, run) =>
+                    total +
+                    [...run.masks.values()].filter((mask) => mask.area > 0)
+                        .length,
+                0,
+            );
+            if (found > 0) {
+                setClip((prev) => writeRuns(prev, runs, isVerified, partial));
+                refresh();
+                setSaveNotice({
+                    kind: partial ? "info" : "success",
+                    text: partial
+                        ? `Stopped — kept ${found} propagated frame${found === 1 ? "" : "s"}.`
+                        : `Propagated ${found} frame${found === 1 ? "" : "s"}.`,
+                });
+            }
+            // The runs are in the clip now, so nothing is under review: the bar
+            // goes back to its pre-run form, ready for the next one.
+            propPlaybackRef.current = [];
+            propPlaybackJobRef.current = null;
+            setPropRun(null);
+            setPropQueue([]);
+        },
+        [isVerified, refresh],
+    );
+
+    /**
      * Queue a run for every target, then follow them as they go.
      *
      * Each object is its own job and the backend works through them one at a
@@ -1459,6 +1597,8 @@ export function Workspace({
         setPropQueue([]);
         propPlaybackRef.current = [];
         propPlaybackJobRef.current = null;
+        // Declared outside the `try` so the `finally` can land whatever the run
+        // produced in the clip, however it ends.
         const entries: PropQueueEntry[] = [];
         try {
             // Queue every object up front. The queue lives on the backend, so it
@@ -1611,6 +1751,10 @@ export function Workspace({
                 propAbortRef.current = null;
                 propJobRef.current = [];
                 setPropagating(false);
+                // The run lands in the clip on its own, whether it finished or
+                // was stopped: a stopped one is written additively, so the
+                // frames it never reached keep what they had.
+                commitRuns(entries, controller.signal.aborted);
             }
         }
     }, [
@@ -1625,6 +1769,7 @@ export function Workspace({
         vocab.unit,
         vocab.units,
         pinsFor,
+        commitRuns,
     ]);
 
     /** Queue or unqueue a tracklet: Shift-click in the tracklet list. */
@@ -1643,11 +1788,38 @@ export function Workspace({
             void cancelPropagation(jobId).catch(() => undefined);
         }
         propJobRef.current = [];
+        // The abort is left to clear the ref: the run's `finally` commits what it
+        // already produced, and it only does that while it still owns the ref.
         propAbortRef.current?.abort();
-        propAbortRef.current = null;
         setPropagating(false);
         setPropError(null);
     }, []);
+
+    /**
+     * The bar's one action.
+     *
+     * A frame that cannot anchor a run does not hide the button — the reviewer
+     * pressed it, so it answers: a transient hint beside it says what is wrong
+     * with this frame. A frame that can start a run simply starts one.
+     */
+    const onPropagateClick = useCallback(() => {
+        if (propagating) return;
+        if (propagateBlocked) {
+            const rect = propButtonRef.current?.getBoundingClientRect();
+            setPropHint(
+                rect
+                    ? {
+                          x: rect.right,
+                          y: rect.bottom + 6,
+                          frame: frameIndex,
+                          tool,
+                      }
+                    : null,
+            );
+            return;
+        }
+        void runPropagation();
+    }, [propagating, propagateBlocked, runPropagation, frameIndex, tool]);
 
     const propPreview =
         tool === "propagate" ? (propRun?.masks.get(frameIndex) ?? null) : null;
@@ -1697,85 +1869,20 @@ export function Workspace({
     );
 
     /**
-     * Write the run into the clip.
+     * Commit the batch's runs into the clip.
      *
-     * A run replaces the range it covers: every frame it produced becomes the
-     * object's mask there, and a frame it produced *nothing* for loses a derived
-     * mask it used to hold — the tracker saw no object, so the old mask is gone.
-     * Two frames are never touched: one a human verified (that is the input, not
-     * the output) and the anchor (the caller's own mask).
+     * Every run lands at once, because a run is written as it settles: this is
+     * the gesture for the gap between the last frame arriving and that write,
+     * and the safety net for leaving the tool before it happens.
      */
     const acceptPropagation = useCallback(() => {
-        if (!propRun || !propSummary) return;
-        const tracklet = clip.tracklets.find(
-            (item) => item.id === propRun.trackletId,
-        );
-        if (!tracklet) return;
-        let next = clip;
-        const stored = new Set<number>();
-        for (const item of propSummary.accepted) {
-            next = next.replaceMask(
-                propRun.trackletId,
-                item.frameIndex,
-                item.rle,
-            );
-            stored.add(item.frameIndex);
-        }
-        // The frames the run did not fill in lose their derived mask. The anchor is
-        // skipped, so the object always keeps at least the mask the run started
-        // from (and `removeMask` would drop a tracklet left with none).
-        const dropped: number[] = [];
-        for (let frame = propRun.first; frame <= propRun.last; frame++) {
-            if (frame === propRun.anchor) continue;
-            if (stored.has(frame)) continue;
-            if (isVerified(propRun.trackletId, frame)) continue;
-            if (clip.rawMaskAt(tracklet, frame) === null) continue;
-            dropped.push(frame);
-        }
-        for (const frame of dropped)
-            next = next.removeMask(propRun.trackletId, frame);
-        setClip(next);
-        refresh();
-        const jobId = propRun.jobId;
-        // Accepting one object must not disturb the rest of the batch, so only
-        // the frames just stored are dropped from that run's entry.
-        const remaining = propQueue.filter((entry) => entry.jobId !== jobId);
-        setPropQueue((current) =>
-            current.map((entry) =>
-                entry.jobId === jobId
-                    ? {
-                          ...entry,
-                          masks: new Map(
-                              [...entry.masks].filter(
-                                  ([frame]) => !stored.has(frame),
-                              ),
-                          ),
-                      }
-                    : entry,
-            ),
-        );
-        // Move on to the next run with something to review; the queue keeps
-        // working through the rest in the background either way.
-        const nextEntry =
-            remaining.find(
-                (entry) => entry.state === "done" && entry.masks.size > 0,
-            ) ?? remaining.find((entry) => entry.masks.size > 0);
-        // The next run plays in its own right; the accepted one is done.
-        propPlaybackRef.current = [];
-        propPlaybackJobRef.current = nextEntry?.jobId ?? null;
-        setPropRun(nextEntry ? entryToRun(nextEntry, propStatus) : null);
-        // When the queue drains Track stays selected: another run, or leaving
-        // with Esc, is a deliberate step rather than an automatic jump back to
-        // Select.
-    }, [
-        propRun,
-        propSummary,
-        propQueue,
-        clip,
-        refresh,
-        propStatus,
-        isVerified,
-    ]);
+        // Every run in the batch lands at once, so this is the explicit gesture
+        // for the moment between a run finishing and its write, and the safety
+        // net for leaving the tool before that write happens.
+        const runs: WritableRun[] =
+            propQueue.length > 0 ? propQueue : propRun ? [propRun] : [];
+        commitRuns(runs, false);
+    }, [propQueue, propRun, commitRuns]);
 
     //: Assigned here, below `acceptPropagation`; `changeTool` commits a finished
     //: run through it, so leaving the tool keeps the run instead of discarding it.
@@ -2005,7 +2112,13 @@ export function Workspace({
                                 Propagate · {selected.label} #{selected.id} ·
                                 from frame {propAnchor + 1}
                             </span>
-                            {!propRun ? (
+                            {propRun ? (
+                                <span className={styles.promptStatus}>
+                                    {propagating
+                                        ? `Propagating · ${propRun.framesDone}/${propRun.framesTotal} frames`
+                                        : `${propSummary?.found ?? 0} frame${(propSummary?.found ?? 0) === 1 ? "" : "s"} propagated`}
+                                </span>
+                            ) : (
                                 <>
                                     <span className={styles.promptStatus}>
                                         Frames {propRange.first + 1}–
@@ -2017,82 +2130,77 @@ export function Workspace({
                                             {propagateNote}
                                         </span>
                                     )}
-                                    {!anchorMask && (
-                                        <span className={styles.promptError}>
-                                            Frame {frameIndex + 1} is not human
-                                            input — start from a frame you drew
-                                            or corrected (its timeline cell is
-                                            in the object's colour).
-                                        </span>
-                                    )}
                                     {propError && (
                                         <span className={styles.promptError}>
                                             {propError}
                                         </span>
                                     )}
-                                    <span className={styles.spacer} />
-                                    {propagating ? (
-                                        <button
-                                            type="button"
-                                            className="btn"
-                                            onClick={cancelRunningPropagation}
-                                            title="Stop the run; frames already produced stay for review"
-                                        >
-                                            Stop
-                                        </button>
-                                    ) : (
-                                        <button
-                                            type="button"
-                                            className="btn"
-                                            onClick={() => changeTool("review")}
-                                            title="Esc"
-                                        >
-                                            Cancel
-                                        </button>
-                                    )}
-                                    <button
-                                        type="button"
-                                        className="btn btnPrimary"
-                                        disabled={
-                                            propagating ||
-                                            propReady.length === 0 ||
-                                            !propagateAvailable ||
-                                            propRange.last - propRange.first < 1
-                                        }
-                                        onClick={() => void runPropagation()}
-                                        title={
-                                            propReady.length > 1
-                                                ? `Queue one run per object (${propReady.length})`
-                                                : "Enter"
-                                        }
-                                    >
-                                        {propagating
-                                            ? "Propagating…"
-                                            : propReady.length > 1
-                                              ? `Propagate ${propReady.length} objects`
-                                              : "Propagate"}
-                                    </button>
-                                </>
-                            ) : (
-                                <>
-                                    <span className={styles.promptStatus}>
-                                        {propagating
-                                            ? `Propagating · ${propRun.framesDone}/${propRun.framesTotal} frames`
-                                            : `${propSummary?.found ?? 0} frame${(propSummary?.found ?? 0) === 1 ? "" : "s"} propagated · leaving the tool keeps them`}
-                                    </span>
-                                    <span className={styles.spacer} />
-                                    {propagating && (
-                                        <button
-                                            type="button"
-                                            className="btn"
-                                            onClick={cancelRunningPropagation}
-                                            title="Stop the run; frames already produced stay for review"
-                                        >
-                                            Stop
-                                        </button>
-                                    )}
                                 </>
                             )}
+                            <span className={styles.spacer} />
+                            {propagating ? (
+                                <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={cancelRunningPropagation}
+                                    title="Stop the run; frames already produced are kept"
+                                >
+                                    Stop
+                                </button>
+                            ) : (
+                                !propRun && (
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        onClick={() => changeTool("review")}
+                                        title="Esc"
+                                    >
+                                        Cancel
+                                    </button>
+                                )
+                            )}
+                            {/* The one action, present in every state: a frame
+                                that cannot seed a run greys it out rather than
+                                hiding it, so pressing it can say why. */}
+                            <button
+                                type="button"
+                                ref={propButtonRef}
+                                className={`btn btnPrimary ${
+                                    propagateBlocked ? styles.actionBlocked : ""
+                                }`}
+                                disabled={propagateLocked}
+                                onClick={onPropagateClick}
+                                title={
+                                    propagating
+                                        ? "Stop the run first"
+                                        : propagateBlocked
+                                          ? "A run starts from a frame you drew or corrected"
+                                          : propReady.length > 1
+                                            ? `Queue one run per object (${propReady.length})`
+                                            : "Enter"
+                                }
+                            >
+                                {propagating
+                                    ? "Propagating…"
+                                    : propReady.length > 1
+                                      ? `Propagate ${propReady.length} objects`
+                                      : "Propagate"}
+                            </button>
+                            {propHint &&
+                                propHint.frame === frameIndex &&
+                                propHint.tool === tool && (
+                                    <div
+                                        className={styles.actionHint}
+                                        style={{
+                                            left: propHint.x,
+                                            top: propHint.y,
+                                        }}
+                                        role="status"
+                                    >
+                                        Start at a frame you drew or corrected:
+                                        a run is anchored on human input.
+                                    </div>
+                                )}
                         </div>
                     )}
                     {(tool === "addMask" || tool === "editMask") && (

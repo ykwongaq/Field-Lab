@@ -238,6 +238,37 @@
     color: var(--bad);
 }
 
+/*
+ * The bar's one action when the frame cannot seed a run: it keeps a disabled
+ * button's weight so the row does not shift, but stays clickable so pressing it
+ * can explain itself in `.actionHint`.
+ */
+.actionBlocked {
+    opacity: 0.45;
+}
+
+/*
+ * Why the action is not available, said beside the button that was pressed.
+ *
+ * It is laid out against the viewport rather than the bar, because the bar clips
+ * its own overflow and would cut a nested box off. `left` is the button's right
+ * edge and the shift pulls the box in from it, so it never runs off-screen.
+ */
+.actionHint {
+    position: fixed;
+    z-index: 40;
+    max-width: 280px;
+    padding: 8px 11px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    color: var(--ink-2);
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+    transform: translateX(-100%);
+}
+
 .promptInput {
     min-width: 170px;
     max-width: 220px;
