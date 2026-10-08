@@ -34,7 +34,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-
 from src.core.config import (
     DEFAULT_PROPAGATE_ANCHOR_MAX,
     DEFAULT_PROPAGATE_CHAINING,
@@ -48,6 +47,7 @@ from src.core.sessions import Session, open_session
 from src.domain.windows import (
     CHAINING_DERIVED,
     CHAININGS,
+    DIRECTION_BACKWARD,
     DIRECTION_BOTH,
     PropagationPlan,
     Window,
@@ -296,6 +296,7 @@ class Sam3VideoPropagator:
                     predictor,
                     session_id,
                     window,
+                    _reverse_start(window, anchors),
                     produced,
                     best_score,
                     on_mask,
@@ -309,22 +310,27 @@ class Sam3VideoPropagator:
         predictor: Any,
         session_id: str,
         window: Window,
+        start_frame: Optional[int],
         produced: Dict[int, np.ndarray],
         best_score: Dict[int, float],
         on_mask: Optional[MaskCallback],
         cancel: threading.Event,
     ) -> None:
         """Consume the window's stream, keeping the most interior prediction."""
-        for response in predictor.handle_stream_request(
-            request=dict(
-                type="propagate_in_video",
-                session_id=session_id,
-                propagation_direction=window.direction,
-                # `add_mask` records a refinement, which can make the action
-                # history replay cached predictions instead of tracking.
-                force_tracker_propagation=True,
-            )
-        ):
+        request = dict(
+            type="propagate_in_video",
+            session_id=session_id,
+            propagation_direction=window.direction,
+            # `add_mask` records a refinement, which can make the action
+            # history replay cached predictions instead of tracking.
+            force_tracker_propagation=True,
+        )
+        if start_frame is not None:
+            # Without this SAM 3 starts a reverse walk from the *earliest*
+            # injected mask, which is wrong when a verified frame sits below the
+            # frame anchoring the hand-off; see `_reverse_start`.
+            request["start_frame_index"] = start_frame
+        for response in predictor.handle_stream_request(request=request):
             if cancel.is_set():
                 return
             local_frame = int(response["frame_index"])
@@ -375,6 +381,30 @@ class Sam3VideoPropagator:
             )
         except Exception:  # noqa: BLE001 - closing must never mask the real error
             pass
+
+
+def _reverse_start(window: Window, anchors: Sequence[int]) -> Optional[int]:
+    """The window-local frame a *reverse* walk must begin below, or `None`.
+
+    SAM 3 decides where a propagation pass starts from the earliest frame that
+    carries an injected mask (``previous_stages_out`` in the model's
+    ``_get_processing_order``), not from the frame the caller is anchored on. That
+    is fine while a window holds a single anchor, but it breaks a backward window
+    that is seeded with a verified frame *below* its hand-off frame: the reverse
+    walk then starts at the lower mask and walks down, so the frames between the
+    pin and the anchor are never tracked at all. A re-run seeded from a corrected
+    frame therefore punches a hole in the mask between that frame and the anchor.
+
+    Asking for the highest anchor instead makes the walk descend through every
+    frame of the window; the lower pin is still honoured, because the tracker
+    reuses the injected output it stored for that frame when the walk reaches it.
+
+    Only a backward window needs the override: a forward walk already starts at
+    the earliest injected frame, which *is* the correct end to ascend from.
+    """
+    if window.direction != DIRECTION_BACKWARD or not anchors:
+        return None
+    return window.local(max(anchors))
 
 
 def _pin_masks(pins: Optional[Mapping[int, Any]], anchor: int) -> Dict[int, np.ndarray]:

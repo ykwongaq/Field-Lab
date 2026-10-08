@@ -96,7 +96,26 @@ class StubPredictor:
     def handle_stream_request(self, request):
         self.streams.append(dict(request))
         frames = self.sessions[request["session_id"]]
-        for local in range(len(frames)):
+        # Mirror SAM 3's `_get_processing_order`: with no explicit start the pass
+        # begins at the *earliest* injected mask, a forward walk ascends from
+        # there, and a reverse walk descends from just below it. Modelling the
+        # ordering is what makes a window that skips frames between two masks
+        # observable from the stub; a stub that just yields every frame cannot.
+        injected = sorted(
+            item["frame_index"]
+            for item in self.add_masks
+            if item["session_id"] == request["session_id"]
+        )
+        start = request.get("start_frame_index")
+        if start is None:
+            start = injected[0] if injected else 0
+        direction = request.get("propagation_direction", "both")
+        order = []
+        if direction in ("both", "forward"):
+            order.extend(range(start, len(frames)))
+        if direction in ("both", "backward"):
+            order.extend(range(start - 1, -1, -1))
+        for local in order:
             if self.on_yield is not None:
                 self.on_yield(local)
             yield {
@@ -451,6 +470,50 @@ def test_verified_frames_anchor_and_are_never_overwritten(make_session):
     ), "the verified mask outranks the prediction on its own frame"
     assert np.array_equal(produced[0], ANCHOR_MASK)
     assert set(produced) == set(range(0, 16)), "coverage is unchanged"
+
+
+def test_a_pin_below_the_anchor_does_not_skip_the_frames_between(make_session):
+    """A backward window seeded with a lower pin must still track the frames above it.
+
+    SAM 3 starts a reverse walk from the *earliest* injected mask. When a verified
+    frame sits below the frame anchoring a backward window's hand-off, the walk
+    begins at the pin and descends, so the frames between the pin and the anchor
+    are never tracked — a re-run seeded from a correction punches a hole in the
+    mask. The propagator asks the walk to start at the highest anchor instead.
+    """
+    session = make_session(20, "pin-hole")
+    predictor = StubPredictor()
+    pin = np.zeros((HEIGHT, WIDTH), dtype=bool)
+    pin[5, 5] = True
+
+    # A re-run: the anchor (frame 6) and a verified frame below it (frame 3) land
+    # in the same backward window once the plan splits at `window_frames`.
+    engine, plan, produced = run(
+        session,
+        predictor,
+        anchor=6,
+        mask=ANCHOR_MASK,
+        direction=DIRECTION_BOTH,
+        first=0,
+        last=19,
+        pins={3: pin},
+    )
+    assert set(produced) == set(range(0, 20)), sorted(produced)
+    assert (
+        4 in produced and 5 in produced
+    ), "the frames between the pin and the anchor were skipped"
+    # That backward window is [0, 7); the reverse walk must begin at the anchor
+    # (local 6), not at the pin (local 3), or it walks the wrong way and skips 4-5.
+    backward = [
+        request
+        for request in predictor.streams
+        if request["propagation_direction"] == DIRECTION_BACKWARD
+    ]
+    assert len(backward) == 1, backward
+    assert (
+        backward[0]["start_frame_index"] == 6
+    ), "the reverse walk starts from the anchor, not the lower pin"
+    assert plan.windows[2].direction == DIRECTION_BACKWARD
 
 
 def test_strict_chaining_stops_where_verification_ends(make_session):
