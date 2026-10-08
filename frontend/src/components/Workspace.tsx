@@ -49,7 +49,6 @@ import { ExportMenu } from "./ExportMenu";
 import styles from "./Workspace.module.css";
 
 export interface WorkspaceNotice {
-    kind: "success" | "info";
     text: string;
 }
 
@@ -1548,12 +1547,14 @@ export function Workspace({
             if (found > 0) {
                 setClip((prev) => writeRuns(prev, runs, isVerified, partial));
                 refresh();
-                setSaveNotice({
-                    kind: partial ? "info" : "success",
-                    text: partial
-                        ? `Stopped — kept ${found} propagated frame${found === 1 ? "" : "s"}.`
-                        : `Propagated ${found} frame${found === 1 ? "" : "s"}.`,
-                });
+                // A completed run is silent: the timeline already shows what it
+                // produced. Only an interrupted run reports, since the frames it
+                // managed to keep are worth naming.
+                if (partial) {
+                    setSaveNotice({
+                        text: `Stopped — kept ${found} propagated frame${found === 1 ? "" : "s"}.`,
+                    });
+                }
             }
             // The runs are in the clip now, so nothing is under review: the bar
             // goes back to its pre-run form, ready for the next one.
@@ -1977,12 +1978,13 @@ export function Workspace({
     const handleSave = useCallback(async () => {
         if (!confirmDraftsDiscarded()) return;
         const result = await saveProject();
-        if (result.ok) setSavedEditCount(clip.editCount);
-        setSaveNotice(
-            result.ok
-                ? { kind: "success", text: `Saved ${result.fileName}.` }
-                : { kind: "info", text: result.error },
-        );
+        // A successful save is silent: the file lands in the browser's
+        // downloads. A failure is not — nothing was written, so say so.
+        if (result.ok) {
+            setSavedEditCount(clip.editCount);
+        } else {
+            setSaveNotice({ text: result.error });
+        }
     }, [clip.editCount, confirmDraftsDiscarded, saveProject]);
 
     return (
@@ -2077,12 +2079,7 @@ export function Workspace({
             </header>
 
             {notice && (
-                <div
-                    className={`${styles.notice} ${
-                        notice.kind === "success" ? styles.noticeSuccess : ""
-                    }`}
-                    role="status"
-                >
+                <div className={styles.notice} role="status">
                     <span>{notice.text}</span>
                     <button
                         type="button"

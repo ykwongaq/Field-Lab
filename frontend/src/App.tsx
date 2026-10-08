@@ -76,7 +76,6 @@ function App() {
                     opened.frameNamesMatch
                         ? null
                         : {
-                              kind: "info",
                               text:
                                   "The frames the backend prepared do not match " +
                                   "the list this archive recorded (" +
