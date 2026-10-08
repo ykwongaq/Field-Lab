@@ -95,6 +95,8 @@ _Step 1: pick a video or a folder of frames._
 
 - **Frame rate** — use the **original** rate the browser measured, or **enter** one. A folder of frames has no measurable rate, so you must type it. The project is built for the rate shown underneath.
 
+- **Max resolution** (video sources only) — an optional cap, in pixels, on a frame's **longer side**. Leave it empty to keep the source resolution. When set, the backend scales frames down to fit as it extracts them from the video: the aspect ratio is preserved and frames already smaller than the cap are left untouched. A folder of frames is stored as it is, so the field is not offered for one.
+
 ![Create wizard — details](images/03-create-details.png)
 _Step 2: mode, name and frame rate._
 

@@ -75,6 +75,35 @@ def qscale_for(quality: int) -> int:
     return max(1, min(31, round(1 + (100 - quality) / 5)))
 
 
+def scale_filter(max_size: Optional[int]) -> Optional[str]:
+    """The ffmpeg ``scale`` clause that caps the longer side, or ``None``.
+
+    ``max_size`` is the largest pixel count allowed on a frame's longer side.
+    ``None`` (the default for a project that asked for no cap) disables scaling,
+    and the source resolution is kept as it is.
+
+    ``min(iw, N)`` on both axes, plus ``force_original_aspect_ratio=decrease``,
+    fits each frame inside an ``N x N`` box: a side already below ``N`` is left
+    alone — so a clip is never enlarged — and the aspect ratio is preserved by
+    shrinking only the dimension that exceeds the cap. (A plain
+    ``scale=N:N:force_original_aspect_ratio=decrease`` would also blow small
+    inputs up to the box, which is why the ``min`` is there.)
+
+    Doing it with an expression rather than a probe-and-branch means no second
+    ffprobe pass, and the dimensions ffmpeg measures are the *autorotated* ones
+    its filters see — matching the frames that come out, where ffprobe reports
+    the stored size (see :func:`frame_dimensions`).
+    """
+    if max_size is None:
+        return None
+    if max_size < 1:
+        raise InvalidRequest("max_size must be >= 1.")
+    return (
+        f"scale=w=min(iw\\,{max_size}):h=min(ih\\,{max_size}):"
+        "force_original_aspect_ratio=decrease"
+    )
+
+
 def missing_binaries(
     ffmpeg: str = DEFAULT_FFMPEG, ffprobe: str = DEFAULT_FFPROBE
 ) -> List[str]:
@@ -183,6 +212,7 @@ def extract_frames(
     *,
     fps: float,
     jpeg_quality: int = 95,
+    max_size: Optional[int] = None,
     ffmpeg: str = DEFAULT_FFMPEG,
     scratch_dir: Optional[str] = None,
     timeout: int = EXTRACT_TIMEOUT_SECONDS,
@@ -192,11 +222,21 @@ def extract_frames(
     Returns the frame names written, in order. The frames land in a scratch
     directory first and are renumbered on the way out, so the caller gets a
     contiguous sequence starting at zero whatever ffmpeg chose to emit.
+
+    ``max_size`` caps the longer side of every frame (see :func:`scale_filter`);
+    ``None`` keeps the source resolution.
     """
     if fps <= 0:
         raise InvalidRequest("The target frame rate must be above zero.")
     if not os.path.isfile(video_path):
         raise InvalidRequest(f"Video not found: {video_path!r}")
+
+    # Build the filter chain before touching disk, so a bad `max_size` fails
+    # without clearing the scratch directory.
+    filters = [f"fps={fps}"]
+    cap = scale_filter(max_size)
+    if cap is not None:
+        filters.append(cap)
 
     raw_dir = scratch_dir or os.path.join(os.path.dirname(out_dir), SCRATCH_DIRNAME)
     shutil.rmtree(raw_dir, ignore_errors=True)
@@ -213,7 +253,7 @@ def extract_frames(
         "-i",
         video_path,
         "-vf",
-        f"fps={fps}",
+        ",".join(filters),
         "-q:v",
         str(qscale_for(jpeg_quality)),
         "-start_number",

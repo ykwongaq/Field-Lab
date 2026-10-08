@@ -83,6 +83,17 @@ function formatBytes(bytes: number): string {
     return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
+/**
+ * The optional "max resolution" field, in pixels on the longer side.
+ *
+ * Blank (or anything that is not a positive whole number) means "keep the
+ * source size", which is the default — nothing is scaled unless a cap is typed.
+ */
+function parseMaxSize(raw: string): number | null {
+    const value = Math.floor(Number(raw));
+    return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 /** Object URL for a file, revoked when the file changes or the view unmounts. */
 function useObjectUrl(file: File | null | undefined): string | null {
     const [url, setUrl] = useState<string | null>(null);
@@ -104,6 +115,7 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
     const abortRef = useRef<AbortController | null>(null);
     const nameId = useId();
     const customFpsId = useId();
+    const maxSizeId = useId();
     const annotationId = useId();
 
     const [step, setStep] = useState<Step>(1);
@@ -116,6 +128,7 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
     const [name, setName] = useState("");
     const [fpsChoice, setFpsChoice] = useState<FpsChoice>("original");
     const [customFps, setCustomFps] = useState(DEFAULT_TARGET_FPS);
+    const [maxSize, setMaxSize] = useState("");
     const [annotation, setAnnotation] = useState<File | null>(null);
 
     const [info, setInfo] = useState<VideoInfo | null>(null);
@@ -215,6 +228,7 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
         setName("");
         setFpsChoice("original");
         setCustomFps(DEFAULT_TARGET_FPS);
+        setMaxSize("");
         setAnnotation(null);
         setInfo(null);
         setCreated(null);
@@ -229,6 +243,7 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
         fpsChoice === "original" && originalFps !== null
             ? originalFps
             : customFps;
+    const maxSizeValue = parseMaxSize(maxSize);
     const trimmedName = name.trim();
     /** Step 2 is complete once a mode is picked and the project is named. */
     const detailsComplete = mode !== null && trimmedName !== "";
@@ -249,6 +264,7 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
                 annotation,
                 originalFps,
                 targetFps: frameRate,
+                maxSize: maxSizeValue,
                 width: info?.width ?? null,
                 height: info?.height ?? null,
                 signal: controller.signal,
@@ -273,6 +289,7 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
         frames,
         hasSource,
         info,
+        maxSizeValue,
         mode,
         originalFps,
         trimmedName,
@@ -661,6 +678,42 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
                             </p>
                         </div>
 
+                        {/* Only a video is decoded into frames, so this cap can
+                            only ever apply to a video source. */}
+                        {video && (
+                            <div className={styles.fpsBlock}>
+                                <label
+                                    className={styles.optionLabel}
+                                    htmlFor={maxSizeId}
+                                >
+                                    Max resolution
+                                </label>
+                                <div className={styles.stepGroup}>
+                                    <input
+                                        id={maxSizeId}
+                                        type="number"
+                                        min={1}
+                                        step={1}
+                                        inputMode="numeric"
+                                        className={styles.numberInput}
+                                        value={maxSize}
+                                        placeholder="original"
+                                        onChange={(event) =>
+                                            setMaxSize(event.target.value)
+                                        }
+                                    />
+                                    <span className={styles.stepSuffix}>
+                                        px · longer side
+                                    </span>
+                                </div>
+                                <p className={styles.fileMeta}>
+                                    {maxSizeValue === null
+                                        ? "Frames keep the source resolution."
+                                        : `Frames are scaled down to ${maxSizeValue} px on the longer side when the project is opened; the aspect ratio is kept and smaller frames are left alone.`}
+                                </p>
+                            </div>
+                        )}
+
                         <div className={styles.actions}>
                             <button
                                 type="button"
@@ -742,6 +795,18 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
                         <span className={styles.resultKey}>Frame rate</span>
                         <span>{frameRate} fps</span>
                     </li>
+                    {video && (
+                        <li>
+                            <span className={styles.resultKey}>
+                                Max resolution
+                            </span>
+                            <span>
+                                {maxSizeValue === null
+                                    ? "Original"
+                                    : `${maxSizeValue} px · longer side`}
+                            </span>
+                        </li>
+                    )}
                     <li>
                         <span className={styles.resultKey}>
                             Will be saved as
@@ -851,6 +916,18 @@ export function CreateWizard({ onOpen }: CreateWizardProps) {
                         <span className={styles.resultKey}>Frame rate</span>
                         <span>{created.fps} fps</span>
                     </li>
+                    {created.source === "video" && (
+                        <li>
+                            <span className={styles.resultKey}>
+                                Max resolution
+                            </span>
+                            <span>
+                                {created.maxSize === null
+                                    ? "Original"
+                                    : `${created.maxSize} px · longer side`}
+                            </span>
+                        </li>
+                    )}
                     <li>
                         <span className={styles.resultKey}>Archive</span>
                         <span>{formatBytes(created.blob.size)}</span>

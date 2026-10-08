@@ -269,6 +269,34 @@ def test_extract(scratch, video, ffmpeg):
     assert totals[80] < totals[95], totals
 
 
+def test_scale_filter_caps_the_longer_side():
+    """The filter is absent unless a cap is asked for, and ``min`` is what keeps
+    a frame from being enlarged to the box."""
+    assert extract.scale_filter(None) is None
+
+    clause = extract.scale_filter(1920)
+    assert clause is not None
+    assert "force_original_aspect_ratio=decrease" in clause
+    assert "min(iw" in clause and "min(ih" in clause
+    assert "1920" in clause
+
+    with pytest.raises(InvalidRequest):
+        extract.scale_filter(0)
+
+
+def test_extract_caps_the_longer_side(scratch, video, ffmpeg):
+    """A `max_size` shrinks frames to fit, and never enlarges a small one."""
+    capped = os.path.join(scratch, "capped", "frames")
+    extract.extract_frames(video, capped, fps=6, max_size=160, ffmpeg=FFMPEG)
+    assert extract.frame_dimensions(capped) == (160, 120), extract.frame_dimensions(
+        capped
+    )
+
+    kept = os.path.join(scratch, "kept", "frames")
+    extract.extract_frames(video, kept, fps=6, max_size=1000, ffmpeg=FFMPEG)
+    assert extract.frame_dimensions(kept) == (320, 240), extract.frame_dimensions(kept)
+
+
 def test_reproducible(scratch, video, ffmpeg):
     """The session model leans on re-extracting the same video giving the same
     sequence, so this is a correctness check rather than a performance one."""
@@ -424,6 +452,44 @@ def test_loader_video(scratch, video, ffmpeg):
     assert session.frame_name_at(11) == "00000011.jpg"
     assert session.frame_name_at(99) == "00000099.jpg"  # synthesised fallback
     assert os.path.isfile(os.path.join(session.source_dir, "clip.mp4"))
+
+
+def test_loader_video_scales_to_max_size(scratch, video, ffmpeg):
+    """A `max_size` in the video record caps the frames the loader decodes."""
+    settings = settings_for(scratch)
+    with open(video, "rb") as handle:
+        data = handle.read()
+
+    path = make_archive(
+        os.path.join(scratch, "scaled.project"),
+        video=data,
+        dataset={"videos": [{"video_name": "clip", "target_fps": 6, "max_size": 160}]},
+    )
+    session = create_session(settings.temp_dir)
+    loaded = loader.load_archive_into_session(path, session, settings)
+
+    assert loaded.source == "video"
+    assert loaded.max_size == 160
+    assert (loaded.width, loaded.height) == (160, 120), (loaded.width, loaded.height)
+    assert session.read_meta()["max_size"] == 160
+
+
+def test_loader_video_ignores_a_useless_max_size(scratch, video, ffmpeg):
+    """A missing, zero or non-numeric cap keeps the source resolution."""
+    settings = settings_for(scratch)
+    with open(video, "rb") as handle:
+        data = handle.read()
+
+    path = make_archive(
+        os.path.join(scratch, "uncapped.project"),
+        video=data,
+        dataset={"videos": [{"video_name": "clip", "target_fps": 6, "max_size": 0}]},
+    )
+    session = create_session(settings.temp_dir)
+    loaded = loader.load_archive_into_session(path, session, settings)
+
+    assert loaded.max_size is None
+    assert (loaded.width, loaded.height) == (320, 240), (loaded.width, loaded.height)
 
 
 def test_loader_drift(scratch, video, ffmpeg):

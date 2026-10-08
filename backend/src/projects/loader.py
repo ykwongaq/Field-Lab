@@ -52,6 +52,7 @@ class LoadedProject:
     height: int
     mode: Optional[str] = None
     original_fps: Optional[float] = None
+    max_size: Optional[int] = None
     video_entry: Optional[str] = None
     archive_name: Optional[str] = None
     annotation_entry: Optional[str] = None
@@ -160,6 +161,7 @@ def _extract_video(
     settings: Settings,
     *,
     fps: float,
+    max_size: Optional[int] = None,
 ) -> List[str]:
     """Write the embedded video out, then decode it into the session's frames."""
     os.makedirs(session.source_dir, exist_ok=True)
@@ -173,6 +175,7 @@ def _extract_video(
         session.frames_dir,
         fps=fps,
         jpeg_quality=settings.frames_jpeg_quality,
+        max_size=max_size,
         ffmpeg=settings.ffmpeg_bin,
     )
 
@@ -211,6 +214,15 @@ def load_archive_into_session(
         mode = record.get("segmentation_mode")
         mode = str(mode) if isinstance(mode, str) and mode else None
         original_fps = _number(record.get("original_fps"))
+        # The cap the creator asked for, in pixels on the longer side. Only a
+        # video is decoded here, so only it can be scaled; a frame folder is
+        # copied across as it is (the archive already holds those pixels).
+        recorded_max_size = _number(record.get("max_size"))
+        max_size = (
+            int(recorded_max_size)
+            if recorded_max_size is not None and recorded_max_size >= 1
+            else None
+        )
 
         frame_entries = _entry_names(archive, FRAMES_DIR)
         video_entries = _entry_names(archive, VIDEO_DIR)
@@ -223,7 +235,12 @@ def load_archive_into_session(
         elif video_entries:
             video_entry = sorted(video_entries)[0]
             frame_names = _extract_video(
-                archive, video_entry, session, settings, fps=extract_fps
+                archive,
+                video_entry,
+                session,
+                settings,
+                fps=extract_fps,
+                max_size=max_size,
             )
             source = "video"
             fps = extract_fps
@@ -256,6 +273,7 @@ def load_archive_into_session(
         height=height,
         mode=mode,
         original_fps=original_fps,
+        max_size=max_size,
         video_entry=video_entry,
         archive_name=os.path.basename(archive_path),
         annotation_entry=annotation_entry,
@@ -270,6 +288,7 @@ def load_archive_into_session(
         height=loaded.height,
         mode=loaded.mode,
         original_fps=loaded.original_fps,
+        max_size=loaded.max_size,
         video_entry=loaded.video_entry,
         annotation_entry=loaded.annotation_entry,
         recorded_frame_names=loaded.recorded_frame_names or [],

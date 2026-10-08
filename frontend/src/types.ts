@@ -13,6 +13,11 @@ export interface RawVideo {
     original_fps?: number | null;
     /** Frame rate the project was created for (intent, not a re-encode). */
     target_fps?: number | null;
+    /**
+     * Largest pixel count allowed on a frame's longer side when the video is
+     * decoded into frames. `null`/absent keeps the source resolution.
+     */
+    max_size?: number | null;
     /** Decimation applied when the frames were extracted, if any. */
     frame_step?: number;
 

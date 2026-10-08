@@ -48,6 +48,11 @@ export interface CreateProjectInput {
     /** Frame rate the reviewer should treat the project as having. */
     targetFps?: number | null;
     /**
+     * Largest pixel count allowed on a frame's longer side when the video is
+     * decoded into frames. `null`/absent keeps the source resolution.
+     */
+    maxSize?: number | null;
+    /**
      * Frame size the browser probed from the source video. Frames win when
      * they are given, and this is the only source of a size for a video-only
      * project, which has no frame to measure.
@@ -66,6 +71,8 @@ export interface CreatedProject {
     mode: ProjectMode;
     frameCount: number;
     fps: number;
+    /** The longer-side cap asked for, or `null` when the source size is kept. */
+    maxSize: number | null;
     /** What was stored: a source video, or the frames themselves. */
     source: "video" | "frames";
     frameNames: string[];
@@ -252,9 +259,10 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
  *
  * At least one of `video` or `frames` is needed, and both is fine: the frames
  * are what the reviewer looks at, the video keeps the provenance. `originalFps`
- * / `targetFps` / `width` / `height` are recorded in the annotation file as
- * intent — they never change the stored bytes, so no frame rate maths and no
- * decoding happens here.
+ * / `targetFps` / `maxSize` / `width` / `height` are recorded in the annotation
+ * file as intent — they never change the stored bytes, so no frame rate maths
+ * and no decoding happens here. `maxSize` is honoured later, by the backend,
+ * when a video is decoded into frames (a frame folder is stored as it is).
  */
 export async function createProjectFile(
     input: CreateProjectInput,
@@ -297,6 +305,14 @@ export async function createProjectFile(
     const videoEntry = video
         ? `${VIDEO_DIR}/${name}${extensionOf(video.name)}`
         : null;
+    // An absent or non-positive cap means "keep the source resolution", which
+    // the backend reads as no scaling at all.
+    const maxSize =
+        input.maxSize !== null &&
+        input.maxSize !== undefined &&
+        input.maxSize > 0
+            ? input.maxSize
+            : null;
     const record: RawVideo = {
         id: 1,
         video_name: name,
@@ -310,6 +326,7 @@ export async function createProjectFile(
         video_file: videoEntry,
         original_fps: input.originalFps ?? null,
         target_fps: input.targetFps ?? null,
+        max_size: maxSize,
         frame_step: 1,
         start_frame: 0,
         end_frame: Math.max(0, frameNames.length - 1),
@@ -353,6 +370,7 @@ export async function createProjectFile(
         mode: input.mode,
         frameCount: frameNames.length,
         fps,
+        maxSize,
         source: video ? "video" : "frames",
         frameNames,
     };
