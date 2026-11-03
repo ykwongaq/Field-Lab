@@ -79,6 +79,21 @@
     background: var(--accent-soft);
 }
 
+/* A checked row that is not the primary selection: part of the working set. */
+.checked,
+.checked:hover {
+    background: var(--surface-2);
+}
+
+.check {
+    align-self: center;
+    width: 14px;
+    height: 14px;
+    margin-left: 8px;
+    flex: 0 0 auto;
+    accent-color: var(--accent);
+}
+
 .item {
     display: flex;
     align-items: center;
@@ -89,6 +104,16 @@
     border: 0;
     background: transparent;
     text-align: left;
+}
+
+.item:disabled,
+.check:disabled {
+    cursor: not-allowed;
+}
+
+.item:disabled .label,
+.item:disabled .meta {
+    opacity: 0.55;
 }
 
 /*

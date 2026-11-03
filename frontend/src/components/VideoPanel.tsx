@@ -63,7 +63,10 @@ interface VideoPanelProps {
     frames: FrameSource;
     frameIndex: number;
     playing: boolean;
+    /** The primary selection: the object drawings and the timeline attach to. */
     selectedTrackletId: number | null;
+    /** Every selected tracklet, highlighted on the canvas. */
+    selectedTrackletIds: number[];
     maskOpacity: number;
     onFrameChange: (frame: number) => void;
     onPlayToggle: () => void;
@@ -102,7 +105,8 @@ interface VideoPanelProps {
     /** The outline was edited: the rings to bake into the draft. */
     onOutlineChange: (rings: FramePoint[][]) => void;
     onStroke: (stroke: RawRle, mode: PaintMode) => void;
-    onSelectTracklet: (id: number) => void;
+    /** Plain click replaces the selection; `additive` toggles membership. */
+    onSelectTracklet: (id: number, additive?: boolean) => void;
     promptHint?: string;
 }
 
@@ -332,7 +336,7 @@ export function VideoPanel(props: VideoPanelProps) {
     );
 
     const selectAt = useCallback(
-        async (point: FramePoint) => {
+        async (point: FramePoint, additive = false, cycle = false) => {
             const cache = maskCacheRef.current;
             if (!cache) return;
             const frameIndex = props.frameIndex;
@@ -346,17 +350,24 @@ export function VideoPanel(props: VideoPanelProps) {
             }
             if (requests.length === 0) return;
             const decoded = await cache.resolveBatch(requests);
-            let bestId: number | null = null;
-            let bestArea = Infinity;
+            const hits: { id: number; area: number }[] = [];
             decoded.forEach((mask, i) => {
                 if (!mask || !runsContain(mask.runs, point.x, point.y)) return;
-                const area = runsArea(mask.runs);
-                if (area < bestArea) {
-                    bestArea = area;
-                    bestId = owners[i].id;
-                }
+                hits.push({ id: owners[i].id, area: runsArea(mask.runs) });
             });
-            if (bestId !== null) props.onSelectTracklet(bestId);
+            if (hits.length === 0) return;
+            // Smallest first: the topmost/narrowest mask is the natural click
+            // target. Alt-click walks the stack so an overlapping animal can
+            // still be added to the selection.
+            hits.sort((a, b) => a.area - b.area);
+            let bestId = hits[0].id;
+            if (cycle) {
+                const at = hits.findIndex(
+                    (hit) => hit.id === props.selectedTrackletId,
+                );
+                bestId = hits[(at + 1) % hits.length].id;
+            }
+            props.onSelectTracklet(bestId, additive);
         },
         [props],
     );
@@ -366,7 +377,13 @@ export function VideoPanel(props: VideoPanelProps) {
             const point = toFrame(event, drawing && props.method === "polygon");
             if (!point) return;
             if (!drawing) {
-                if (props.tool === "review") void selectAt(point);
+                if (props.tool === "review") {
+                    void selectAt(
+                        point,
+                        event.ctrlKey || event.metaKey || event.shiftKey,
+                        event.altKey,
+                    );
+                }
                 return;
             }
             event.preventDefault();
@@ -967,15 +984,15 @@ export function VideoPanel(props: VideoPanelProps) {
                 props.clip.width,
                 props.clip.height,
             );
-            let selectedMask: DecodedMask | null = null;
+            const selectedMasks: DecodedMask[] = [];
             maskRenderer.clear();
             edgeRenderer.clear();
             for (let i = 0; i < requestTracklets.length; i++) {
                 const decoded = decodedList[i];
                 if (!decoded) continue;
                 const tracklet = requestTracklets[i];
-                if (tracklet.id === props.selectedTrackletId) {
-                    selectedMask = decoded;
+                if (props.selectedTrackletIds.includes(tracklet.id)) {
+                    selectedMasks.push(decoded);
                     continue;
                 }
                 maskRenderer.drawRuns(decoded.runs, tracklet.color);
@@ -985,10 +1002,11 @@ export function VideoPanel(props: VideoPanelProps) {
                     boundaryWidth,
                 );
             }
-            if (selectedMask) {
+            for (const selectedMask of selectedMasks) {
                 maskRenderer.drawRuns(selectedMask.runs, SELECTED_COLOR);
-                // Select mode hands this outline to the marching-ants layer, so
-                // the two never fight over the same edge.
+                // Select mode hands the primary outline to the marching-ants
+                // layer, so the two never fight over the same edge. Secondary
+                // selected masks keep a crisp selected-colour edge.
                 if (props.tool !== "review") {
                     edgeRenderer.strokeRuns(
                         selectedMask.runs,
@@ -1063,6 +1081,7 @@ export function VideoPanel(props: VideoPanelProps) {
         props.clip,
         props.frameIndex,
         props.selectedTrackletId,
+        props.selectedTrackletIds,
         props.maskOpacity,
         props.tool,
         props.method,
@@ -1295,7 +1314,7 @@ export function VideoPanel(props: VideoPanelProps) {
                     onPointerUp={finishStroke}
                     onPointerCancel={finishStroke}
                     onPointerLeave={() => setCursor(null)}
-                    title="Scroll to zoom · middle-drag to pan"
+                    title="Click to select · Shift/Ctrl/Cmd-click to add to the selection · Alt-click to cycle overlapping masks · Scroll to zoom · middle-drag to pan"
                     onContextMenu={(event) => {
                         // The canvas owns the right button: an OS menu would
                         // otherwise pop up in the middle of a right-drag pan.

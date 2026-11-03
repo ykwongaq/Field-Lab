@@ -37,12 +37,15 @@ import { useExport } from "../hooks/useExport";
 import { useSaveProject } from "../hooks/useSaveProject";
 import { useWorkspaceShortcuts } from "../hooks/useWorkspaceShortcuts";
 import { useLabelEditing } from "../hooks/useLabelEditing";
+import type { MergePlan } from "../lib/merge";
 import { VideoPanel } from "./VideoPanel";
 import { isLive, type PropQueueEntry } from "./PropagationQueue";
 import { TimelineStrip, type TimelineFrameState } from "./TimelineStrip";
 import { TrackletList } from "./TrackletList";
 import { LabelsPanel } from "./LabelsPanel";
 import { LabelEditor } from "./LabelEditor";
+import { MergeTrackletsDialog } from "./MergeTrackletsDialog";
+import { SelectionTray } from "./SelectionTray";
 import { Toolbar, type DrawMethod, type Tool } from "./Toolbar";
 import { Button, Chip, Dialog, Icon, Splitter } from "../ui";
 import { ExportMenu } from "./ExportMenu";
@@ -50,6 +53,19 @@ import styles from "./Workspace.module.css";
 
 export interface WorkspaceNotice {
     text: string;
+    /** Optional action shown beside the message, e.g. Undo after a merge. */
+    actionLabel?: string;
+    onAction?: () => void;
+}
+
+/** What a merge needs to be undone. `Clip` is immutable, so this is cheap. */
+interface MergeUndo {
+    clip: Clip;
+    verifiedFrames: Set<string>;
+    selectedId: number | null;
+    selectedIds: number[];
+    /** The `editCount` the merge produced, used to retire a stale undo. */
+    resultEditCount: number;
 }
 
 interface PropagateRun {
@@ -279,6 +295,14 @@ export function Workspace({
     const [selectedId, setSelectedId] = useState<number | null>(
         clip.tracklets[0]?.id ?? null,
     );
+    /**
+     * The whole working set. `selectedId` stays the primary member so tools,
+     * drafts and the timeline keep a single object to attach to; merge and
+     * batch propagation use this list.
+     */
+    const [selectedIds, setSelectedIds] = useState<number[]>(() =>
+        clip.tracklets[0] ? [clip.tracklets[0].id] : [],
+    );
     const [maskOpacity, setMaskOpacity] = useState(0.55);
     // Bumped after a taxonomy edit so the (mutable) store's new value is read
     // again on the next render; the counter's own value is not needed.
@@ -441,13 +465,6 @@ export function Workspace({
         const timer = window.setTimeout(() => setPropHint(null), PROP_HINT_MS);
         return () => window.clearTimeout(timer);
     }, [propHint]);
-    /**
-     * Objects queued for propagation.
-     *
-     * Empty means "just the selected object", which keeps one-click propagation
-     * working. With a batch, each object is a separate job run one after another.
-     */
-    const [propBatch, setPropBatch] = useState<number[]>([]);
     const [propQueue, setPropQueue] = useState<PropQueueEntry[]>([]);
     /**
      * `${objectId}:${frame}` for every frame a human drew, corrected or cleared.
@@ -460,6 +477,12 @@ export function Workspace({
     const [verifiedFrames, setVerifiedFrames] = useState<Set<string>>(
         () => new Set(),
     );
+    /** The selected identity that survives, and the sources being absorbed. */
+    const [mergePair, setMergePair] = useState<{
+        targetId: number;
+        sourceIds: number[];
+    } | null>(null);
+    const mergeUndoRef = useRef<MergeUndo | null>(null);
     const dismissNotice = useCallback(() => {
         setSaveNotice(null);
         onDismissNotice?.();
@@ -503,6 +526,80 @@ export function Workspace({
         [clip.tracklets, selectedId],
     );
 
+    /** Selected tracklets in selection order, with stale ids filtered out. */
+    const selectedTracklets = useMemo(
+        () =>
+            selectedIds.flatMap((id) => {
+                const tracklet = clip.tracklets.find((item) => item.id === id);
+                return tracklet ? [tracklet] : [];
+            }),
+        [selectedIds, clip.tracklets],
+    );
+
+    /** Replace the whole selection with one object (or nothing). */
+    const setSingleSelection = useCallback(
+        (id: number | null) => {
+            // A live run owns the selection: changing it used to accept the
+            // run through the selectedId effect before it had finished.
+            if (propagating) return;
+            setSelectedId(id);
+            setSelectedIds(id === null ? [] : [id]);
+        },
+        [propagating],
+    );
+
+    /** Add or remove one object without moving the playhead. */
+    const toggleSelectedTracklet = useCallback(
+        (id: number) => {
+            if (propagating) return;
+            if (selectedIds.includes(id)) {
+                const next = selectedIds.filter((item) => item !== id);
+                setSelectedIds(next);
+                if (selectedId === id) setSelectedId(next[0] ?? null);
+                return;
+            }
+            setSelectedIds([...selectedIds, id]);
+            if (selectedId === null) setSelectedId(id);
+        },
+        [propagating, selectedIds, selectedId],
+    );
+
+    /** Remove a deleted object, promoting another selected one when needed. */
+    const removeFromSelection = useCallback(
+        (id: number, fallbackId: number | null) => {
+            const next = selectedIds.filter((item) => item !== id);
+            if (selectedId !== id) {
+                setSelectedIds(next);
+                return;
+            }
+            const primary = next[0] ?? fallbackId;
+            setSelectedId(primary);
+            setSelectedIds(
+                primary === null
+                    ? []
+                    : next.includes(primary)
+                      ? next
+                      : [primary],
+            );
+        },
+        [selectedIds, selectedId],
+    );
+
+    /** Make a selected tray entry primary without changing the working set. */
+    const focusSelectedTracklet = useCallback(
+        (id: number) => {
+            if (propagating) return;
+            if (selectedIds.includes(id)) setSelectedId(id);
+        },
+        [propagating, selectedIds],
+    );
+
+    const clearSelection = useCallback(() => {
+        if (propagating) return;
+        setSelectedIds([]);
+        setSelectedId(null);
+    }, [propagating]);
+
     const stepFrame = useCallback(
         (delta: number) =>
             setFrameIndex((index) =>
@@ -515,7 +612,7 @@ export function Workspace({
 
     const selectTracklet = useCallback(
         (id: number) => {
-            setSelectedId(id);
+            setSingleSelection(id);
             const tracklet = clip.tracklets.find(
                 (candidate) => candidate.id === id,
             );
@@ -523,12 +620,15 @@ export function Workspace({
                 setFrameIndex(tracklet.maskFrames.first);
             }
         },
-        [clip.tracklets],
+        [clip.tracklets, setSingleSelection],
     );
 
-    const selectOnCanvas = useCallback((id: number) => {
-        setSelectedId(id);
-    }, []);
+    const selectOnCanvas = useCallback(
+        (id: number) => {
+            setSingleSelection(id);
+        },
+        [setSingleSelection],
+    );
 
     const selectedLabel = selected ? clip.labelFor(selected) : null;
 
@@ -743,8 +843,10 @@ export function Workspace({
      * trustworthy enough for that, so a run starts where the reviewer has drawn or
      * corrected — and the range always holds at least that one human frame.
      */
-    const selectedHasHumanMaskHere =
-        selected !== null && humanMaskAt(selected, frameIndex) !== null;
+    const selectionHasHumanMaskHere = selectedIds.some((id) => {
+        const tracklet = clip.tracklets.find((item) => item.id === id);
+        return tracklet ? humanMaskAt(tracklet, frameIndex) !== null : false;
+    });
 
     /**
      * Whether the create methods belong in the bar right now.
@@ -835,7 +937,7 @@ export function Workspace({
     const changeTool = useCallback(
         (next: Tool) => {
             if (next === "editMask" && !selected) return;
-            if (next === "propagate" && !selectedHasHumanMaskHere) return;
+            if (next === "propagate" && !selectionHasHumanMaskHere) return;
             if (next !== "review") {
                 setPlaying(false);
             }
@@ -855,7 +957,7 @@ export function Workspace({
         },
         [
             selected,
-            selectedHasHumanMaskHere,
+            selectionHasHumanMaskHere,
             samAvailable,
             propStatus,
             discardPropagation,
@@ -922,12 +1024,12 @@ export function Workspace({
     // the object being edited; a create prompt is left alone.
     useEffect(() => {
         if (toolRef.current === "editMask") resetTransient();
-        if (toolRef.current === "propagate") {
+        if (toolRef.current === "propagate" && !propagating) {
             // Switching object keeps the run that is in hand by committing it.
             if (propRunRef.current) acceptPropagationRef.current();
             else discardPropagationRef.current();
         }
-    }, [selectedId, resetTransient]);
+    }, [selectedId, resetTransient, propagating]);
 
     const changeMethod = useCallback(
         (next: DrawMethod) => {
@@ -1185,7 +1287,7 @@ export function Workspace({
                 markCorrected(added.tracklet.id, frameIndex);
             }
             setClip(next);
-            setSelectedId(created[created.length - 1] ?? null);
+            setSingleSelection(created[created.length - 1] ?? null);
             refresh();
             discardDraft();
             // Creating objects is an Add-mask act, so stay put and let the next
@@ -1203,6 +1305,7 @@ export function Workspace({
             refresh,
             discardDraft,
             markCorrected,
+            setSingleSelection,
         ],
     );
 
@@ -1222,7 +1325,7 @@ export function Workspace({
                     next.tracklets[
                         Math.min(position, next.tracklets.length - 1)
                     ] ?? null;
-                setSelectedId(fallback?.id ?? null);
+                removeFromSelection(selectedId, fallback?.id ?? null);
             }
             setClip(next);
             refresh();
@@ -1252,7 +1355,7 @@ export function Workspace({
             setClip(
                 chosenLabel ? next.setLabel(tracklet.id, chosenLabel.id) : next,
             );
-            setSelectedId(tracklet.id);
+            setSingleSelection(tracklet.id);
             // The drawing is the human input this object is built on.
             markCorrected(tracklet.id, frameIndex);
             discardDraft();
@@ -1272,7 +1375,7 @@ export function Workspace({
                     finalMask,
                 );
                 setClip(next);
-                setSelectedId(targetClass.id);
+                setSingleSelection(targetClass.id);
                 markCorrected(targetClass.id, frameIndex);
             } else {
                 const { clip: next, tracklet } = clip.addClass(
@@ -1281,7 +1384,7 @@ export function Workspace({
                     label,
                 );
                 setClip(next);
-                setSelectedId(tracklet.id);
+                setSingleSelection(tracklet.id);
                 markCorrected(tracklet.id, frameIndex);
             }
         } catch (cause) {
@@ -1312,6 +1415,8 @@ export function Workspace({
         className,
         targetClass,
         newLabelId,
+        setSingleSelection,
+        removeFromSelection,
     ]);
 
     /**
@@ -1332,10 +1437,8 @@ export function Workspace({
                 next.tracklets[Math.min(position, next.tracklets.length - 1)] ??
                 null;
             // A row can be deleted while a different object is selected, so
-            // only move the selection when the deleted object held it.
-            setSelectedId((current) =>
-                current === id ? (fallback?.id ?? null) : current,
-            );
+            // only move the primary when the deleted object held it.
+            removeFromSelection(id, fallback?.id ?? null);
             // The object is gone, so every propagation trace of it must go too.
             // A run under review (or queued) belonged to this object, and leaving
             // it in state would paint its frames onto whatever object is created
@@ -1345,11 +1448,16 @@ export function Workspace({
             setPropQueue((current) =>
                 current.filter((entry) => entry.trackletId !== id),
             );
-            setPropBatch((current) => current.filter((item) => item !== id));
+            if (
+                mergePair !== null &&
+                (mergePair.targetId === id || mergePair.sourceIds.includes(id))
+            ) {
+                setMergePair(null);
+            }
             setClip(next);
             refresh();
         },
-        [clip, refresh, discardPropagation],
+        [clip, refresh, discardPropagation, removeFromSelection, mergePair],
     );
 
     /** The object named by the open delete confirmation, if any. */
@@ -1481,13 +1589,20 @@ export function Workspace({
     }, [clip, selected, verifiedFrames, propRun]);
 
     /**
-     * What a run would cover: the Shift-clicked batch, or just the selected
-     * object so one-click propagation keeps working.
+     * What a run would cover: every selected tracklet.
+     *
+     * The selection is the working set. A multi-selection therefore means
+     * batch propagation, one job per object; Merge is the separate action the
+     * selection tray offers for 2+.
      */
     const propTargets = useMemo(
         () =>
-            propBatch.length > 0 ? propBatch : selected ? [selected.id] : [],
-        [propBatch, selected],
+            selectedTracklets.length > 0
+                ? selectedTracklets.map((tracklet) => tracklet.id)
+                : selected
+                  ? [selected.id]
+                  : [],
+        [selectedTracklets, selected],
     );
     /**
      * The targets that can actually seed a run, i.e. have a mask on this frame.
@@ -1787,14 +1902,197 @@ export function Workspace({
         commitRuns,
     ]);
 
-    /** Queue or unqueue a tracklet: Shift-click in the tracklet list. */
-    const togglePropBatch = useCallback((id: number) => {
-        setPropBatch((current) =>
-            current.includes(id)
-                ? current.filter((item) => item !== id)
-                : [...current, id],
-        );
+    // ------------------------------------------------------------- merging
+
+    /** Count the uncommitted drafts belonging to one tracklet. */
+    const draftFramesFor = useCallback(
+        (id: number) => {
+            let count = 0;
+            for (const key of drafts.keys()) {
+                if (key.startsWith(`${id}:`)) count += 1;
+            }
+            return count;
+        },
+        [drafts],
+    );
+
+    /** Why a merge cannot start with these tracklets right now, if it cannot. */
+    const mergeBlocked = useCallback(
+        (ids: number[]): string | null => {
+            if (propagating)
+                return "Stop the propagation run before merging tracklets.";
+            for (const id of ids) {
+                const draftCount = draftFramesFor(id);
+                if (draftCount > 0)
+                    return `Commit or clear ${draftCount} uncommitted draft${
+                        draftCount === 1 ? "" : "s"
+                    } on #${id} before merging.`;
+            }
+            return null;
+        },
+        [propagating, draftFramesFor],
+    );
+
+    /** Open the merge dialog for the current selection. */
+    const beginMergeSelection = useCallback(() => {
+        if (clip.mode !== "instance") return;
+        if (selectedTracklets.length < 2) return;
+        const targetId =
+            selectedId !== null &&
+            selectedTracklets.some((tracklet) => tracklet.id === selectedId)
+                ? selectedId
+                : selectedTracklets[0].id;
+        const sourceIds = selectedTracklets
+            .map((tracklet) => tracklet.id)
+            .filter((id) => id !== targetId);
+        if (sourceIds.length === 0) return;
+        const reason = mergeBlocked([targetId, ...sourceIds]);
+        if (reason) {
+            setSaveNotice({ text: reason });
+            return;
+        }
+        setSaveNotice(null);
+        setMergePair({ targetId, sourceIds });
+    }, [clip.mode, selectedTracklets, selectedId, mergeBlocked]);
+
+    /** Switch which selected tracklet survives; the rest become sources. */
+    const changeMergeTarget = useCallback((targetId: number) => {
+        setMergePair((current) => {
+            if (current === null) return current;
+            const all = [current.targetId, ...current.sourceIds];
+            if (!all.includes(targetId)) return current;
+            return {
+                targetId,
+                sourceIds: all.filter((id) => id !== targetId),
+            };
+        });
     }, []);
+
+    /** Canvas selection: plain replaces, Ctrl/Cmd adds or removes. */
+    const handleCanvasSelect = useCallback(
+        (id: number, additive = false) => {
+            if (additive && !semantic) {
+                toggleSelectedTracklet(id);
+                return;
+            }
+            selectOnCanvas(id);
+        },
+        [semantic, toggleSelectedTracklet, selectOnCanvas],
+    );
+
+    const undoMerge = useCallback(() => {
+        const undo = mergeUndoRef.current;
+        if (!undo) return;
+        mergeUndoRef.current = null;
+        setClip(undo.clip);
+        setVerifiedFrames(undo.verifiedFrames);
+        setSelectedId(undo.selectedId);
+        setSelectedIds(undo.selectedIds);
+        setSaveNotice({ text: "Merge undone." });
+        refresh();
+    }, [refresh]);
+
+    /**
+     * Write a merge into the clip and move provenance with it.
+     *
+     * A frame stays human only while every contributing mask was human. That is
+     * why a union with a propagated mask deletes the target's verified key
+     * instead of carrying it forward: a person never checked those pixels.
+     */
+    const confirmMerge = useCallback(
+        (plan: MergePlan) => {
+            const next = clip.applyMerge(plan);
+            // A stale plan (the target vanished, or a semantic clip slipped
+            // through) is a no-op rather than a misleading "merged" notice.
+            if (next === clip) {
+                setMergePair(null);
+                return;
+            }
+            const before: MergeUndo = {
+                clip,
+                verifiedFrames,
+                selectedId,
+                selectedIds,
+                resultEditCount: next.editCount,
+            };
+
+            setVerifiedFrames((current) => {
+                const updated = new Set(current);
+                // A source removed by the merge loses its provenance with its
+                // masks. A source that survives a frame/range merge keeps its
+                // own masks untouched, so its verification keys must stay too.
+                for (const sourceId of plan.removedSourceIds) {
+                    for (const key of [...updated]) {
+                        if (key.startsWith(`${sourceId}:`)) updated.delete(key);
+                    }
+                }
+                for (const frame of plan.frames) {
+                    const key = `${plan.targetId}:${frame.frame}`;
+                    if (frame.human) updated.add(key);
+                    else updated.delete(key);
+                }
+                return updated;
+            });
+
+            setClip(next);
+            setSelectedId(plan.targetId);
+            setSelectedIds([plan.targetId]);
+            setMergePair(null);
+            mergeUndoRef.current = before;
+            setSaveNotice({
+                text: `Merged #${plan.sourceIds.join(", #")} into #${plan.targetId}.`,
+                actionLabel: "Undo",
+                onAction: undoMerge,
+            });
+            refresh();
+        },
+        [clip, verifiedFrames, selectedId, selectedIds, undoMerge, refresh],
+    );
+
+    /** Retire the undo once another edit has moved the clip past the merge. */
+    useEffect(() => {
+        const undo = mergeUndoRef.current;
+        if (!undo) return;
+        if (clip.editCount !== undo.resultEditCount) {
+            mergeUndoRef.current = null;
+            setSaveNotice((current) =>
+                current?.actionLabel === "Undo" ? null : current,
+            );
+        }
+    }, [clip.editCount]);
+
+    const mergeTarget = useMemo(
+        () =>
+            mergePair === null
+                ? null
+                : (clip.tracklets.find(
+                      (tracklet) => tracklet.id === mergePair.targetId,
+                  ) ?? null),
+        [clip.tracklets, mergePair],
+    );
+    const mergeSources = useMemo(
+        () =>
+            mergePair === null
+                ? []
+                : mergePair.sourceIds.flatMap((id) => {
+                      const tracklet = clip.tracklets.find(
+                          (item) => item.id === id,
+                      );
+                      return tracklet ? [tracklet] : [];
+                  }),
+        [clip.tracklets, mergePair],
+    );
+
+    const selectionMergeBlock =
+        selectedTracklets.length >= 2
+            ? mergeBlocked(selectedTracklets.map((tracklet) => tracklet.id))
+            : null;
+    const canMergeSelection =
+        selectedTracklets.length >= 2 && selectionMergeBlock === null;
+    const selectionMergeHint =
+        selectedTracklets.length < 2
+            ? `Select at least two ${vocab.units} to merge.`
+            : (selectionMergeBlock ?? undefined);
 
     const cancelRunningPropagation = useCallback(() => {
         // Stop the whole queue, not just the run being watched: that is what Stop
@@ -1936,7 +2234,7 @@ export function Workspace({
             method,
             polygonLength: polygon.length,
             hasSelection: selected !== null,
-            selectedHasHumanMaskHere,
+            selectedHasHumanMaskHere: selectionHasHumanMaskHere,
             hasPropRun: propRun !== null,
             propagating,
         },
@@ -2080,7 +2378,16 @@ export function Workspace({
 
             {notice && (
                 <div className={styles.notice} role="status">
-                    <span>{notice.text}</span>
+                    <span className={styles.noticeText}>{notice.text}</span>
+                    {notice.actionLabel && notice.onAction && (
+                        <button
+                            type="button"
+                            className={`btn btnSmall ${styles.noticeAction}`}
+                            onClick={notice.onAction}
+                        >
+                            {notice.actionLabel}
+                        </button>
+                    )}
                     <button
                         type="button"
                         className={styles.noticeClose}
@@ -2099,7 +2406,8 @@ export function Workspace({
                     sam={sam}
                     modelName={modelName}
                     canEdit={selected !== null}
-                    canPropagate={selectedHasHumanMaskHere}
+                    canPropagate={selectionHasHumanMaskHere}
+                    selectionCount={selectedIds.length}
                     propagateModel={propagateModel}
                     busy={propagating}
                     onToolChange={changeTool}
@@ -2120,8 +2428,11 @@ export function Workspace({
                     {tool === "propagate" && selected && (
                         <div className={styles.promptBar} role="toolbar">
                             <span className={styles.promptTitle}>
-                                Propagate · {selected.label} #{selected.id} ·
-                                from frame {propAnchor + 1}
+                                Propagate ·{" "}
+                                {propTargets.length > 1
+                                    ? `${propTargets.length} ${vocab.units}`
+                                    : `${selected.label} #${selected.id}`}{" "}
+                                · from frame {propAnchor + 1}
                             </span>
                             {propRun ? (
                                 <span className={styles.promptStatus}>
@@ -2629,7 +2940,9 @@ export function Workspace({
                         color={selected?.color}
                         label={
                             selected
-                                ? `${vocab.unit} #${selected.id} · ${selected.label}`
+                                ? selectedIds.length > 1
+                                    ? `${selectedIds.length} ${vocab.units} selected · primary #${selected.id}`
+                                    : `${vocab.unit} #${selected.id} · ${selected.label}`
                                 : `No ${vocab.unit} selected`
                         }
                         rangeFirst={
@@ -2654,6 +2967,7 @@ export function Workspace({
                         frameIndex={frameIndex}
                         playing={playing}
                         selectedTrackletId={selectedId}
+                        selectedTrackletIds={selectedIds}
                         maskOpacity={maskOpacity}
                         onFrameChange={setFrameIndex}
                         onPlayToggle={togglePlay}
@@ -2704,7 +3018,7 @@ export function Workspace({
                         onPolygonClose={closePolygon}
                         onOutlineChange={commitOutline}
                         onStroke={applyStroke}
-                        onSelectTracklet={selectOnCanvas}
+                        onSelectTracklet={handleCanvasSelect}
                         promptHint={
                             tool === "propagate"
                                 ? propRun
@@ -2730,16 +3044,37 @@ export function Workspace({
                     ref={sidebarRef}
                     style={sidebarStyle}
                 >
+                    {!semantic && (
+                        <SelectionTray
+                            tracklets={selectedTracklets}
+                            primaryId={selectedId}
+                            unit={vocab.unit}
+                            canMerge={canMergeSelection}
+                            busy={propagating}
+                            mergeHint={selectionMergeHint}
+                            onFocus={focusSelectedTracklet}
+                            onRemove={toggleSelectedTracklet}
+                            onClear={clearSelection}
+                            onMerge={beginMergeSelection}
+                        />
+                    )}
                     <TrackletList
                         clip={clip}
                         selectedId={selectedId}
+                        selectedIds={selectedIds}
                         onSelect={selectTracklet}
-                        batch={propBatch}
-                        onToggleBatch={
-                            tool === "propagate" ? togglePropBatch : undefined
+                        onToggleSelect={
+                            semantic ? undefined : toggleSelectedTracklet
                         }
-                        onDelete={(id) =>
-                            setPendingDelete({ id, then: "review" })
+                        disabled={propagating}
+                        onDelete={
+                            propagating
+                                ? undefined
+                                : (id) =>
+                                      setPendingDelete({
+                                          id,
+                                          then: "review",
+                                      })
                         }
                         onAssign={semantic ? undefined : assignTrackletLabel}
                         onNewLabel={
@@ -2872,6 +3207,22 @@ export function Workspace({
                     </p>
                 </Dialog>
             )}
+
+            {mergePair !== null &&
+                mergeTarget &&
+                mergeSources.length === mergePair.sourceIds.length &&
+                mergeSources.length > 0 && (
+                    <MergeTrackletsDialog
+                        clip={clip}
+                        target={mergeTarget}
+                        sources={mergeSources}
+                        currentFrame={frameIndex}
+                        isHuman={isVerified}
+                        onTargetChange={changeMergeTarget}
+                        onCancel={() => setMergePair(null)}
+                        onConfirm={confirmMerge}
+                    />
+                )}
         </div>
     );
 }

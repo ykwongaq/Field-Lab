@@ -7,17 +7,15 @@ import styles from "./TrackletList.module.css";
 
 interface TrackletListProps {
     clip: Clip;
+    /** The primary selection: the row Add/Edit eventually acts on. */
     selectedId: number | null;
+    /** Every selected row, including the primary. */
+    selectedIds?: number[];
     onSelect: (id: number) => void;
-    /** Ids queued for propagation. */
-    batch?: number[];
-    /**
-     * Shift-click handler.
-     *
-     * Only passed in while the propagate tool is open: queueing objects is a
-     * propagation concept, so the modifier means nothing in the other tools.
-     */
-    onToggleBatch?: (id: number) => void;
+    /** Toggle membership without moving the playhead. */
+    onToggleSelect?: (id: number) => void;
+    /** True while a run owns the selection. */
+    disabled?: boolean;
     /**
      * Delete handler.
      *
@@ -41,9 +39,10 @@ interface TrackletListProps {
 export function TrackletList({
     clip,
     selectedId,
+    selectedIds = [],
     onSelect,
-    batch = [],
-    onToggleBatch,
+    onToggleSelect,
+    disabled = false,
     onDelete,
     onAssign,
     onNewLabel,
@@ -101,13 +100,32 @@ export function TrackletList({
                     </EmptyState>
                 ) : (
                     items.map((tracklet) => {
-                        const queued = batch.includes(tracklet.id);
+                        const checked = selectedIds.includes(tracklet.id);
                         const active = tracklet.id === selectedId;
                         return (
                             <div
                                 key={tracklet.id}
-                                className={`${styles.row} ${active ? styles.selected : ""}`}
+                                className={`${styles.row} ${active ? styles.selected : ""} ${
+                                    checked && !active ? styles.checked : ""
+                                }`}
                             >
+                                {onToggleSelect && (
+                                    <input
+                                        type="checkbox"
+                                        className={styles.check}
+                                        checked={checked}
+                                        disabled={disabled}
+                                        onChange={() =>
+                                            onToggleSelect(tracklet.id)
+                                        }
+                                        aria-label={`Select ${vocab.unit} #${tracklet.id} for a multi-selection`}
+                                        title={
+                                            disabled
+                                                ? "Selection is locked while a run is live"
+                                                : "Add to or remove from the selection"
+                                        }
+                                    />
+                                )}
                                 {onAssign && (
                                     <button
                                         type="button"
@@ -138,16 +156,24 @@ export function TrackletList({
                                 <button
                                     type="button"
                                     className={styles.item}
-                                    onClick={(event) =>
-                                        event.shiftKey && onToggleBatch
-                                            ? onToggleBatch(tracklet.id)
-                                            : onSelect(tracklet.id)
-                                    }
+                                    disabled={disabled}
+                                    onClick={(event) => {
+                                        if (
+                                            (event.ctrlKey || event.metaKey) &&
+                                            onToggleSelect
+                                        ) {
+                                            onToggleSelect(tracklet.id);
+                                            return;
+                                        }
+                                        onSelect(tracklet.id);
+                                    }}
                                     aria-current={active ? "true" : undefined}
                                     title={
-                                        onToggleBatch
-                                            ? "Shift-click to queue this one for propagation"
-                                            : undefined
+                                        disabled
+                                            ? "Selection is locked while a run is live"
+                                            : onToggleSelect
+                                              ? "Ctrl/Cmd-click to add to the selection"
+                                              : undefined
                                     }
                                 >
                                     <span className={styles.body}>
@@ -162,14 +188,6 @@ export function TrackletList({
                                             · {tracklet.maskFrames.count} frames
                                         </span>
                                     </span>
-                                    {queued && (
-                                        <span
-                                            className="chip chipAccent"
-                                            title="Queued for propagation; Shift-click to remove from the queue"
-                                        >
-                                            queued
-                                        </span>
-                                    )}
                                 </button>
                                 {onDelete && (
                                     <button

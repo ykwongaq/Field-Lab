@@ -15,6 +15,8 @@ interface ToolbarProps {
     modelName: string;
     canEdit: boolean;
     canPropagate: boolean;
+    /** How many tracklets the current selection holds. */
+    selectionCount: number;
     propagateModel: string;
     /** True while a propagation is running, which locks the rail. */
     busy?: boolean;
@@ -100,7 +102,11 @@ export function Toolbar(props: ToolbarProps) {
                 "T",
                 props.canPropagate || props.tool === "propagate",
                 props.canPropagate
-                    ? `Carry this mask across frames with ${props.propagateModel} (T)`
+                    ? `Carry ${
+                          props.selectionCount > 1
+                              ? `${props.selectionCount} selected masks`
+                              : "this mask"
+                      } across frames with ${props.propagateModel} (T)`
                     : `Select a ${vocab.unit} with a mask on this frame first`,
             )}
 

@@ -46,6 +46,7 @@ export type IconName =
     | "leaf"
     | "sliders"
     | "undo"
+    | "merge"
     | "crosshair"
     | "refresh"
     | "arrowRight"
@@ -211,6 +212,13 @@ const PATHS: Record<IconName, ReactNode> = {
         <>
             <path d="M8.5 8L4.5 12l4 4" />
             <path d="M4.5 12h9.5a5 5 0 010 10h-1.5" />
+        </>
+    ),
+    merge: (
+        <>
+            <path d="M6 4v4.5a4 4 0 001.8 3.3l4.2 2.8 4.2-2.8A4 4 0 0018 8.5V4" />
+            <path d="M12 14.5V20" />
+            <path d="M9 17.5L12 20.5l3-3" />
         </>
     ),
     crosshair: (

@@ -209,9 +209,10 @@ _Edit mask: correct with polygon outline editing or the brush._
 
 ## Part F — Labels & taxonomy
 
-A **label** is a class shared by any number of objects. The sidebar has two panels:
+A **label** is a class shared by any number of objects. The sidebar holds the selection, the objects and the labels:
 
-- **Objects** (top) — every tracklet, searchable by label, id or object id. Each row shows a colour block (its label) with the label id, the object name, and a trash button on hover. Click the colour block to open the **label picker**: choose a label, pick **no label** (red "–"), or **create** a new label.
+- **Selection** (top, when non-empty) — the working set. It shows one chip per selected tracklet, marks the **primary** one, and holds the **Merge** button. It is a summary, not a replacement for the objects list.
+- **Objects** (middle) — every tracklet, searchable by label, id or object id. Each row has a checkbox for multi-selection, a colour block that opens the **label picker**, and a trash button on hover. A plain click selects one object and jumps to its first mask; **Ctrl/Cmd-click** (or the checkbox) adds or removes it without moving the playhead.
 - **Labels** (bottom) — one row per label with how many objects use it. Use the **+** to create a label, the pencil to edit, and the trash to delete (its objects fall back to _unlabelled_).
 
 The **label editor** holds the name (which is the **common name** the label is saved and exported under), a colour, and the full taxonomy: **Kingdom, Phylum, Class, Order, Family, Genus, Species**. Higher ranks offer **GBIF autocomplete** — pick a suggestion to fill in the rest of the lineage.
@@ -221,6 +222,45 @@ Conventions worth knowing:
 - Objects are coloured **by label**. **Unlabelled** objects are red.
 - The label list order _is_ the id order (the number on the colour block).
 - Deleting a label renumbers the ones after it; its objects become unlabelled.
+
+### Selecting and merging tracklets
+
+Select multiple tracklets with the row checkboxes, **Ctrl/Cmd-click** on a row,
+or — in **Select** mode — **Shift/Ctrl/Cmd-click** on a mask in the canvas.
+**Alt-click** cycles through overlapping masks at the pointer, which is how a
+mask hidden under another can still be added. The **Selection** tray shows the working set; click a chip to
+make it the **primary** selection, which is the object Add/Edit, drafts and the
+timeline act on.
+
+Use **Merge** in the tray when the tracker split one animal into two identities
+— typically across an occlusion — or when two masks on the same frame describe
+one body. Clicking a chip does not change the selection; it only changes which
+identity would survive by default.
+
+The dialog chooses what the merge means:
+
+- **Whole tracklet** — copies every frame each source covers into the target,
+  then removes those sources. This is the occlusion fix, and the only scope
+  offered when more than two tracklets are selected.
+- **This frame** / **Range** — for a two-tracklet selection, merges only inside
+  the selection. Both tracklets keep the masks they already had there, so this
+  is the “combine these two masks” gesture; a source is removed only when it has
+  no masks outside the selection.
+- **Overlapping frames** — when several tracklets have a mask on the same frame,
+  choose **Combine all**, **Keep #A**, or (for a pair) **Keep #B**. No policy is
+  assumed: the merge button stays disabled until one is chosen.
+- **Label** — if the selected tracklets carry different labels, choose which
+  label the merged object keeps.
+- **Keep** — any selected tracklet can be made the surviving identity; the
+  others are absorbed into it.
+
+The dialog shows how many frames are filled, how many overlap, and how many
+hand-verified frames would be downgraded to propagated. Provenance follows the
+pixels: a merged frame stays **human** only when every mask contributing to it
+was human. After confirming, the notice bar offers **Undo** for that merge.
+
+Merging is blocked while any selected tracklet has uncommitted drafts or a
+propagation run is active. It is available in **instance** projects only.
 
 ![Objects list](images/17-tracklet-list.png)
 _The objects list: filter, select, assign a label, delete._
@@ -239,7 +279,7 @@ Press **T** (or click **Track**) to carry a mask across the clip with SAM 3's vi
 
 1. **Start from a human frame.** The anchor must be a frame you drew or corrected — its timeline cell is in the object's colour. The Track button is enabled only for such a frame.
 2. **Set the range** by dragging the two bars on the timeline. The run covers the frames between them _and_ walks both ways around the anchor.
-3. **(Optional) queue several objects.** Shift-click rows in the objects list to add them to the queue; each becomes its own job, run one at a time.
+3. **(Optional) select several objects.** Use the row checkboxes or Ctrl/Cmd-click to select more than one tracklet. Every selected object with a human mask on the anchor becomes its own job, run one at a time.
 4. Press **Propagate** (**Enter**). Masks **stream in** and play back at the clip's frame rate. The **queue** shows each run's state, progress and how many frames it produced.
 5. **Review.** Step through the produced frames; the timeline marks them orange (machine output) versus the object's colour (your corrections). You can **Stop** a run at any time; frames already produced stay.
 6. **Keep them by leaving the tool.** Switching back to Select (or selecting a different object) accepts the run — there is no separate Accept button. Correct any frame by hand, then re-run: your corrections seed the next run.
@@ -267,6 +307,8 @@ _Set the range on the timeline, then Propagate._
 _The timeline distinguishes human frames, propagated frames and empty frames._
 
 **Note, user can further refine the mask by editing the propagated masks to enhance the propagation quality**
+
+**Selection shortcuts:** plain click selects one object; **Ctrl/Cmd-click** adds or removes one; **Alt-click** cycles overlapping masks under the pointer. The Selection tray's **Clear** empties the working set.
 
 ---
 

@@ -17,6 +17,7 @@ import {
     UNLABELLED_COLOR,
 } from "./palette";
 import { ANNOTATION_ENTRY, readProjectMode, type ProjectMode } from "./project";
+import type { MergePlan } from "./merge";
 import { rleIsEmpty, subtractRle, unionRle } from "./rle";
 import {
     classMasksToLabelMap,
@@ -979,6 +980,83 @@ export class Clip {
         });
         return this.clone({
             tracklets: this.tracklets.filter((t) => t.id !== trackletId),
+            editCount: this.editCount + 1,
+            dirtyFrames: this.markDirty(...touched),
+        });
+    }
+
+    /**
+     * Apply a planned merge in one update.
+     *
+     * The plan carries the final per-frame masks, so this method never needs to
+     * re-decide an overlap policy. Writing the target once (instead of through
+     * `setMask` per frame) keeps a long merge to a single clone and a single
+     * edit, and marking every touched frame dirty keeps semantic label-map
+     * exports correct if a merge ever reaches them.
+     */
+    applyMerge(plan: MergePlan): Clip {
+        // Semantic tracklets are classes, not identities; merging them would
+        // need pixel carving and a different review model.
+        if (this.mode !== "instance") return this;
+        const targetIndex = this.tracklets.findIndex(
+            (tracklet) => tracklet.id === plan.targetId,
+        );
+        if (targetIndex < 0) return this;
+        const target = this.tracklets[targetIndex];
+        const segmentations = [...target.segmentations];
+        while (segmentations.length < this.frameCount) segmentations.push(null);
+        for (const frame of plan.frames) {
+            if (frame.result) segmentations[frame.frame] = frame.result;
+        }
+
+        let merged: Tracklet = {
+            ...target,
+            segmentations,
+            maskFrames: maskFramesOf(segmentations),
+        };
+
+        if (plan.labelId !== target.labelId) {
+            const label =
+                plan.labelId === null
+                    ? null
+                    : (this.labels.find((item) => item.id === plan.labelId) ??
+                      null);
+            merged = label
+                ? {
+                      ...merged,
+                      categoryId: label.id,
+                      labelId: label.id,
+                      label: label.name,
+                      taxonomy: label.taxonomy,
+                      color: label.color,
+                  }
+                : {
+                      ...merged,
+                      categoryId: UNLABELLED_LABEL_ID,
+                      labelId: null,
+                      label: NEW_TRACKLET_LABEL,
+                      taxonomy: emptyTaxonomy(),
+                      color: UNLABELLED_COLOR,
+                  };
+        }
+
+        const removed = new Set(plan.removedSourceIds);
+        const touched = new Set(plan.touchedFrames);
+        for (const tracklet of this.tracklets) {
+            if (!removed.has(tracklet.id)) continue;
+            tracklet.segmentations.forEach((seg, frame) => {
+                if (seg && seg.counts) touched.add(frame);
+            });
+        }
+
+        const tracklets = this.tracklets
+            .map((tracklet) =>
+                tracklet.id === plan.targetId ? merged : tracklet,
+            )
+            .filter((tracklet) => !removed.has(tracklet.id));
+
+        return this.clone({
+            tracklets,
             editCount: this.editCount + 1,
             dirtyFrames: this.markDirty(...touched),
         });
