@@ -68,6 +68,16 @@ interface MergeUndo {
     resultEditCount: number;
 }
 
+interface TimelineClipEdit {
+    trackletId: number;
+    editCount: number;
+    originalFirst: number;
+    originalLast: number;
+    first: number;
+    last: number;
+    deleted: boolean;
+}
+
 interface PropagateRun {
     /** Identifies the queued run, so a review can be matched back to its entry. */
     jobId: string;
@@ -328,6 +338,8 @@ export function Workspace({
     // same tracker propagates the mask it produced.
     const modelName = "SAM 3";
     const [tool, setTool] = useState<Tool>("review");
+    const [timelineClipEdit, setTimelineClipEdit] =
+        useState<TimelineClipEdit | null>(null);
     // The method the user last picked. What is actually in force may be clamped
     // to the bar's available set — see `method`, derived below.
     const [preferredMethod, setMethod] = useState<DrawMethod>("point");
@@ -1587,6 +1599,172 @@ export function Workspace({
         }
         return states;
     }, [clip, selected, verifiedFrames, propRun]);
+
+    const timelineEditingAllowed =
+        tool === "review" &&
+        !propagating &&
+        propRun === null &&
+        propQueue.length === 0 &&
+        drafts.size === 0;
+
+    const selectTimelineClip = useCallback(
+        (first: number, last: number) => {
+            if (selectedId === null || !timelineEditingAllowed) return;
+            setTimelineClipEdit((current) =>
+                current?.trackletId === selectedId &&
+                current.editCount === clip.editCount &&
+                current.originalFirst === first &&
+                current.originalLast === last
+                    ? current
+                    : {
+                          trackletId: selectedId,
+                          editCount: clip.editCount,
+                          originalFirst: first,
+                          originalLast: last,
+                          first,
+                          last,
+                          deleted: false,
+                      },
+            );
+        },
+        [selectedId, timelineEditingAllowed, clip.editCount],
+    );
+
+    const changeTimelineClipRange = useCallback(
+        (first: number, last: number) => {
+            setTimelineClipEdit((current) =>
+                current && current.trackletId === selectedId
+                    ? { ...current, first, last }
+                    : current,
+            );
+        },
+        [selectedId],
+    );
+
+    const confirmTimelineClipEdit = useCallback(() => {
+        const edit = timelineClipEdit;
+        if (
+            !edit ||
+            edit.trackletId !== selectedId ||
+            edit.editCount !== clip.editCount ||
+            !timelineEditingAllowed
+        )
+            return;
+
+        const before = clip.tracklets.find(
+            (tracklet) => tracklet.id === edit.trackletId,
+        );
+        if (!before) {
+            setTimelineClipEdit(null);
+            return;
+        }
+
+        const removedFrames = edit.deleted
+            ? Array.from(
+                  { length: edit.originalLast - edit.originalFirst + 1 },
+                  (_, index) => edit.originalFirst + index,
+              )
+            : [
+                  ...Array.from(
+                      { length: edit.first - edit.originalFirst },
+                      (_, index) => edit.originalFirst + index,
+                  ),
+                  ...Array.from(
+                      { length: edit.originalLast - edit.last },
+                      (_, index) => edit.last + 1 + index,
+                  ),
+              ];
+        if (removedFrames.length === 0) return;
+
+        let next = clip;
+        for (const frame of removedFrames)
+            next = next.removeMask(edit.trackletId, frame);
+        if (next === clip) {
+            setTimelineClipEdit(null);
+            return;
+        }
+
+        const trackletRemains = next.tracklets.some(
+            (tracklet) => tracklet.id === edit.trackletId,
+        );
+        const removed = new Set(removedFrames);
+        const prefix = `${edit.trackletId}:`;
+        setVerifiedFrames((current) => {
+            const updated = new Set(current);
+            for (const key of updated) {
+                if (!key.startsWith(prefix)) continue;
+                if (!trackletRemains || removed.has(Number(key.slice(prefix.length))))
+                    updated.delete(key);
+            }
+            return updated;
+        });
+        setDrafts((current) => {
+            const updated = new Map(current);
+            for (const frame of removedFrames)
+                updated.delete(frameKey(edit.trackletId, frame));
+            if (!trackletRemains)
+                for (const key of updated.keys())
+                    if (key.startsWith(prefix)) updated.delete(key);
+            return updated;
+        });
+        setHistories((current) => {
+            const updated = new Map(current);
+            for (const frame of removedFrames)
+                updated.delete(frameKey(edit.trackletId, frame));
+            if (!trackletRemains)
+                for (const key of updated.keys())
+                    if (key.startsWith(prefix)) updated.delete(key);
+            return updated;
+        });
+
+        setClip(next);
+        setTimelineClipEdit(null);
+        if (!trackletRemains) {
+            const position = clip.tracklets.findIndex(
+                (tracklet) => tracklet.id === edit.trackletId,
+            );
+            const fallback =
+                next.tracklets[
+                    Math.min(position, next.tracklets.length - 1)
+                ] ?? null;
+            removeFromSelection(edit.trackletId, fallback?.id ?? null);
+        }
+        refresh();
+    }, [
+        timelineClipEdit,
+        selectedId,
+        timelineEditingAllowed,
+        clip,
+        removeFromSelection,
+        refresh,
+    ]);
+
+    const promoteCurrentMask = useCallback(() => {
+        if (
+            !selected ||
+            clip.rawMaskAt(selected, frameIndex) === null ||
+            isVerified(selected.id, frameIndex) ||
+            !timelineEditingAllowed
+        )
+            return;
+        markCorrected(selected.id, frameIndex);
+        setSaveNotice({
+            text: `Frame ${frameIndex + 1} marked human-annotated and ready to seed propagation.`,
+        });
+    }, [
+        selected,
+        clip,
+        frameIndex,
+        isVerified,
+        timelineEditingAllowed,
+        markCorrected,
+    ]);
+
+    const canPromoteCurrent =
+        timelineEditingAllowed &&
+        selected !== null &&
+        clip.rawMaskAt(selected, frameIndex) !== null &&
+        !isVerified(selected.id, frameIndex);
 
     /**
      * What a run would cover: every selected tracklet.
@@ -2959,7 +3137,52 @@ export function Workspace({
                                 ? setPropRange
                                 : undefined
                         }
-                        onSeek={setFrameIndex}
+                        onClipSelect={
+                            timelineEditingAllowed
+                                ? selectTimelineClip
+                                : undefined
+                        }
+                        clipEdit={
+                            timelineEditingAllowed &&
+                            timelineClipEdit?.trackletId === selectedId &&
+                            timelineClipEdit.editCount === clip.editCount
+                                ? timelineClipEdit
+                                : undefined
+                        }
+                        onClipRangeChange={
+                            timelineEditingAllowed
+                                ? changeTimelineClipRange
+                                : undefined
+                        }
+                        onClipDeleteToggle={
+                            timelineEditingAllowed
+                                ? (deleted) =>
+                                      setTimelineClipEdit((current) =>
+                                          current
+                                              ? { ...current, deleted }
+                                              : current,
+                                      )
+                                : undefined
+                        }
+                        onClipConfirm={
+                            timelineEditingAllowed
+                                ? confirmTimelineClipEdit
+                                : undefined
+                        }
+                        onClipCancel={() => setTimelineClipEdit(null)}
+                        canConfirmClipEdit={
+                            timelineEditingAllowed &&
+                            timelineClipEdit?.trackletId === selectedId &&
+                            timelineClipEdit.editCount === clip.editCount &&
+                            (timelineClipEdit.deleted ||
+                                timelineClipEdit.first !==
+                                    timelineClipEdit.originalFirst ||
+                                timelineClipEdit.last !==
+                                    timelineClipEdit.originalLast)
+                        }
+                        onPromoteCurrent={
+                            canPromoteCurrent ? promoteCurrentMask : undefined
+                        }
                     />
                     <VideoPanel
                         clip={clip}

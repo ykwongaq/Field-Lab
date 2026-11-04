@@ -1,6 +1,6 @@
 /*
  * The timeline is a fixed-height band between the tool bar and the stage: a
- * caption row, the scrub track, and a legend of the frame states present.
+ * caption row, the frame-state track, and a legend of the states present.
  */
 .wrap {
     display: flex;
@@ -16,7 +16,7 @@
     display: flex;
     align-items: center;
     gap: var(--s-3);
-    min-height: 16px;
+    min-height: 24px;
     font-size: var(--fs-xs);
     color: var(--muted);
 }
@@ -44,6 +44,19 @@
     gap: 5px;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex: 0 0 auto;
+}
+
+.editLabel {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-2);
 }
 
 .swatch {
@@ -156,6 +169,49 @@
 }
 
 .rangeHandle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.clipRemoved {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(8, 12, 16, 0.72);
+    pointer-events: none;
+}
+
+.clipRemovedAll {
+    background: rgba(118, 36, 36, 0.7);
+}
+
+.clipBand {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border: 1px solid var(--accent);
+    pointer-events: none;
+}
+
+.clipHandle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 1;
+    width: 9px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+    cursor: ew-resize;
+    touch-action: none;
+}
+
+.clipHandle:hover,
+.clipHandle:focus-visible {
+    background: var(--accent-hi);
+}
+
+.clipHandle:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
 }

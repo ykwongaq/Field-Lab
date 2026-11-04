@@ -295,10 +295,14 @@ _Set the range on the timeline, then Propagate._
 
 - **Play / pause** — the video control or **Space**.
 - **Step a frame** — the ⏮ / ⏭ buttons or **←** / **→**.
-- **Timeline** — click to seek. Cells read:
+- **Timeline** — use the video controls below the canvas to seek. Cells read:
     - **object colour** = a frame a human drew or corrected,
     - **orange** = a machine-propagated frame,
     - **background** = no mask (the tracker found nothing).
+- **Edit a clip** — in Review mode, click a colored run to select it. Drag either
+  end inward to trim, or choose **Delete clip**; then confirm or cancel the edit.
+- **Promote a mask** — on a propagated frame, choose **Mark current mask human**
+  to make that mask available as a propagation seed.
 - **Zoom / pan** — scroll to zoom, middle-drag to pan, and the _Fit_ button to reset.
 - **Mask opacity** — the slider under the canvas.
 - **Panels** — drag the seams to resize the video stage, the objects list and the label list; double-click a seam to reset.

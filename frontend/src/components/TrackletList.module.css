@@ -94,13 +94,43 @@
     accent-color: var(--accent);
 }
 
+/*
+ * The object's own id — the row's identity, so it leads.
+ *
+ * Neutral on purpose: a colour means "this label", and a whole species shares
+ * one label colour, so colour cannot tell two masks apart. The number can, and
+ * every mask has its own. Monospace and tabular so the column lines up and ids
+ * of different lengths still read as a stack.
+ */
+.idTag {
+    flex: 0 0 auto;
+    align-self: center;
+    min-width: 30px;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-radius: var(--r-xs);
+    background: var(--surface-3);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.selected .idTag {
+    background: transparent;
+    color: var(--accent-hi);
+    box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
 .item {
     display: flex;
     align-items: center;
     gap: 10px;
     flex: 1 1 auto;
     min-width: 0;
-    padding: 7px 12px;
+    padding: 7px 12px 7px 8px;
     border: 0;
     background: transparent;
     text-align: left;
@@ -154,8 +184,13 @@
 }
 
 /*
- * The row's colour block doubles as its label button: the label's colour with
- * its id in the middle, or red with a dash when the object is unlabelled.
+ * The label button: the label's colour, and nothing else.
+ *
+ * It used to be a solid block with the label's id in it, which put the same
+ * number on every row of a species — the label is described one line below in
+ * the label table, where its number belongs. A swatch carries the same meaning
+ * (this is the colour its masks are drawn in) without the noise, and the name
+ * beside it says which label it is.
  */
 .assign {
     display: inline-flex;
@@ -163,17 +198,29 @@
     justify-content: center;
     flex: 0 0 auto;
     align-self: center;
-    width: 26px;
-    height: 26px;
-    margin-left: 8px;
+    width: 20px;
+    height: 20px;
+    margin-left: 4px;
     padding: 0;
     border: 0;
-    border-radius: 5px;
-    color: #fff;
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
+    border-radius: var(--r-xs);
+    background: transparent;
+    transition: background var(--t-fast);
+}
+
+.assign:hover {
+    background: var(--surface-3);
+}
+
+.assign:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.swatch {
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
@@ -192,6 +239,11 @@
     font-size: var(--fs-md);
     font-style: italic;
     color: var(--ink);
+}
+
+/* Red is the app's "no label" colour, and this text is why. */
+.unlabelled {
+    color: var(--bad);
 }
 
 .meta {

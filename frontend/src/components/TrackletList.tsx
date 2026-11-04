@@ -33,8 +33,11 @@ interface TrackletListProps {
  * The object list: every tracklet in the clip, searchable.
  *
  * It is the workspace's index — selecting a row decides which mask the canvas
- * draws. Each row's colour block is also its label button: it shows the label's
- * colour and id, and opens the picker that changes it.
+ * draws. Each row leads with the object's own id, then its label: a colour
+ * swatch (its label's colour) that opens the picker, and the label's name.
+ * The label's *number* is deliberately not shown here — a whole species shares
+ * one label id, so leading with it made every row of "Marine Animals" read as
+ * `0`. That number belongs to the label table, not to the object.
  */
 export function TrackletList({
     clip,
@@ -126,11 +129,17 @@ export function TrackletList({
                                         }
                                     />
                                 )}
+                                <span
+                                    className={styles.idTag}
+                                    title={`${vocab.unit} #${tracklet.id}`}
+                                >
+                                    #{tracklet.id}
+                                </span>
                                 {onAssign && (
                                     <button
                                         type="button"
                                         className={styles.assign}
-                                        style={{ background: tracklet.color }}
+                                        disabled={disabled}
                                         onClick={(event) => {
                                             const anchor =
                                                 event.currentTarget.getBoundingClientRect();
@@ -147,10 +156,15 @@ export function TrackletList({
                                                       },
                                             );
                                         }}
-                                        aria-label={`Assign a label to ${vocab.unit} #${tracklet.id}. Current: ${tracklet.label}`}
-                                        title="Assign a label"
+                                        aria-label={`Change the label for ${vocab.unit} #${tracklet.id}. Current: ${tracklet.label}`}
+                                        title={`Label: ${tracklet.label} — click to change`}
                                     >
-                                        {tracklet.labelId ?? "–"}
+                                        <span
+                                            className={styles.swatch}
+                                            style={{
+                                                background: tracklet.color,
+                                            }}
+                                        />
                                     </button>
                                 )}
                                 <button
@@ -177,15 +191,20 @@ export function TrackletList({
                                     }
                                 >
                                     <span className={styles.body}>
-                                        <span className={styles.label}>
+                                        <span
+                                            className={`${styles.label} ${
+                                                tracklet.labelId === null
+                                                    ? styles.unlabelled
+                                                    : ""
+                                            }`}
+                                        >
                                             {tracklet.label}
                                         </span>
                                         <span className={styles.meta}>
-                                            #{tracklet.id}
                                             {vocab.hasObjectIdentity
-                                                ? ` · obj ${tracklet.objectId}`
-                                                : ""}{" "}
-                                            · {tracklet.maskFrames.count} frames
+                                                ? `obj ${tracklet.objectId} · `
+                                                : ""}
+                                            {tracklet.maskFrames.count} frames
                                         </span>
                                     </span>
                                 </button>
