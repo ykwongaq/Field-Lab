@@ -132,8 +132,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    /* Edges only. A fill here would tint the per-frame cells, and a human frame has
-       to keep reading as its own label colour under every overlay. */
+    /* Edges only. A fill here would tint the per-frame state colors. */
     border-left: 1px solid var(--accent);
     border-right: 1px solid var(--accent);
     pointer-events: none;

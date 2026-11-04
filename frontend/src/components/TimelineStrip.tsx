@@ -7,7 +7,7 @@ import styles from "./TimelineStrip.module.css";
  * Per-frame state of one object, in the three marks the timeline uses.
  *
  * * `human` — a mask a person drew, corrected or cleared by hand. It is painted
- *   in the object's own (label) colour, and only a human frame may seed a run.
+ *   green, and only a human frame may seed a run.
  * * `propagated` — a mask the tracker produced. It is painted orange on the strip
  *   as a standing reminder that nobody has checked it, while the mask itself is
  *   still drawn on the video in the label colour.
@@ -23,15 +23,14 @@ interface CellPaint {
 }
 
 const NEUTRAL = "#20262d";
-const OBJECT_FALLBACK = "#5c8fc9";
 /** The one colour reserved for "a machine produced this, not a person". */
 const PROPAGATED = "#e2803a";
 
-/** The paint for one state. `colour` is the selected object's own colour. */
-function paint(state: TimelineFrameState, colour: string): CellPaint {
+/** The paint for one state. */
+function paint(state: TimelineFrameState): CellPaint {
     switch (state) {
         case "human":
-            return { fill: colour, opacity: 1 };
+            return { fill: "var(--good)", opacity: 1 };
         case "propagated":
             return { fill: PROPAGATED, opacity: 1 };
         default:
@@ -49,8 +48,6 @@ export interface TimelineStripProps {
     frameIndex: number;
     /** One state per frame, indexed by frame. */
     states: TimelineFrameState[];
-    /** The selected object's colour; human frames are painted with it. */
-    color?: string;
     /** What the strip is showing, for the caption. */
     label?: string;
     /**
@@ -96,7 +93,6 @@ export function TimelineStrip(props: TimelineStripProps) {
         frameCount,
         frameIndex,
         states,
-        color,
         label,
         rangeFirst,
         rangeLast,
@@ -115,7 +111,6 @@ export function TimelineStrip(props: TimelineStripProps) {
     const [rangeDrag, setRangeDrag] = useState<RangeHandle | null>(null);
     const [clipDrag, setClipDrag] = useState<RangeHandle | null>(null);
 
-    const objectColour = color ?? OBJECT_FALLBACK;
     const hasRange = rangeFirst !== undefined && rangeLast !== undefined;
     const anchor = rangeAnchor ?? frameIndex;
 
@@ -315,7 +310,7 @@ export function TimelineStrip(props: TimelineStripProps) {
                     {LEGEND.map((item) => {
                         const value = counts[item.state] ?? 0;
                         if (value === 0) return null;
-                        const cell = paint(item.state, objectColour);
+                        const cell = paint(item.state);
                         return (
                             <span
                                 key={item.state}
@@ -369,7 +364,7 @@ export function TimelineStrip(props: TimelineStripProps) {
                     aria-hidden="true"
                 >
                     {runs.map((run) => {
-                        const cell = paint(run.state, objectColour);
+                        const cell = paint(run.state);
                         return (
                             <rect
                                 key={run.start}
@@ -404,8 +399,8 @@ export function TimelineStrip(props: TimelineStripProps) {
                                 }}
                             />
                         )}
-                        {/* The edges of the range. The cells are left alone: a
-                            human frame must keep its own label colour. */}
+                        {/* The edges of the range. The cells are left alone so
+                            each frame keeps its state colour. */}
                         <div
                             className={styles.rangeBand}
                             style={{

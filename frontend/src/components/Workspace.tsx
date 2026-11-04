@@ -3115,7 +3115,6 @@ export function Workspace({
                         frameCount={clip.frameCount}
                         frameIndex={frameIndex}
                         states={timelineStates}
-                        color={selected?.color}
                         label={
                             selected
                                 ? selectedIds.length > 1
