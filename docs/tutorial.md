@@ -20,10 +20,11 @@ Nothing is written into your source data: the project is a self-contained archiv
 8. [Part F — Labels & taxonomy](#part-f--labels--taxonomy)
 9. [Part G — Track a mask across frames (Propagate)](#part-g--track-a-mask-across-frames-propagate)
 10. [Part H — Review, play & navigate](#part-h--review-play--navigate)
-11. [Part I — Export the annotations](#part-i--export-the-annotations)
-12. [Keyboard shortcuts](#keyboard-shortcuts)
-13. [Troubleshooting](#troubleshooting)
-14. [Screenshot checklist](#screenshot-checklist)
+11. [Part I — Save your work](#part-i--save-your-work)
+12. [Part J — Export the annotations](#part-j--export-the-annotations)
+13. [Keyboard shortcuts](#keyboard-shortcuts)
+14. [Troubleshooting](#troubleshooting)
+15. [Screenshot checklist](#screenshot-checklist)
 
 ---
 
@@ -39,6 +40,7 @@ Nothing is written into your source data: the project is a self-contained archiv
 | **Labels & taxonomy**      | A project-level label table: name, colour and full taxonomy (kingdom → species + common name) with a **GBIF autocomplete**. Objects are coloured by label; unlabelled objects are red.    |
 | **Propagation (tracking)** | Carry a mask forward/backward across frames, over a range you set on the timeline. Queue several objects, watch masks stream in, and correct-and-re-run at any time.                      |
 | **Review & playback**      | Frame-accurate scrubbing, play/pause, zoom/pan, adjustable mask opacity, and a timeline that marks human vs. machine frames.                                                              |
+| **Save**                   | Download the updated project as a `.project` archive that you can reopen later and continue annotating in either segmentation mode.                                                       |
 | **Export**                 | Original video, original frames, sampled frames, and the updated **annotation JSON** (or the whole updated `.project` for semantic projects).                                             |
 
 ![The Field Lab start screen](images/01-start-screen.png)
@@ -140,7 +142,7 @@ Once a project opens you get a single-screen workspace:
 ![Workspace overview](images/08-workspace-overview.png)
 _The workspace: tool rail, video stage with timeline, and the two sidebar panels._
 
-- **Header** — clip name, a mode chip (_Instance_ / _Semantic_), size in pixels, frame count, fps, object count, **Open another** (folder icon) and **Export**.
+- **Header** — clip name, a mode chip (_Instance_ / _Semantic_), size in pixels, frame count, fps, object count, **Open another** (folder icon), **Save** and **Export**.
 - **Tool rail** (far left) — one tool at a time: **Select**, **Add**, **Edit**, **Track**, plus the model status footer.
 - **Video stage** (centre) — a tool-specific prompt bar on top, the **timeline**, and the **canvas** with zoom/pan, play, step and a mask-opacity slider.
 - **Sidebar** (right) — the **objects list** on top and the **labels panel** below. Both are resizable by dragging the seams (double-click to reset).
@@ -316,7 +318,25 @@ _The timeline distinguishes human frames, propagated frames and empty frames._
 
 ---
 
-## Part I — Export the annotations
+## Part I — Save your work
+
+Press **Save** in the header to download the current project as a `<name>.project`
+archive. It preserves committed annotations and label maps alongside the project
+data, so you can reopen the archive later and continue reviewing. Save works for
+both instance and semantic projects; it is separate from **Export**, which offers
+individual outputs such as annotation JSON, source video or frames.
+
+Only committed changes are included. If you have an uncommitted mask draft, Save
+asks whether to discard it before continuing; cancel the prompt to keep working
+on the draft. Save is unavailable while a propagation run is active because its
+results are not yet saved. Stop the run first, then save.
+
+The archive is created in your browser and downloaded locally. For larger
+projects, the button shows progress while label maps are being written.
+
+---
+
+## Part J — Export the annotations
 
 Press **Export** in the header. The chooser lists what this project can hand back (some entries are disabled if the archive did not carry that data):
 
@@ -326,7 +346,7 @@ Press **Export** in the header. The chooser lists what this project can hand bac
 | **Original frames**         | `<name>_frames.zip`         | The project was packed from a frame folder.                                                     |
 | **Sampled frames**          | `<name>_sampled_frames.zip` | The frames this review actually annotated.                                                      |
 | **Annotation JSON**         | `<name>_annotation.json`    | Instance projects: the dataset as it stands, one entry per object with its per-frame RLE masks. |
-| **Updated project archive** | `<name>.project`            | Semantic projects: frames + label maps + annotation, reopenable to carry on.                    |
+| **Updated project archive** | `<name>.project`            | Semantic projects: frames + label maps + annotation, reopenable to carry on. For either mode, use **Save** to download a resumable project. |
 
 Every file is written in the browser — nothing is uploaded, and the export needs no round trip to the backend. Large multi-file exports show progress (`12 / 340 frames`) and keep the dialog open until the download starts.
 
