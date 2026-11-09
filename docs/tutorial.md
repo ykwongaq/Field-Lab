@@ -304,7 +304,13 @@ _Set the range on the timeline, then Propagate._
     - **orange** = a machine-propagated frame,
     - **background** = no mask (the tracker found nothing).
 - **Edit a clip** — in Review mode, click a colored run to select it. Drag either
-  end inward to trim, or choose **Delete clip**; then confirm or cancel the edit.
+  end inward to trim, or choose **Delete clip**. To remove frames within a clip,
+  choose **Remove range** and drag across the frames (or focus the timeline and
+  press Enter to select the current frame). Adjust the red handles with the
+  mouse or arrow keys, or enter the inclusive frame numbers. Confirm or cancel
+  the edit. Removed frames lose the selected object's masks, including any human
+  corrections; video frames and other objects are unchanged. A middle removal
+  leaves two clips belonging to the same object.
 - **Promote a mask** — on a propagated frame, choose **Mark current mask human**
   to make that mask available as a propagation seed.
 - **Zoom / pan** — scroll to zoom, middle-drag to pan, and the _Fit_ button to reset.

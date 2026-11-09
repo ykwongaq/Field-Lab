@@ -75,9 +75,13 @@ export interface TimelineStripProps {
         originalFirst: number;
         originalLast: number;
         deleted: boolean;
+        removeMode: boolean;
+        removeRange: { first: number; last: number } | null;
     };
     onClipRangeChange?: (first: number, last: number) => void;
     onClipDeleteToggle?: (deleted: boolean) => void;
+    onClipRemoveModeToggle?: () => void;
+    onClipRemoveRangeChange?: (first: number, last: number) => void;
     onClipConfirm?: () => void;
     onClipCancel?: () => void;
     canConfirmClipEdit?: boolean;
@@ -88,6 +92,39 @@ type RangeHandle = "first" | "last";
 
 /** Width of a range bar, in pixels; also the inset that keeps one on-screen. */
 const RANGE_HANDLE_W = 9;
+
+function FrameInput({ label, value, min, max, onChange }: {
+    label: string;
+    value: number;
+    min: number;
+    max: number;
+    onChange: (value: number) => void;
+}) {
+    const [text, setText] = useState(String(value));
+    return (
+        <input
+            aria-label={label}
+            type="number"
+            min={min}
+            max={max}
+            value={text}
+            onChange={(event) => setText(event.currentTarget.value)}
+            onBlur={() => {
+                const parsed = Number(text);
+                if (text.trim() && Number.isInteger(parsed)) {
+                    const next = Math.max(min, Math.min(max, parsed));
+                    onChange(next);
+                    setText(String(next));
+                } else {
+                    setText(String(value));
+                }
+            }}
+            onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+            }}
+        />
+    );
+}
 
 export function TimelineStrip(props: TimelineStripProps) {
     const {
@@ -104,6 +141,8 @@ export function TimelineStrip(props: TimelineStripProps) {
         clipEdit,
         onClipRangeChange,
         onClipDeleteToggle,
+        onClipRemoveModeToggle,
+        onClipRemoveRangeChange,
         onClipConfirm,
         onClipCancel,
         canConfirmClipEdit = false,
@@ -111,6 +150,7 @@ export function TimelineStrip(props: TimelineStripProps) {
     } = props;
     const trackRef = useRef<HTMLDivElement>(null);
     const playheadPointer = useRef<number | null>(null);
+    const removeDrag = useRef<{ pointerId: number; anchor: number } | null>(null);
     const [rangeDrag, setRangeDrag] = useState<RangeHandle | null>(null);
     const [clipDrag, setClipDrag] = useState<RangeHandle | null>(null);
 
@@ -177,9 +217,38 @@ export function TimelineStrip(props: TimelineStripProps) {
     const onTrackPointerDown = useCallback(
         (event: ReactPointerEvent<HTMLDivElement>) => {
             if (event.button !== 0) return;
+            if (clipEdit?.removeMode && !clipEdit.deleted && onClipRemoveRangeChange) {
+                const frame = frameAt(event.clientX);
+                if (frame < clipEdit.first || frame > clipEdit.last) return;
+                event.preventDefault();
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+                removeDrag.current = { pointerId: event.pointerId, anchor: frame };
+                onClipRemoveRangeChange(frame, frame);
+                return;
+            }
             selectRunAt(frameAt(event.clientX));
         },
-        [frameAt, selectRunAt],
+        [clipEdit, frameAt, onClipRemoveRangeChange, selectRunAt],
+    );
+
+    const moveRemoveSelection = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const drag = removeDrag.current;
+            if (!drag || drag.pointerId !== event.pointerId || !clipEdit || !onClipRemoveRangeChange) return;
+            const frame = Math.max(clipEdit.first, Math.min(clipEdit.last, frameAt(event.clientX)));
+            onClipRemoveRangeChange(Math.min(drag.anchor, frame), Math.max(drag.anchor, frame));
+        },
+        [clipEdit, frameAt, onClipRemoveRangeChange],
+    );
+
+    const endRemoveSelection = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            if (removeDrag.current?.pointerId !== event.pointerId) return;
+            removeDrag.current = null;
+            if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+                event.currentTarget.releasePointerCapture(event.pointerId);
+        },
+        [],
     );
 
     /** Map a frame index onto the strip's horizontal percentage. */
@@ -281,6 +350,37 @@ export function TimelineStrip(props: TimelineStripProps) {
                         <span className={styles.editLabel}>
                             Frames {clipEdit.first + 1}–{clipEdit.last + 1}
                         </span>
+                        {onClipRemoveModeToggle && !clipEdit.deleted && (
+                            <Button size="sm" onClick={onClipRemoveModeToggle}>
+                                {clipEdit.removeMode ? "Cancel range" : "Remove range"}
+                            </Button>
+                        )}
+                        {clipEdit.removeMode && !clipEdit.deleted && (
+                            clipEdit.removeRange ? (
+                                <span className={styles.removeInputs}>
+                                    Remove frames
+                                    <FrameInput
+                                        key={clipEdit.removeRange.first}
+                                        label="First frame to remove"
+                                        min={clipEdit.first + 1}
+                                        max={clipEdit.removeRange.last + 1}
+                                        value={clipEdit.removeRange.first + 1}
+                                        onChange={(value) => onClipRemoveRangeChange?.(value - 1, clipEdit.removeRange!.last)}
+                                    />
+                                    –
+                                    <FrameInput
+                                        key={clipEdit.removeRange.last}
+                                        label="Last frame to remove"
+                                        min={clipEdit.removeRange.first + 1}
+                                        max={clipEdit.last + 1}
+                                        value={clipEdit.removeRange.last + 1}
+                                        onChange={(value) => onClipRemoveRangeChange?.(clipEdit.removeRange!.first, value - 1)}
+                                    />
+                                </span>
+                            ) : (
+                                <span className={styles.editLabel}>Drag over frames to remove, or press Enter on the timeline</span>
+                            )
+                        )}
                         {onClipDeleteToggle && (
                             <Button
                                 size="sm"
@@ -348,15 +448,26 @@ export function TimelineStrip(props: TimelineStripProps) {
                 className={styles.track}
                 role="group"
                 tabIndex={onClipSelect ? 0 : undefined}
-                aria-label={`${label ?? "Timeline"} — current frame ${frameIndex + 1} of ${frameCount}. Click a colored segment to edit it; drag the playhead or use the bottom controls to seek.`}
+                aria-label={clipEdit?.removeMode && !clipEdit.deleted
+                    ? `${label ?? "Timeline"} — drag across frames to remove, or press Enter to select current frame ${frameIndex + 1}.`
+                    : `${label ?? "Timeline"} — current frame ${frameIndex + 1} of ${frameCount}. Click a colored segment to edit it; drag the playhead or use the bottom controls to seek.`}
                 onPointerDown={onTrackPointerDown}
+                onPointerMove={moveRemoveSelection}
+                onPointerUp={endRemoveSelection}
+                onPointerCancel={endRemoveSelection}
+                onLostPointerCapture={endRemoveSelection}
                 onKeyDown={(event) => {
                     if (
                         (event.key === "Enter" || event.key === " ") &&
                         onClipSelect
                     ) {
                         event.preventDefault();
-                        selectRunAt(frameIndex);
+                        if (clipEdit?.removeMode && !clipEdit.deleted && onClipRemoveRangeChange) {
+                            if (frameIndex >= clipEdit.first && frameIndex <= clipEdit.last)
+                                onClipRemoveRangeChange(frameIndex, frameIndex);
+                        } else {
+                            selectRunAt(frameIndex);
+                        }
                     }
                 }}
             >
@@ -533,9 +644,18 @@ export function TimelineStrip(props: TimelineStripProps) {
                                         width: `${percent(clipEdit.last + 1) - percent(clipEdit.first)}%`,
                                     }}
                                 />
+                                {clipEdit.removeRange && (
+                                    <div
+                                        className={`${styles.clipRemoved} ${styles.clipRemovedAll}`}
+                                        style={{
+                                            left: `${percent(clipEdit.removeRange.first)}%`,
+                                            width: `${percent(clipEdit.removeRange.last + 1) - percent(clipEdit.removeRange.first)}%`,
+                                        }}
+                                    />
+                                )}
                             </>
                         )}
-                        {!clipEdit.deleted &&
+                        {!clipEdit.deleted && !clipEdit.removeMode &&
                             onClipRangeChange &&
                             (["first", "last"] as RangeHandle[]).map(
                                 (handle) => (
@@ -613,6 +733,45 @@ export function TimelineStrip(props: TimelineStripProps) {
                                     />
                                 ),
                             )}
+                        {!clipEdit.deleted && clipEdit.removeMode && clipEdit.removeRange && onClipRemoveRangeChange &&
+                            (["first", "last"] as RangeHandle[]).map((handle) => {
+                                const range = clipEdit.removeRange!;
+                                const update = (frame: number) => {
+                                    if (handle === "first")
+                                        onClipRemoveRangeChange(Math.max(clipEdit.first, Math.min(range.last, frame)), range.last);
+                                    else
+                                        onClipRemoveRangeChange(range.first, Math.min(clipEdit.last, Math.max(range.first, frame)));
+                                };
+                                return (
+                                    <div
+                                        key={handle}
+                                        role="slider"
+                                        aria-label={`${handle === "first" ? "First" : "Last"} frame to remove`}
+                                        aria-valuemin={(handle === "first" ? clipEdit.first : range.first) + 1}
+                                        aria-valuemax={(handle === "first" ? range.last : clipEdit.last) + 1}
+                                        aria-valuenow={(handle === "first" ? range.first : range.last) + 1}
+                                        tabIndex={0}
+                                        className={`${styles.clipHandle} ${styles.removeHandle} ${clipDrag === handle ? styles.rangeHandleActive : ""}`}
+                                        style={handle === "first"
+                                            ? { left: `${percent(range.first)}%` }
+                                            : { left: `calc(${percent(range.last + 1)}% - ${RANGE_HANDLE_W}px)` }}
+                                        title={`Adjust ${handle} frame to remove`}
+                                        onPointerDown={startClipDrag(handle)}
+                                        onPointerMove={(event) => {
+                                            if (clipDrag === handle) update(frameAt(event.clientX));
+                                        }}
+                                        onPointerUp={endClipDrag}
+                                        onPointerCancel={endClipDrag}
+                                        onKeyDown={(event) => {
+                                            const delta = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+                                            if (!delta) return;
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            update((handle === "first" ? range.first : range.last) + delta * (event.shiftKey ? 10 : 1));
+                                        }}
+                                    />
+                                );
+                            })}
                     </>
                 )}
                 <div

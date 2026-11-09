@@ -41,6 +41,7 @@ import type { MergePlan } from "../lib/merge";
 import { VideoPanel } from "./VideoPanel";
 import { isLive, type PropQueueEntry } from "./PropagationQueue";
 import { TimelineStrip, type TimelineFrameState } from "./TimelineStrip";
+import { removedTimelineFrames } from "../lib/timelineClipEdit";
 import { TrackletList } from "./TrackletList";
 import { LabelsPanel } from "./LabelsPanel";
 import { LabelEditor } from "./LabelEditor";
@@ -76,6 +77,8 @@ interface TimelineClipEdit {
     first: number;
     last: number;
     deleted: boolean;
+    removeMode: boolean;
+    removeRange: { first: number; last: number } | null;
 }
 
 interface PropagateRun {
@@ -1624,6 +1627,8 @@ export function Workspace({
                           first,
                           last,
                           deleted: false,
+                          removeMode: false,
+                          removeRange: null,
                       },
             );
         },
@@ -1634,7 +1639,17 @@ export function Workspace({
         (first: number, last: number) => {
             setTimelineClipEdit((current) =>
                 current && current.trackletId === selectedId
-                    ? { ...current, first, last }
+                    ? {
+                          ...current,
+                          first,
+                          last,
+                          removeRange: current.removeRange
+                              ? {
+                                    first: Math.max(first, Math.min(last, current.removeRange.first)),
+                                    last: Math.max(first, Math.min(last, current.removeRange.last)),
+                                }
+                              : null,
+                      }
                     : current,
             );
         },
@@ -1659,21 +1674,7 @@ export function Workspace({
             return;
         }
 
-        const removedFrames = edit.deleted
-            ? Array.from(
-                  { length: edit.originalLast - edit.originalFirst + 1 },
-                  (_, index) => edit.originalFirst + index,
-              )
-            : [
-                  ...Array.from(
-                      { length: edit.first - edit.originalFirst },
-                      (_, index) => edit.originalFirst + index,
-                  ),
-                  ...Array.from(
-                      { length: edit.originalLast - edit.last },
-                      (_, index) => edit.last + 1 + index,
-                  ),
-              ];
+        const removedFrames = removedTimelineFrames(edit);
         if (removedFrames.length === 0) return;
 
         let next = clip;
@@ -3164,6 +3165,35 @@ export function Workspace({
                                       )
                                 : undefined
                         }
+                        onClipRemoveModeToggle={
+                            timelineEditingAllowed
+                                ? () =>
+                                      setTimelineClipEdit((current) =>
+                                          current
+                                              ? {
+                                                    ...current,
+                                                    removeMode: !current.removeMode,
+                                                    removeRange: current.removeMode
+                                                        ? null
+                                                        : current.removeRange,
+                                                }
+                                              : current,
+                                      )
+                                : undefined
+                        }
+                        onClipRemoveRangeChange={
+                            timelineEditingAllowed
+                                ? (first, last) =>
+                                      setTimelineClipEdit((current) =>
+                                          current
+                                              ? {
+                                                    ...current,
+                                                    removeRange: { first, last },
+                                                }
+                                              : current,
+                                      )
+                                : undefined
+                        }
                         onClipConfirm={
                             timelineEditingAllowed
                                 ? confirmTimelineClipEdit
@@ -3175,6 +3205,7 @@ export function Workspace({
                             timelineClipEdit?.trackletId === selectedId &&
                             timelineClipEdit.editCount === clip.editCount &&
                             (timelineClipEdit.deleted ||
+                                timelineClipEdit.removeRange !== null ||
                                 timelineClipEdit.first !==
                                     timelineClipEdit.originalFirst ||
                                 timelineClipEdit.last !==

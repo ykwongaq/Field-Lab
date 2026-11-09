@@ -16,12 +16,19 @@
     display: flex;
     align-items: center;
     gap: var(--s-3);
-    min-height: 24px;
+    height: 36px;
+    flex: 0 0 36px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
     font-size: var(--fs-xs);
     color: var(--muted);
 }
 
 .captionLabel {
+    flex: 0 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -35,7 +42,7 @@
     gap: 11px;
     flex-wrap: nowrap;
     margin-left: auto;
-    overflow: hidden;
+    flex: 0 0 auto;
 }
 
 .legendItem {
@@ -57,6 +64,23 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     color: var(--ink-2);
+}
+
+.removeInputs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    color: var(--ink-2);
+}
+
+.removeInputs input {
+    width: 5em;
+    padding: 2px 3px;
+    color: var(--ink);
+    background: var(--surface-3);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
 }
 
 .swatch {
@@ -245,6 +269,15 @@
 .clipHandle:hover,
 .clipHandle:focus-visible {
     background: var(--accent-hi);
+}
+
+.removeHandle {
+    background: #d65b54;
+}
+
+.removeHandle:hover,
+.removeHandle:focus-visible {
+    background: #ef817a;
 }
 
 .clipHandle:focus-visible {
