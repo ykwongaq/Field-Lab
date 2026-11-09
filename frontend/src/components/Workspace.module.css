@@ -163,16 +163,16 @@
 
 /*
  * The tool bar is a single non-wrapping row that scrolls horizontally if a tool
- * carries more controls than fit, so it can never push the stage out of the
- * viewport. The status text truncates, and the trailing spacer is what pins the
+ * carries more controls than fit. A fixed height keeps the timeline and stage
+ * still when switching tools or adding controls. The trailing spacer pins the
  * action buttons (Clear / accept) to the right edge.
  */
 .promptBar {
     display: flex;
     align-items: center;
     gap: var(--s-2);
-    flex: 0 0 auto;
-    min-height: 44px;
+    flex: 0 0 48px;
+    height: 48px;
     padding: 7px 12px;
     border-bottom: 1px solid var(--line);
     background: linear-gradient(180deg, var(--surface-2), var(--surface-1));

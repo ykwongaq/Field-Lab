@@ -2594,10 +2594,8 @@ export function Workspace({
                 />
 
                 <section className={styles.videoCol}>
-                    {/* Select has no controls, but every other tool draws a bar
-                        here. Keep the empty row so switching tools never shifts
-                        the stage up or down. */}
-                    {tool === "review" && (
+                    {/* Keep the same row even when the current tool has no controls. */}
+                    {(tool === "review" || (tool === "propagate" && !selected)) && (
                         <div
                             className={styles.promptBar}
                             aria-hidden="true"
