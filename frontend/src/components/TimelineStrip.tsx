@@ -46,6 +46,7 @@ const LEGEND: { state: TimelineFrameState; label: string }[] = [
 export interface TimelineStripProps {
     frameCount: number;
     frameIndex: number;
+    onFrameChange: (frame: number) => void;
     /** One state per frame, indexed by frame. */
     states: TimelineFrameState[];
     /** What the strip is showing, for the caption. */
@@ -92,6 +93,7 @@ export function TimelineStrip(props: TimelineStripProps) {
     const {
         frameCount,
         frameIndex,
+        onFrameChange,
         states,
         label,
         rangeFirst,
@@ -108,6 +110,7 @@ export function TimelineStrip(props: TimelineStripProps) {
         onPromoteCurrent,
     } = props;
     const trackRef = useRef<HTMLDivElement>(null);
+    const playheadPointer = useRef<number | null>(null);
     const [rangeDrag, setRangeDrag] = useState<RangeHandle | null>(null);
     const [clipDrag, setClipDrag] = useState<RangeHandle | null>(null);
 
@@ -343,9 +346,9 @@ export function TimelineStrip(props: TimelineStripProps) {
             <div
                 ref={trackRef}
                 className={styles.track}
-                role={onClipSelect ? "group" : "img"}
+                role="group"
                 tabIndex={onClipSelect ? 0 : undefined}
-                aria-label={`${label ?? "Timeline"} — current frame ${frameIndex + 1} of ${frameCount}. Click a colored segment to edit it; use the bottom controls to seek.`}
+                aria-label={`${label ?? "Timeline"} — current frame ${frameIndex + 1} of ${frameCount}. Click a colored segment to edit it; drag the playhead or use the bottom controls to seek.`}
                 onPointerDown={onTrackPointerDown}
                 onKeyDown={(event) => {
                     if (
@@ -619,6 +622,72 @@ export function TimelineStrip(props: TimelineStripProps) {
                 <div
                     className={styles.playheadHandle}
                     style={{ left: `${playheadPercent}%` }}
+                    role="slider"
+                    aria-label="Current frame"
+                    aria-valuemin={1}
+                    aria-valuemax={frameCount}
+                    aria-valuenow={frameIndex + 1}
+                    tabIndex={0}
+                    title="Drag to seek"
+                    onPointerDown={(event) => {
+                        event.stopPropagation();
+                        if (
+                            event.button !== 0 ||
+                            playheadPointer.current !== null
+                        ) return;
+                        event.preventDefault();
+                        playheadPointer.current = event.pointerId;
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onPointerMove={(event) => {
+                        if (playheadPointer.current !== event.pointerId) return;
+                        onFrameChange(frameAt(event.clientX));
+                    }}
+                    onPointerUp={(event) => {
+                        if (playheadPointer.current !== event.pointerId) return;
+                        playheadPointer.current = null;
+                        event.currentTarget.releasePointerCapture(event.pointerId);
+                    }}
+                    onPointerCancel={(event) => {
+                        if (playheadPointer.current === event.pointerId) {
+                            playheadPointer.current = null;
+                        }
+                    }}
+                    onLostPointerCapture={(event) => {
+                        if (playheadPointer.current === event.pointerId) {
+                            playheadPointer.current = null;
+                        }
+                    }}
+                    onKeyDown={(event) => {
+                        let next: number;
+                        switch (event.key) {
+                            case "ArrowLeft":
+                            case "ArrowDown":
+                                next = frameIndex - 1;
+                                break;
+                            case "ArrowRight":
+                            case "ArrowUp":
+                                next = frameIndex + 1;
+                                break;
+                            case "Home":
+                                next = 0;
+                                break;
+                            case "End":
+                                next = frameCount - 1;
+                                break;
+                            default:
+                                if (event.key === " " || event.key === "Enter") {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                }
+                                return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onFrameChange(
+                            Math.max(0, Math.min(frameCount - 1, next)),
+                        );
+                    }}
                 />
             </div>
         </div>

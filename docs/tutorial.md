@@ -297,7 +297,9 @@ _Set the range on the timeline, then Propagate._
 
 - **Play / pause** — the video control or **Space**.
 - **Step a frame** — the ⏮ / ⏭ buttons or **←** / **→**.
-- **Timeline** — use the video controls below the canvas to seek. Cells read:
+- **Timeline** — drag the white playhead to seek, or use the video controls below
+  the canvas. Focus the playhead and use the arrow keys to step, or Home/End to
+  jump to the first/last frame. Cells read:
     - **object colour** = a frame a human drew or corrected,
     - **orange** = a machine-propagated frame,
     - **background** = no mask (the tracker found nothing).

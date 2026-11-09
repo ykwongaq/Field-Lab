@@ -3114,6 +3114,7 @@ export function Workspace({
                     <TimelineStrip
                         frameCount={clip.frameCount}
                         frameIndex={frameIndex}
+                        onFrameChange={setFrameIndex}
                         states={timelineStates}
                         label={
                             selected
