@@ -51,10 +51,14 @@ export class MaskCache {
     /** Cached mask for `key`, if it was decoded from exactly this `payload`. */
     get(key: string, payload: RawRle): DecodedMask | undefined {
         const entry = this.store.get(key);
-        return entry && entry.payload === payload ? entry.mask : undefined;
+        if (!entry || entry.payload !== payload) return undefined;
+        this.store.delete(key);
+        this.store.set(key, entry);
+        return entry.mask;
     }
 
     set(key: string, payload: RawRle, mask: DecodedMask): void {
+        this.store.delete(key);
         this.store.set(key, { payload, mask });
         this.evict();
     }

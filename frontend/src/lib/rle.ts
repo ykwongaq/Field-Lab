@@ -120,6 +120,32 @@ export function bitmapToRuns(
 	return runs;
 }
 
+/** Convert column-major RLE directly to drawable column runs. */
+export function rleToRuns(rle: RawRle): ForegroundRun[] {
+	const [height, width] = rle.size;
+	const total = height * width;
+	const runs: ForegroundRun[] = [];
+	let pos = 0;
+	const counts = countsOf(rle);
+	for (let i = 0; i < counts.length && pos < total; i++) {
+		const end = Math.min(pos + counts[i], total);
+		if (i % 2 === 1 && height > 0) {
+			while (pos < end) {
+				const x = Math.floor(pos / height);
+				const y = pos % height;
+				const length = Math.min(end - pos, height - y);
+				const previous = runs[runs.length - 1];
+				if (previous && previous.x === x && previous.y + previous.length === y)
+					previous.length += length;
+				else runs.push({ x, y, length });
+				pos += length;
+			}
+		}
+		pos = end;
+	}
+	return runs;
+}
+
 function assertSameSize(a: RawRle, b: RawRle): void {
 	if (a.size[0] !== b.size[0] || a.size[1] !== b.size[1]) {
 		throw new Error(

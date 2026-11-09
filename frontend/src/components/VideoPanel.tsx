@@ -8,6 +8,7 @@ import type { FrameSource } from "../lib/frames";
 import { FrameCache } from "../lib/frameCache";
 import { MaskRenderer, boundaryWidthFor, ringsToPath } from "../lib/mask";
 import { MaskCache, type MaskRequest } from "../lib/maskApi";
+import { OverlayCache } from "../lib/overlayCache";
 import { formatTimecode } from "../lib/format";
 import { SELECTED_COLOR } from "../lib/palette";
 import { Icon } from "../ui";
@@ -57,6 +58,7 @@ const VERTEX_HIT_RADIUS = 7;
 const EDGE_HIT_RADIUS = 6;
 /** One marching-ants dash cycle, in milliseconds. */
 const ANTS_PERIOD = 600;
+type MaskDisplay = "all" | "selected-outlines" | "selected-only";
 
 interface VideoPanelProps {
     clip: Clip;
@@ -165,6 +167,8 @@ export function VideoPanel(props: VideoPanelProps) {
     if (!maskCacheRef.current) {
         maskCacheRef.current = new MaskCache();
     }
+    const [overlayCache] = useState(() => new OverlayCache());
+    const [maskDisplay, setMaskDisplay] = useState<MaskDisplay>("all");
 
     const paintedFrameRef = useRef(-1);
 
@@ -245,7 +249,11 @@ export function VideoPanel(props: VideoPanelProps) {
         switch (props.tool) {
             case "review":
             case "addMask":
-                return props.clip.tracklets;
+                return maskDisplay === "selected-only"
+                    ? props.clip.tracklets.filter((t) =>
+                          props.selectedTrackletIds.includes(t.id),
+                      )
+                    : props.clip.tracklets;
             case "editMask":
             case "propagate": {
                 const focus =
@@ -258,6 +266,8 @@ export function VideoPanel(props: VideoPanelProps) {
         props.clip.tracklets,
         props.editingTrackletId,
         props.selectedTrackletId,
+        props.selectedTrackletIds,
+        maskDisplay,
     ]);
 
     const drawing = props.tool === "addMask" || props.tool === "editMask";
@@ -342,7 +352,7 @@ export function VideoPanel(props: VideoPanelProps) {
             const frameIndex = props.frameIndex;
             const requests: MaskRequest[] = [];
             const owners: Tracklet[] = [];
-            for (const tracklet of props.clip.tracklets) {
+            for (const tracklet of maskTracklets()) {
                 const payload = props.clip.rawMaskAt(tracklet, frameIndex);
                 if (!payload) continue;
                 requests.push({ trackletId: tracklet.id, frameIndex, payload });
@@ -369,7 +379,7 @@ export function VideoPanel(props: VideoPanelProps) {
             }
             props.onSelectTracklet(bestId, additive);
         },
-        [props],
+        [props, maskTracklets],
     );
 
     const handleCanvasClick = useCallback(
@@ -777,7 +787,7 @@ export function VideoPanel(props: VideoPanelProps) {
         const visible = maskTracklets();
 
         const requests: MaskRequest[] = [];
-        const MAX_PREFETCH_MASKS = 64;
+        const MAX_PREFETCH_MASKS = 16;
         for (let d = 1; d <= 8 && requests.length < MAX_PREFETCH_MASKS; d++) {
             const index = props.frameIndex + d;
             if (index >= total) break;
@@ -793,47 +803,13 @@ export function VideoPanel(props: VideoPanelProps) {
             }
         }
         if (requests.length === 0) return;
-        void cache.resolveBatch(requests).catch(() => {});
-    }, [props.frameIndex, props.clip, maskTracklets]);
-
-    useEffect(() => {
-        const cache = maskCacheRef.current;
-        if (!cache) return;
-        const tracklet = props.clip.tracklets.find(
-            (t) => t.id === props.selectedTrackletId,
-        );
-        if (!tracklet) return;
-
-        const requests: MaskRequest[] = [];
-        for (let index = 0; index < props.clip.frameCount; index++) {
-            const payload = props.clip.rawMaskAt(tracklet, index);
-            if (!payload) continue;
-            requests.push({
-                trackletId: tracklet.id,
-                frameIndex: index,
-                payload,
+        const timer = window.setTimeout(() => {
+            void cache.resolveBatch(requests).catch((error: unknown) => {
+                console.error("Could not prefetch masks", error);
             });
-        }
-
-        let cancelled = false;
-        const CHUNK_SIZE = 64;
-        const pump = async () => {
-            for (
-                let offset = 0;
-                offset < requests.length && !cancelled;
-                offset += CHUNK_SIZE
-            ) {
-                await cache.resolveBatch(
-                    requests.slice(offset, offset + CHUNK_SIZE),
-                );
-            }
-        };
-        void pump().catch(() => {});
-
-        return () => {
-            cancelled = true;
-        };
-    }, [props.clip, props.selectedTrackletId]);
+        }, 50);
+        return () => window.clearTimeout(timer);
+    }, [props.frameIndex, props.clip, maskTracklets]);
 
     // Render the current frame and its mask overlay.
     useEffect(() => {
@@ -969,55 +945,75 @@ export function VideoPanel(props: VideoPanelProps) {
                 requestTracklets.push(tracklet);
             }
 
-            const decodedList =
-                requests.length > 0 ? await cache.resolveBatch(requests) : [];
-
-            if (cancelled || paintedFrameRef.current !== props.frameIndex)
-                return;
-
-            // Fill every object at the overlay opacity — the selected one last,
-            // in the reserved colour, so "the one you are working on" stands out
-            // without hiding what surrounds it. The outline is drawn into its own
-            // buffer and blitted opaque afterwards, so it reads as a crisp edge
-            // no matter how faint the fill is.
-            const boundaryWidth = boundaryWidthFor(
-                props.clip.width,
-                props.clip.height,
+            const overlayKeys = requests.map((request, i) => ({
+                payload: request.payload,
+                color: requestTracklets[i].color,
+                selected: props.selectedTrackletIds.includes(request.trackletId),
+            }));
+            const outlineMode = `${props.tool === "review" ? "review" : "other"}:${maskDisplay}:${props.selectedTrackletId}`;
+            const cachedOverlay = overlayCache.get(
+                props.frameIndex,
+                maskRenderer.canvasElement.width,
+                maskRenderer.canvasElement.height,
+                outlineMode,
+                overlayKeys,
             );
-            const selectedMasks: DecodedMask[] = [];
-            maskRenderer.clear();
-            edgeRenderer.clear();
-            for (let i = 0; i < requestTracklets.length; i++) {
-                const decoded = decodedList[i];
-                if (!decoded) continue;
-                const tracklet = requestTracklets[i];
-                if (props.selectedTrackletIds.includes(tracklet.id)) {
-                    selectedMasks.push(decoded);
-                    continue;
+            if (!cachedOverlay) {
+                const decodedList =
+                    requests.length > 0 ? await cache.resolveBatch(requests) : [];
+
+                if (cancelled || paintedFrameRef.current !== props.frameIndex)
+                    return;
+
+                const boundaryWidth = boundaryWidthFor(
+                    props.clip.width,
+                    props.clip.height,
+                );
+                const selectedMasks: { mask: DecodedMask; id: number }[] = [];
+                maskRenderer.clear();
+                edgeRenderer.clear();
+                for (let i = 0; i < requestTracklets.length; i++) {
+                    const decoded = decodedList[i];
+                    if (!decoded) continue;
+                    const tracklet = requestTracklets[i];
+                    if (overlayKeys[i].selected) {
+                        selectedMasks.push({ mask: decoded, id: tracklet.id });
+                        continue;
+                    }
+                    maskRenderer.drawRuns(decoded.runs, tracklet.color);
+                    if (maskDisplay !== "selected-outlines") {
+                        edgeRenderer.strokeRuns(
+                            decoded.runs,
+                            tracklet.color,
+                            boundaryWidth,
+                        );
+                    }
                 }
-                maskRenderer.drawRuns(decoded.runs, tracklet.color);
-                edgeRenderer.strokeRuns(
-                    decoded.runs,
-                    tracklet.color,
-                    boundaryWidth,
+                for (const selected of selectedMasks) {
+                    maskRenderer.drawRuns(selected.mask.runs, SELECTED_COLOR);
+                    if (
+                        props.tool !== "review" ||
+                        (maskDisplay !== "all" &&
+                            selected.id !== props.selectedTrackletId)
+                    ) {
+                        edgeRenderer.strokeRuns(
+                            selected.mask.runs,
+                            SELECTED_COLOR,
+                            boundaryWidth,
+                        );
+                    }
+                }
+                overlayCache.set(
+                    props.frameIndex,
+                    outlineMode,
+                    overlayKeys,
+                    maskRenderer.canvasElement,
+                    edgeRenderer.canvasElement,
                 );
             }
-            for (const selectedMask of selectedMasks) {
-                maskRenderer.drawRuns(selectedMask.runs, SELECTED_COLOR);
-                // Select mode hands the primary outline to the marching-ants
-                // layer, so the two never fight over the same edge. Secondary
-                // selected masks keep a crisp selected-colour edge.
-                if (props.tool !== "review") {
-                    edgeRenderer.strokeRuns(
-                        selectedMask.runs,
-                        SELECTED_COLOR,
-                        boundaryWidth,
-                    );
-                }
-            }
 
-            blit(maskRenderer.canvasElement, props.maskOpacity, smooth);
-            blit(edgeRenderer.canvasElement, 1, smooth);
+            blit(cachedOverlay?.fill ?? maskRenderer.canvasElement, props.maskOpacity, smooth);
+            blit(cachedOverlay?.edge ?? edgeRenderer.canvasElement, 1, smooth);
 
             if (props.tool === "review") return;
 
@@ -1092,6 +1088,9 @@ export function VideoPanel(props: VideoPanelProps) {
         props.candidateColor,
         props.editingTrackletId,
         maskTracklets,
+        maskDisplay,
+        overlayCache,
+        drawing,
     ]);
 
     // Select mode: the selected object's outline becomes marching ants.
@@ -1526,6 +1525,26 @@ export function VideoPanel(props: VideoPanelProps) {
                         }
                     />
                     {Math.round(props.maskOpacity * 100)}%
+                </label>
+
+                <label className={styles.maskDisplay}>
+                    Masks
+                    <select
+                        value={maskDisplay}
+                        onChange={(event) => {
+                            const value = event.target.value;
+                            if (
+                                value === "all" ||
+                                value === "selected-outlines" ||
+                                value === "selected-only"
+                            ) setMaskDisplay(value);
+                        }}
+                        aria-label="Mask display"
+                    >
+                        <option value="all">All masks and outlines</option>
+                        <option value="selected-outlines">Selected outlines only</option>
+                        <option value="selected-only">Selected masks only</option>
+                    </select>
                 </label>
 
                 <div className={styles.zoomGroup}>

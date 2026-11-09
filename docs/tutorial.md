@@ -307,6 +307,13 @@ _Set the range on the timeline, then Propagate._
   to make that mask available as a propagation seed.
 - **Zoom / pan** — scroll to zoom, middle-drag to pan, and the _Fit_ button to reset.
 - **Mask opacity** — the slider under the canvas.
+- **Mask display** — choose **Selected outlines only** to keep all fills but
+  draw outlines only for selected objects, or **Selected masks only** to hide
+  other masks in Select and Add. These options can make dense scenes faster to
+  review; they do not change the saved masks. In Select, hidden masks cannot be
+  clicked on the canvas: use the objects list to select them, or switch back to
+  **All masks and outlines**. Edit and Track continue to show their focused
+  object.
 - **Panels** — drag the seams to resize the video stage, the objects list and the label list; double-click a seam to reset.
 
 ![Timeline states](images/23-timeline.png)

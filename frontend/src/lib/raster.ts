@@ -1,9 +1,8 @@
 import type { DecodedMask, ForegroundRun, RawRle } from "../types";
 import {
 	bitmapToRle,
-	bitmapToRuns,
 	rleArea,
-	rleToBitmap,
+	rleToRuns,
 	subtractRle,
 	unionRle,
 } from "./rle";
@@ -118,7 +117,7 @@ export function rleToDecoded(rle: RawRle): DecodedMask {
 	return {
 		height,
 		width,
-		runs: bitmapToRuns(rleToBitmap(rle), height, width),
+		runs: rleToRuns(rle),
 	};
 }
 
