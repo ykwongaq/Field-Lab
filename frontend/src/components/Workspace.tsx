@@ -981,18 +981,8 @@ export function Workspace({
     );
 
     /**
-     * Delete the selected object's mask on this frame, as a deliberate act.
-     *
-     * This is the "that mask is wrong, draw it again" gesture, and it is not
-     * merely tidier than painting over the mask: with Edit mask the model's result
-     * is *composed* into the existing draft with `add`, so a click on top of a bad
-     * mask can only ever grow it. Clearing first is what makes the replacement a
-     * fresh prediction instead of a union with the mask being rejected.
-     *
-     * Only reachable while the object keeps another mask. When this is its *only*
-     * mask, clearing it would delete the object itself (`removeMask` drops a
-     * tracklet left with no masks), so the bar routes that click through the
-     * delete confirmation instead.
+     * Delete the selected object's mask immediately; a later redraw starts fresh.
+     * The bar sends the last-mask case through object deletion confirmation.
      */
     const clearMaskOnFrame = useCallback(() => {
         if (selectedId === null || !selected) return;
@@ -1004,15 +994,9 @@ export function Workspace({
         setClip(clip.removeMask(selectedId, frameIndex));
         markCorrected(selectedId, frameIndex);
         refresh();
-        // Stay in Edit mask with an explicitly empty draft. The redraw then
-        // *replaces* the mask on this frame; going through Add mask instead would
-        // create a second object for the same thing, which is not a correction.
-        // Stored on purpose: "erased on this frame" is itself uncommitted work, and
-        // the redraw must compose onto nothing rather than onto the mask rejected.
-        setDrafts((current) =>
-            new Map(current).set(frameKey(selectedId, frameIndex), null),
-        );
-        resetTransient();
+        // The deletion is already in the clip, so discard this frame's old
+        // draft and history instead of leaving an unsaveable empty draft behind.
+        discardDraft();
         setTool("editMask");
     }, [
         selectedId,
@@ -1021,7 +1005,7 @@ export function Workspace({
         frameIndex,
         markCorrected,
         refresh,
-        resetTransient,
+        discardDraft,
     ]);
 
     const toolRef = useRef(tool);
@@ -2829,7 +2813,7 @@ export function Workspace({
                                         title={
                                             selected.maskFrames.count <= 1
                                                 ? "This is the object's only mask, so deleting it removes the object. You will land in Add mask to draw it again."
-                                                : "Delete the mask on this frame and draw it again. A redraw then replaces it, instead of being added to the mask you are rejecting."
+                                                : "Delete the mask on this frame immediately. You can draw a new mask for the same object afterwards."
                                         }
                                     >
                                         Delete mask on this frame

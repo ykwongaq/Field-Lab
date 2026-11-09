@@ -202,7 +202,7 @@ Press **E** (or click **Edit**) with an object selected. What the bar offers dep
     - **Save mask** commits the correction.
 - **No mask here** → the create methods (**SAM 3**, **Box**, **Text**) return, so a redraw fills _this object's_ frame instead of making a second object.
 
-**Delete mask on this frame** clears the frame in place (or deletes the object if that was its only mask). The single recovery button **Clear** discards the pending edit; **Backspace** undoes and **Esc** leaves the tool.
+**Delete mask on this frame** immediately removes the mask and any pending draft on that frame. You can redraw it for the same object, but no redraw is required; use **Save** in the header to keep the deletion in your project. If it was the object's only mask, deleting it removes the object after confirmation. The single recovery button **Clear** discards a pending edit; **Backspace** undoes a pending edit and **Esc** leaves the tool.
 
 ![Edit mask](images/16-edit-mask.png)
 _Edit mask: correct with polygon outline editing or the brush._
