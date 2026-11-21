@@ -1,14 +1,18 @@
 /*
  * The selection tray sits above the object list. It never replaces the list:
  * it is the compact working set, while the list remains the index.
+ *
+ * The tray is one fixed height, empty or full: the height its chips reach before
+ * the list starts scrolling. That is what keeps the object and label lists below
+ * still while a reviewer adds or drops a selection. `--tray-h` pins a dragged
+ * height; the seam underneath draws the divider, so the panel carries no border.
  */
 .panel {
     display: flex;
     flex-direction: column;
-    flex: 0 0 auto;
-    max-height: 168px;
+    flex: 0 0 var(--tray-h, 168px);
+    max-height: var(--tray-h, 168px);
     min-height: 0;
-    border-bottom: 1px solid var(--line);
     background: var(--surface-1);
 }
 
@@ -60,6 +64,14 @@
     border-left: 2px solid transparent;
     border-radius: var(--r-xs);
     background: var(--surface-2);
+}
+
+/* The zero-selection placeholder: one quiet line where the chips will land. */
+.empty {
+    margin: 0;
+    padding: 6px 4px;
+    color: var(--faint);
+    font-size: var(--fs-xs);
 }
 
 .chip.primary {

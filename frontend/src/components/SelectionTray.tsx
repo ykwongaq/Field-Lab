@@ -26,6 +26,10 @@ interface SelectionTrayProps {
  * with an unselected neighbour, and deselecting never moves a row around the
  * sidebar. The primary entry is the one Add/Edit, the timeline and drafts act on;
  * Merge uses the whole set.
+ *
+ * The tray holds one height whether it is empty or full — the stylesheet's
+ * `--tray-h`, dragged by the seam below it. Only its list scrolls, so adding or
+ * removing a selection never shifts the object and label lists underneath.
  */
 export function SelectionTray({
     tracklets,
@@ -39,7 +43,7 @@ export function SelectionTray({
     onClear,
     onMerge,
 }: SelectionTrayProps) {
-    if (tracklets.length === 0) return null;
+    const empty = tracklets.length === 0;
 
     return (
         <section
@@ -53,12 +57,14 @@ export function SelectionTray({
                 <button
                     type="button"
                     className={styles.clear}
-                    disabled={busy}
+                    disabled={busy || empty}
                     onClick={onClear}
                     title={
                         busy
                             ? "Selection is locked while a run is live"
-                            : "Clear the selection"
+                            : empty
+                              ? "Nothing is selected"
+                              : "Clear the selection"
                     }
                 >
                     Clear
@@ -66,60 +72,66 @@ export function SelectionTray({
             </header>
 
             <div className={`scrollArea ${styles.list}`}>
-                {tracklets.map((tracklet) => {
-                    const primary = tracklet.id === primaryId;
-                    return (
-                        <div
-                            key={tracklet.id}
-                            className={`${styles.chip} ${
-                                primary ? styles.primary : ""
-                            }`}
-                        >
-                            <button
-                                type="button"
-                                className={styles.chipBody}
-                                disabled={busy}
-                                onClick={() => onFocus(tracklet.id)}
-                                title={
-                                    primary
-                                        ? "This is the primary selection"
-                                        : "Make this the primary selection"
-                                }
+                {empty ? (
+                    <p className={styles.empty}>
+                        Nothing selected — check {unit}s in the list.
+                    </p>
+                ) : (
+                    tracklets.map((tracklet) => {
+                        const primary = tracklet.id === primaryId;
+                        return (
+                            <div
+                                key={tracklet.id}
+                                className={`${styles.chip} ${
+                                    primary ? styles.primary : ""
+                                }`}
                             >
-                                <span
-                                    className={styles.swatch}
-                                    style={{ background: tracklet.color }}
-                                />
-                                <span className={styles.name}>
-                                    {tracklet.label}
-                                </span>
-                                <span className={styles.meta}>
-                                    #{tracklet.id} · {tracklet.maskFrames.count}
-                                    f
-                                </span>
-                                {primary && (
-                                    <span className={styles.badge}>
+                                <button
+                                    type="button"
+                                    className={styles.chipBody}
+                                    disabled={busy}
+                                    onClick={() => onFocus(tracklet.id)}
+                                    title={
                                         primary
+                                            ? "This is the primary selection"
+                                            : "Make this the primary selection"
+                                    }
+                                >
+                                    <span
+                                        className={styles.swatch}
+                                        style={{ background: tracklet.color }}
+                                    />
+                                    <span className={styles.name}>
+                                        {tracklet.label}
                                     </span>
-                                )}
-                            </button>
-                            <button
-                                type="button"
-                                className={styles.remove}
-                                disabled={busy}
-                                onClick={() => onRemove(tracklet.id)}
-                                aria-label={`Remove ${unit} #${tracklet.id} from the selection`}
-                                title={
-                                    busy
-                                        ? "Selection is locked while a run is live"
-                                        : "Remove from selection"
-                                }
-                            >
-                                ×
-                            </button>
-                        </div>
-                    );
-                })}
+                                    <span className={styles.meta}>
+                                        #{tracklet.id} ·{" "}
+                                        {tracklet.maskFrames.count}f
+                                    </span>
+                                    {primary && (
+                                        <span className={styles.badge}>
+                                            primary
+                                        </span>
+                                    )}
+                                </button>
+                                <button
+                                    type="button"
+                                    className={styles.remove}
+                                    disabled={busy}
+                                    onClick={() => onRemove(tracklet.id)}
+                                    aria-label={`Remove ${unit} #${tracklet.id} from the selection`}
+                                    title={
+                                        busy
+                                            ? "Selection is locked while a run is live"
+                                            : "Remove from selection"
+                                    }
+                                >
+                                    ×
+                                </button>
+                            </div>
+                        );
+                    })
+                )}
             </div>
 
             <div className={styles.actions}>

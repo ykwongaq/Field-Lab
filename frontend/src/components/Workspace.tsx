@@ -329,10 +329,13 @@ export function Workspace({
         bodyStyle,
         sidebarStyle,
         onPanelDrag,
+        onTrayDrag,
         onLabelsDrag,
         onPanelNudge,
+        onTrayNudge,
         onLabelsNudge,
         resetPanelW,
+        resetTrayH,
         resetLabelsH,
     } = usePanelLayout();
 
@@ -3321,18 +3324,27 @@ export function Workspace({
                     style={sidebarStyle}
                 >
                     {!semantic && (
-                        <SelectionTray
-                            tracklets={selectedTracklets}
-                            primaryId={selectedId}
-                            unit={vocab.unit}
-                            canMerge={canMergeSelection}
-                            busy={propagating}
-                            mergeHint={selectionMergeHint}
-                            onFocus={focusSelectedTracklet}
-                            onRemove={toggleSelectedTracklet}
-                            onClear={clearSelection}
-                            onMerge={beginMergeSelection}
-                        />
+                        <>
+                            <SelectionTray
+                                tracklets={selectedTracklets}
+                                primaryId={selectedId}
+                                unit={vocab.unit}
+                                canMerge={canMergeSelection}
+                                busy={propagating}
+                                mergeHint={selectionMergeHint}
+                                onFocus={focusSelectedTracklet}
+                                onRemove={toggleSelectedTracklet}
+                                onClear={clearSelection}
+                                onMerge={beginMergeSelection}
+                            />
+                            <Splitter
+                                orientation="horizontal"
+                                label="Resize the selection tray"
+                                onDrag={onTrayDrag}
+                                onNudge={onTrayNudge}
+                                onReset={resetTrayH}
+                            />
+                        </>
                     )}
                     <TrackletList
                         clip={clip}
