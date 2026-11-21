@@ -1555,7 +1555,27 @@ export function Workspace({
     }, [propagating, clip.fps]);
 
     /**
-     * The selected object's frame states, for the timeline strip.
+     * The object whose frame states the timeline paints.
+     *
+     * A batch run visits one object at a time and the canvas always shows the
+     * run under review, so the strip has to follow *that* run, not the primary
+     * selection. Following the selection made the strip freeze from the second
+     * object on: the run had moved on, but the strip was still painting the
+     * object that was queued first — which is why the bar stopped updating in
+     * real time even though the frames kept arriving.
+     */
+    const timelineTracklet = useMemo(() => {
+        if (propRun) {
+            const running = clip.tracklets.find(
+                (tracklet) => tracklet.id === propRun.trackletId,
+            );
+            if (running) return running;
+        }
+        return selected;
+    }, [propRun, clip.tracklets, selected]);
+
+    /**
+     * That object's frame states, for the timeline strip.
      *
      * Two marks and a background: a frame a human drew or corrected is `human`
      * (the object's own colour), a frame the tracker produced is `propagated`
@@ -1565,18 +1585,18 @@ export function Workspace({
     const timelineStates = useMemo<TimelineFrameState[]>(() => {
         const count = clip.frameCount;
         const states: TimelineFrameState[] = new Array(count).fill("none");
-        if (!selected) return states;
+        if (!timelineTracklet) return states;
         for (let frame = 0; frame < count; frame++) {
-            if (clip.rawMaskAt(selected, frame) === null) continue;
-            states[frame] = verifiedFrames.has(frameKey(selected.id, frame))
+            if (clip.rawMaskAt(timelineTracklet, frame) === null) continue;
+            states[frame] = verifiedFrames.has(
+                frameKey(timelineTracklet.id, frame),
+            )
                 ? "human"
                 : "propagated";
         }
-        // The run under review counts as propagated — but only on its own
-        // object's timeline. A run that belongs to a different object (a batch
-        // member, or one whose object has been deleted) must never paint this
-        // object's frames.
-        if (propRun && selected && propRun.trackletId === selected.id) {
+        // The run under review counts as propagated on its own object's
+        // timeline; it is machine output until its object is left.
+        if (propRun && propRun.trackletId === timelineTracklet.id) {
             for (const mask of propRun.masks.values()) {
                 if (mask.area <= 0) continue;
                 if (mask.frameIndex < 0 || mask.frameIndex >= count) continue;
@@ -1585,7 +1605,7 @@ export function Workspace({
             }
         }
         return states;
-    }, [clip, selected, verifiedFrames, propRun]);
+    }, [clip, timelineTracklet, verifiedFrames, propRun]);
 
     const timelineEditingAllowed =
         tool === "review" &&
@@ -1629,8 +1649,20 @@ export function Workspace({
                           last,
                           removeRange: current.removeRange
                               ? {
-                                    first: Math.max(first, Math.min(last, current.removeRange.first)),
-                                    last: Math.max(first, Math.min(last, current.removeRange.last)),
+                                    first: Math.max(
+                                        first,
+                                        Math.min(
+                                            last,
+                                            current.removeRange.first,
+                                        ),
+                                    ),
+                                    last: Math.max(
+                                        first,
+                                        Math.min(
+                                            last,
+                                            current.removeRange.last,
+                                        ),
+                                    ),
                                 }
                               : null,
                       }
@@ -1678,7 +1710,10 @@ export function Workspace({
             const updated = new Set(current);
             for (const key of updated) {
                 if (!key.startsWith(prefix)) continue;
-                if (!trackletRemains || removed.has(Number(key.slice(prefix.length))))
+                if (
+                    !trackletRemains ||
+                    removed.has(Number(key.slice(prefix.length)))
+                )
                     updated.delete(key);
             }
             return updated;
@@ -1709,9 +1744,8 @@ export function Workspace({
                 (tracklet) => tracklet.id === edit.trackletId,
             );
             const fallback =
-                next.tracklets[
-                    Math.min(position, next.tracklets.length - 1)
-                ] ?? null;
+                next.tracklets[Math.min(position, next.tracklets.length - 1)] ??
+                null;
             removeFromSelection(edit.trackletId, fallback?.id ?? null);
         }
         refresh();
@@ -2579,7 +2613,8 @@ export function Workspace({
 
                 <section className={styles.videoCol}>
                     {/* Keep the same row even when the current tool has no controls. */}
-                    {(tool === "review" || (tool === "propagate" && !selected)) && (
+                    {(tool === "review" ||
+                        (tool === "propagate" && !selected)) && (
                         <div
                             className={styles.promptBar}
                             aria-hidden="true"
@@ -2598,7 +2633,7 @@ export function Workspace({
                             {propRun ? (
                                 <span className={styles.promptStatus}>
                                     {propagating
-                                        ? `Propagating · ${propRun.framesDone}/${propRun.framesTotal} frames`
+                                        ? `Propagating${propTargets.length > 1 ? ` #${propRun.trackletId}` : ""} · ${propRun.framesDone}/${propRun.framesTotal} frames`
                                         : `${propSummary?.found ?? 0} frame${(propSummary?.found ?? 0) === 1 ? "" : "s"} propagated`}
                                 </span>
                             ) : (
@@ -3100,10 +3135,10 @@ export function Workspace({
                         onFrameChange={setFrameIndex}
                         states={timelineStates}
                         label={
-                            selected
-                                ? selectedIds.length > 1
-                                    ? `${selectedIds.length} ${vocab.units} selected · primary #${selected.id}`
-                                    : `${vocab.unit} #${selected.id} · ${selected.label}`
+                            timelineTracklet
+                                ? selectedIds.length > 1 && !propRun
+                                    ? `${selectedIds.length} ${vocab.units} selected · primary #${timelineTracklet.id}`
+                                    : `${vocab.unit} #${timelineTracklet.id} · ${timelineTracklet.label}`
                                 : `No ${vocab.unit} selected`
                         }
                         rangeFirst={
@@ -3154,10 +3189,12 @@ export function Workspace({
                                           current
                                               ? {
                                                     ...current,
-                                                    removeMode: !current.removeMode,
-                                                    removeRange: current.removeMode
-                                                        ? null
-                                                        : current.removeRange,
+                                                    removeMode:
+                                                        !current.removeMode,
+                                                    removeRange:
+                                                        current.removeMode
+                                                            ? null
+                                                            : current.removeRange,
                                                 }
                                               : current,
                                       )
@@ -3170,7 +3207,10 @@ export function Workspace({
                                           current
                                               ? {
                                                     ...current,
-                                                    removeRange: { first, last },
+                                                    removeRange: {
+                                                        first,
+                                                        last,
+                                                    },
                                                 }
                                               : current,
                                       )

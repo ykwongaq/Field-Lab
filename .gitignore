@@ -17,7 +17,6 @@ env/
 .env.*
 # ...but keep the templates that document the variables
 !.env.example
-!frontend/.env.production
 
 # Test & lint caches
 .pytest_cache/
@@ -40,3 +39,6 @@ node_modules/
 backend/tmp/
 
 backend/models
+
+backend/config/server.json
+frontend/.env.production
