@@ -29,6 +29,9 @@ htmlcov/
 .idea/
 .DS_Store
 
+# Local Copilot instructions (personal, not shared with the repo)
+.github/copilot-instructions.md
+
 # Node
 node_modules/
 
