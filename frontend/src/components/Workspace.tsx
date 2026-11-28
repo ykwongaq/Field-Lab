@@ -317,6 +317,7 @@ export function Workspace({
         clip.tracklets[0] ? [clip.tracklets[0].id] : [],
     );
     const [maskOpacity, setMaskOpacity] = useState(0.55);
+    const [masksVisible, setMasksVisible] = useState(true);
     // Bumped after a taxonomy edit so the (mutable) store's new value is read
     // again on the next render; the counter's own value is not needed.
     const [, setTick] = useState(0);
@@ -2447,6 +2448,7 @@ export function Workspace({
             runPropagation,
             setPlaying,
             setBrushSize,
+            setMasksVisible,
         },
     );
 
@@ -3246,6 +3248,7 @@ export function Workspace({
                         selectedTrackletId={selectedId}
                         selectedTrackletIds={selectedIds}
                         maskOpacity={maskOpacity}
+                        masksVisible={masksVisible}
                         onFrameChange={setFrameIndex}
                         onPlayToggle={togglePlay}
                         onStep={(delta) =>
@@ -3257,6 +3260,7 @@ export function Workspace({
                                 : stepFrame(delta)
                         }
                         onMaskOpacityChange={setMaskOpacity}
+                        onMasksVisibleChange={setMasksVisible}
                         tool={tool}
                         method={method}
                         paintMode={paintMode}

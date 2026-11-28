@@ -11,7 +11,7 @@ import { MaskCache, type MaskRequest } from "../lib/maskApi";
 import { OverlayCache } from "../lib/overlayCache";
 import { formatTimecode } from "../lib/format";
 import { SELECTED_COLOR } from "../lib/palette";
-import { Icon } from "../ui";
+import { Button, Icon } from "../ui";
 import {
     RasterCanvas,
     runsArea,
@@ -70,10 +70,12 @@ interface VideoPanelProps {
     /** Every selected tracklet, highlighted on the canvas. */
     selectedTrackletIds: number[];
     maskOpacity: number;
+    masksVisible: boolean;
     onFrameChange: (frame: number) => void;
     onPlayToggle: () => void;
     onStep: (delta: number) => void;
     onMaskOpacityChange: (value: number) => void;
+    onMasksVisibleChange: (visible: boolean) => void;
     tool: Tool;
     method: DrawMethod;
     paintMode: PaintMode;
@@ -925,120 +927,123 @@ export function VideoPanel(props: VideoPanelProps) {
             }
             paintedFrameRef.current = props.frameIndex;
 
-            const cache = maskCacheRef.current!;
-            const visible = maskTracklets();
+            if (props.masksVisible) {
+                const cache = maskCacheRef.current!;
+                const visible = maskTracklets();
 
-            const requests: MaskRequest[] = [];
-            const requestTracklets: Tracklet[] = [];
-            for (const tracklet of visible) {
-                if (tracklet.id === props.editingTrackletId) continue;
-                const payload = props.clip.rawMaskAt(
-                    tracklet,
-                    props.frameIndex,
-                );
-                if (!payload) continue;
-                requests.push({
-                    trackletId: tracklet.id,
-                    frameIndex: props.frameIndex,
-                    payload,
-                });
-                requestTracklets.push(tracklet);
-            }
-
-            const overlayKeys = requests.map((request, i) => ({
-                payload: request.payload,
-                color: requestTracklets[i].color,
-                selected: props.selectedTrackletIds.includes(request.trackletId),
-            }));
-            const outlineMode = `${props.tool === "review" ? "review" : "other"}:${maskDisplay}:${props.selectedTrackletId}`;
-            const cachedOverlay = overlayCache.get(
-                props.frameIndex,
-                maskRenderer.canvasElement.width,
-                maskRenderer.canvasElement.height,
-                outlineMode,
-                overlayKeys,
-            );
-            if (!cachedOverlay) {
-                const decodedList =
-                    requests.length > 0 ? await cache.resolveBatch(requests) : [];
-
-                if (cancelled || paintedFrameRef.current !== props.frameIndex)
-                    return;
-
-                const boundaryWidth = boundaryWidthFor(
-                    props.clip.width,
-                    props.clip.height,
-                );
-                const selectedMasks: { mask: DecodedMask; id: number }[] = [];
-                maskRenderer.clear();
-                edgeRenderer.clear();
-                for (let i = 0; i < requestTracklets.length; i++) {
-                    const decoded = decodedList[i];
-                    if (!decoded) continue;
-                    const tracklet = requestTracklets[i];
-                    if (overlayKeys[i].selected) {
-                        selectedMasks.push({ mask: decoded, id: tracklet.id });
-                        continue;
-                    }
-                    maskRenderer.drawRuns(decoded.runs, tracklet.color);
-                    if (maskDisplay !== "selected-outlines") {
-                        edgeRenderer.strokeRuns(
-                            decoded.runs,
-                            tracklet.color,
-                            boundaryWidth,
-                        );
-                    }
+                const requests: MaskRequest[] = [];
+                const requestTracklets: Tracklet[] = [];
+                for (const tracklet of visible) {
+                    if (tracklet.id === props.editingTrackletId) continue;
+                    const payload = props.clip.rawMaskAt(
+                        tracklet,
+                        props.frameIndex,
+                    );
+                    if (!payload) continue;
+                    requests.push({
+                        trackletId: tracklet.id,
+                        frameIndex: props.frameIndex,
+                        payload,
+                    });
+                    requestTracklets.push(tracklet);
                 }
-                for (const selected of selectedMasks) {
-                    maskRenderer.drawRuns(selected.mask.runs, SELECTED_COLOR);
-                    if (
-                        props.tool !== "review" ||
-                        (maskDisplay !== "all" &&
-                            selected.id !== props.selectedTrackletId)
-                    ) {
-                        edgeRenderer.strokeRuns(
-                            selected.mask.runs,
-                            SELECTED_COLOR,
-                            boundaryWidth,
-                        );
-                    }
-                }
-                overlayCache.set(
+
+                const overlayKeys = requests.map((request, i) => ({
+                    payload: request.payload,
+                    color: requestTracklets[i].color,
+                    selected: props.selectedTrackletIds.includes(request.trackletId),
+                }));
+                const outlineMode = `${props.tool === "review" ? "review" : "other"}:${maskDisplay}:${props.selectedTrackletId}`;
+                const cachedOverlay = overlayCache.get(
                     props.frameIndex,
+                    maskRenderer.canvasElement.width,
+                    maskRenderer.canvasElement.height,
                     outlineMode,
                     overlayKeys,
-                    maskRenderer.canvasElement,
-                    edgeRenderer.canvasElement,
                 );
-            }
+                if (!cachedOverlay) {
+                    const decodedList =
+                        requests.length > 0 ? await cache.resolveBatch(requests) : [];
 
-            blit(cachedOverlay?.fill ?? maskRenderer.canvasElement, props.maskOpacity, smooth);
-            blit(cachedOverlay?.edge ?? edgeRenderer.canvasElement, 1, smooth);
+                    if (cancelled || paintedFrameRef.current !== props.frameIndex)
+                        return;
+
+                    const boundaryWidth = boundaryWidthFor(
+                        props.clip.width,
+                        props.clip.height,
+                    );
+                    const selectedMasks: { mask: DecodedMask; id: number }[] = [];
+                    maskRenderer.clear();
+                    edgeRenderer.clear();
+                    for (let i = 0; i < requestTracklets.length; i++) {
+                        const decoded = decodedList[i];
+                        if (!decoded) continue;
+                        const tracklet = requestTracklets[i];
+                        if (overlayKeys[i].selected) {
+                            selectedMasks.push({ mask: decoded, id: tracklet.id });
+                            continue;
+                        }
+                        maskRenderer.drawRuns(decoded.runs, tracklet.color);
+                        if (maskDisplay !== "selected-outlines") {
+                            edgeRenderer.strokeRuns(
+                                decoded.runs,
+                                tracklet.color,
+                                boundaryWidth,
+                            );
+                        }
+                    }
+                    for (const selected of selectedMasks) {
+                        maskRenderer.drawRuns(selected.mask.runs, SELECTED_COLOR);
+                        if (
+                            props.tool !== "review" ||
+                            (maskDisplay !== "all" &&
+                                selected.id !== props.selectedTrackletId)
+                        ) {
+                            edgeRenderer.strokeRuns(
+                                selected.mask.runs,
+                                SELECTED_COLOR,
+                                boundaryWidth,
+                            );
+                        }
+                    }
+                    overlayCache.set(
+                        props.frameIndex,
+                        outlineMode,
+                        overlayKeys,
+                        maskRenderer.canvasElement,
+                        edgeRenderer.canvasElement,
+                    );
+                }
+
+                blit(cachedOverlay?.fill ?? maskRenderer.canvasElement, props.maskOpacity, smooth);
+                blit(cachedOverlay?.edge ?? edgeRenderer.canvasElement, 1, smooth);
+
+                if (props.tool !== "review") {
+                    const overlays: { mask: DecodedMask | null; color: string }[] = [
+                        { mask: props.draft, color: PREVIEW_COLOR },
+                        {
+                            mask: props.candidate,
+                            color:
+                                props.candidateColor ??
+                                (props.paintMode === "add"
+                                    ? CANDIDATE_ADD_COLOR
+                                    : CANDIDATE_ERASE_COLOR),
+                        },
+                    ];
+                    for (const { mask, color } of overlays) {
+                        if (!mask) continue;
+                        maskRenderer.clear();
+                        maskRenderer.drawRuns(mask.runs, color);
+                        blit(
+                            maskRenderer.canvasElement,
+                            Math.max(0.6, props.maskOpacity),
+                            smooth,
+                        );
+                    }
+                }
+            }
 
             if (props.tool === "review") return;
-
-            const overlays: { mask: DecodedMask | null; color: string }[] = [
-                { mask: props.draft, color: PREVIEW_COLOR },
-                {
-                    mask: props.candidate,
-                    color:
-                        props.candidateColor ??
-                        (props.paintMode === "add"
-                            ? CANDIDATE_ADD_COLOR
-                            : CANDIDATE_ERASE_COLOR),
-                },
-            ];
-            for (const { mask, color } of overlays) {
-                if (!mask) continue;
-                maskRenderer.clear();
-                maskRenderer.drawRuns(mask.runs, color);
-                blit(
-                    maskRenderer.canvasElement,
-                    Math.max(0.6, props.maskOpacity),
-                    smooth,
-                );
-            }
-
             if (!drawing || props.method === "brush") return;
 
             for (const point of props.prompt) {
@@ -1079,6 +1084,7 @@ export function VideoPanel(props: VideoPanelProps) {
         props.selectedTrackletId,
         props.selectedTrackletIds,
         props.maskOpacity,
+        props.masksVisible,
         props.tool,
         props.method,
         props.paintMode,
@@ -1126,7 +1132,7 @@ export function VideoPanel(props: VideoPanelProps) {
         };
 
         const tracklet =
-            props.tool === "review"
+            props.masksVisible && props.tool === "review"
                 ? props.clip.tracklets.find(
                       (t) => t.id === props.selectedTrackletId,
                   )
@@ -1244,6 +1250,7 @@ export function VideoPanel(props: VideoPanelProps) {
         };
     }, [
         props.tool,
+        props.masksVisible,
         props.selectedTrackletId,
         props.frameIndex,
         props.clip,
@@ -1426,7 +1433,7 @@ export function VideoPanel(props: VideoPanelProps) {
                                     ))}
                                 </>
                             )}
-                        {outlineRings?.map((ring, ringIndex) => (
+                        {props.masksVisible && outlineRings?.map((ring, ringIndex) => (
                             <g key={ringIndex}>
                                 <polygon
                                     className={styles.polygonLine}
@@ -1526,6 +1533,14 @@ export function VideoPanel(props: VideoPanelProps) {
                     />
                     {Math.round(props.maskOpacity * 100)}%
                 </label>
+
+                <Button
+                    size="sm"
+                    onClick={() => props.onMasksVisibleChange(!props.masksVisible)}
+                    title="Toggle mask visibility (Tab)"
+                >
+                    {props.masksVisible ? "Hide masks" : "Show masks"}
+                </Button>
 
                 <label className={styles.maskDisplay}>
                     Masks

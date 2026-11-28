@@ -27,6 +27,7 @@ export interface WorkspaceShortcutHandlers {
     runPropagation: () => Promise<void>;
     setPlaying: Dispatch<SetStateAction<boolean>>;
     setBrushSize: Dispatch<SetStateAction<number>>;
+    setMasksVisible: Dispatch<SetStateAction<boolean>>;
 }
 
 /**
@@ -62,6 +63,7 @@ export function useWorkspaceShortcuts(
         runPropagation,
         setPlaying,
         setBrushSize,
+        setMasksVisible,
     } = handlers;
 
     useEffect(() => {
@@ -132,6 +134,18 @@ export function useWorkspaceShortcuts(
             }
 
             switch (event.key) {
+                case "Tab":
+                    if (
+                        event.shiftKey ||
+                        event.ctrlKey ||
+                        event.metaKey ||
+                        event.altKey ||
+                        target?.closest?.('[role="dialog"], [contenteditable="true"]')
+                    )
+                        break;
+                    event.preventDefault();
+                    if (!event.repeat) setMasksVisible((visible) => !visible);
+                    break;
                 case "a":
                 case "d":
                     if (event.ctrlKey || event.metaKey || event.altKey) break;
@@ -171,5 +185,6 @@ export function useWorkspaceShortcuts(
         exportOpen,
         setPlaying,
         setBrushSize,
+        setMasksVisible,
     ]);
 }

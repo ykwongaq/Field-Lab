@@ -30,6 +30,7 @@ function installShortcuts(overrides = {}) {
     let onKeyDown;
     const steps = [];
     const tools = [];
+    let masksVisible = true;
     globalThis.window = {
         addEventListener(type, handler) {
             assert.equal(type, "keydown");
@@ -56,10 +57,12 @@ function installShortcuts(overrides = {}) {
         async runPropagation() {},
         setPlaying() {},
         setBrushSize() {},
+        setMasksVisible(update) { masksVisible = update(masksVisible); },
     });
     return {
         steps,
         tools,
+        get masksVisible() { return masksVisible; },
         press(key, options = {}) {
             const event = {
                 key,
@@ -105,4 +108,33 @@ test("A, E and T do not switch tools", () => {
     const shortcuts = installShortcuts();
     for (const key of ["a", "e", "t"]) shortcuts.press(key);
     assert.deepEqual(shortcuts.tools, []);
+});
+
+test("Tab toggles mask visibility without repeating while held", () => {
+    for (const tool of ["review", "addMask", "editMask", "propagate"]) {
+        const shortcuts = installShortcuts({ tool });
+        assert.equal(shortcuts.press("Tab").defaultPrevented, true);
+        assert.equal(shortcuts.masksVisible, false);
+        assert.equal(shortcuts.press("Tab", { repeat: true }).defaultPrevented, true);
+        assert.equal(shortcuts.masksVisible, false);
+        shortcuts.press("Tab");
+        assert.equal(shortcuts.masksVisible, true);
+    }
+});
+
+test("Tab remains available for modified keys, forms and dialogs", () => {
+    const shortcuts = installShortcuts();
+    for (const option of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true }])
+        assert.equal(shortcuts.press("Tab", option).defaultPrevented, false);
+    for (const tagName of ["INPUT", "TEXTAREA", "SELECT"])
+        assert.equal(shortcuts.press("Tab", { target: { tagName } }).defaultPrevented, false);
+    assert.equal(shortcuts.press("Tab", {
+        target: { tagName: "BUTTON", closest: () => ({}) },
+    }).defaultPrevented, false);
+    assert.equal(shortcuts.masksVisible, true);
+    for (const state of [{ exportOpen: true }, { propagating: true }]) {
+        const locked = installShortcuts(state);
+        assert.equal(locked.press("Tab").defaultPrevented, false);
+        assert.equal(locked.masksVisible, true);
+    }
 });

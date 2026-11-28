@@ -470,11 +470,12 @@ Recommended review loop:
 | Key       | Action                        |
 | --------- | ----------------------------- |
 | `Space`   | Play / pause                  |
+| `Tab`     | Show / hide masks             |
 | `A` / `D` or `←` / `→` | Step one frame back / forward |
 | `Esc`     | Back to Select / cancel       |
 | `Enter`   | Confirm the current step      |
 
-> Shortcuts are disabled while typing in an input/textarea/select.
+> Shortcuts are disabled while typing in an input/textarea/select. Tab toggles masks instead of moving focus in the workspace; Shift+Tab still moves focus backward, and Tab works normally inside dialogs and form controls.
 
 ---
 

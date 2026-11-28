@@ -315,6 +315,9 @@ _Set the range on the timeline, then Propagate._
   to make that mask available as a propagation seed.
 - **Zoom / pan** — scroll to zoom, middle-drag to pan, and the _Fit_ button to reset.
 - **Mask opacity** — the slider under the canvas.
+- **Mask visibility** — press **Tab** or use **Hide masks** / **Show masks** to
+  toggle mask fills, outlines and previews without changing the saved masks or
+  opacity. Mask selection still works while masks are hidden.
 - **Mask display** — choose **Selected outlines only** to keep all fills but
   draw outlines only for selected objects, or **Selected masks only** to hide
   other masks in Select and Add. These options can make dense scenes faster to
@@ -377,6 +380,7 @@ _The export chooser: pick the artifact you need._
 | Key         | Action                                                        |
 | ----------- | ------------------------------------------------------------- |
 | `Space`     | Play / pause                                                  |
+| `Tab`       | Show / hide masks                                             |
 | `A` / `D` or `←` / `→` | Step one frame back / forward                      |
 | `Esc`       | Leave the current tool → Select                               |
 | `Enter`     | Commit a mask / run or accept a propagation / close a polygon |
@@ -386,7 +390,7 @@ _The export chooser: pick the artifact you need._
 | `B`         | Draw method: **Brush**                                        |
 | `[` / `]`   | Brush size down / up                                          |
 
-> Shortcuts are ignored while typing in an input, select or textarea, while the export dialog is open, and while a propagation run is live.
+> Shortcuts are ignored while typing in an input, select or textarea, while the export dialog is open, and while a propagation run is live. Tab toggles masks instead of moving focus in the workspace; Shift+Tab still moves focus backward, and Tab works normally inside dialogs and form controls.
 
 ---
 
