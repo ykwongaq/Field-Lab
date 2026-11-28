@@ -2433,8 +2433,6 @@ export function Workspace({
             tool,
             method,
             polygonLength: polygon.length,
-            hasSelection: selected !== null,
-            selectedHasHumanMaskHere: selectionHasHumanMaskHere,
             hasPropRun: propRun !== null,
             propagating,
         },

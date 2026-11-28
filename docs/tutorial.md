@@ -377,10 +377,7 @@ _The export chooser: pick the artifact you need._
 | Key         | Action                                                        |
 | ----------- | ------------------------------------------------------------- |
 | `Space`     | Play / pause                                                  |
-| `←` / `→`   | Step one frame back / forward                                 |
-| `A`         | Add-mask tool (toggles)                                       |
-| `E`         | Edit-mask tool (needs a selected object)                      |
-| `T`         | Track tool (needs a human mask on this frame)                 |
+| `A` / `D` or `←` / `→` | Step one frame back / forward                      |
 | `Esc`       | Leave the current tool → Select                               |
 | `Enter`     | Commit a mask / run or accept a propagation / close a polygon |
 | `Backspace` | Undo the pending edit                                         |

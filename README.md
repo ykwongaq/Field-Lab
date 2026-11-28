@@ -470,10 +470,7 @@ Recommended review loop:
 | Key       | Action                        |
 | --------- | ----------------------------- |
 | `Space`   | Play / pause                  |
-| `←` / `→` | Step one frame back / forward |
-| `A`       | Add mask tool                 |
-| `E`       | Edit mask tool                |
-| `T`       | Track (propagate) tool        |
+| `A` / `D` or `←` / `→` | Step one frame back / forward |
 | `Esc`     | Back to Select / cancel       |
 | `Enter`   | Confirm the current step      |
 

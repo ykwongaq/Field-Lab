@@ -9,10 +9,6 @@ export interface WorkspaceShortcutState {
     method: DrawMethod;
     /** Polygon vertices drawn so far; Enter closes it at three or more. */
     polygonLength: number;
-    /** Whether an object is selected, which gates the Edit-mask shortcut. */
-    hasSelection: boolean;
-    /** Whether the selected object has a mask a human drew here, which gates Propagate. */
-    selectedHasHumanMaskHere: boolean;
     /** Whether a propagation result is under review, which makes Enter accept it. */
     hasPropRun: boolean;
     /** Whether a run is still producing frames, which locks the keyboard. */
@@ -41,9 +37,7 @@ export interface WorkspaceShortcutHandlers {
  * behind. Otherwise the keys are layered by tool — the drawing tools own Enter,
  * Escape, Backspace and the method letters, and the always-on keys sit underneath.
  *
- * State is passed flattened to the values the map actually branches on, so a key
- * map that only cares whether something is selected does not re-subscribe when the
- * selection changes from one object to another.
+ * State is passed flattened to the values the map actually branches on.
  */
 export function useWorkspaceShortcuts(
     state: WorkspaceShortcutState,
@@ -54,8 +48,6 @@ export function useWorkspaceShortcuts(
         tool,
         method,
         polygonLength,
-        hasSelection,
-        selectedHasHumanMaskHere,
         hasPropRun,
         propagating,
     } = state;
@@ -141,17 +133,10 @@ export function useWorkspaceShortcuts(
 
             switch (event.key) {
                 case "a":
-                    changeTool(tool === "addMask" ? "review" : "addMask");
-                    break;
-                case "e":
-                    if (hasSelection)
-                        changeTool(tool === "editMask" ? "review" : "editMask");
-                    break;
-                case "t":
-                    if (selectedHasHumanMaskHere || tool === "propagate")
-                        changeTool(
-                            tool === "propagate" ? "review" : "propagate",
-                        );
+                case "d":
+                    if (event.ctrlKey || event.metaKey || event.altKey) break;
+                    event.preventDefault();
+                    stepFrame(event.key === "a" ? -1 : 1);
                     break;
                 case " ":
                     event.preventDefault();
@@ -174,13 +159,11 @@ export function useWorkspaceShortcuts(
         tool,
         method,
         polygonLength,
-        hasSelection,
         changeTool,
         changeMethod,
         closePolygon,
         commitMask,
         undo,
-        selectedHasHumanMaskHere,
         hasPropRun,
         propagating,
         acceptPropagation,

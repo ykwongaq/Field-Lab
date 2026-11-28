@@ -27,8 +27,8 @@ interface ToolbarProps {
 /**
  * The tool rail.
  *
- * One column, one tool at a time, with the shortcut printed under each label.
- * The footer reports the segmentation model so its availability is visible
+ * One column, one tool at a time. The footer reports the segmentation model
+ * so its availability is visible
  * without opening anything.
  */
 export function Toolbar(props: ToolbarProps) {
@@ -78,18 +78,18 @@ export function Toolbar(props: ToolbarProps) {
                 "addMask",
                 "Add",
                 "plus",
-                "A",
+                undefined,
                 true,
-                `Draw a new ${vocab.unit} on this frame (A)`,
+                `Draw a new ${vocab.unit} on this frame`,
             )}
             {tool(
                 "editMask",
                 "Edit",
                 "pencil",
-                "E",
+                undefined,
                 props.canEdit,
                 props.canEdit
-                    ? `Correct the selected ${vocab.unit}'s mask on this frame (E)`
+                    ? `Correct the selected ${vocab.unit}'s mask on this frame`
                     : `Select a ${vocab.unit} first`,
             )}
 
@@ -99,14 +99,14 @@ export function Toolbar(props: ToolbarProps) {
                 "propagate",
                 "Track",
                 "propagate",
-                "T",
+                undefined,
                 props.canPropagate || props.tool === "propagate",
                 props.canPropagate
                     ? `Carry ${
                           props.selectionCount > 1
                               ? `${props.selectionCount} selected masks`
                               : "this mask"
-                      } across frames with ${props.propagateModel} (T)`
+                      } across frames with ${props.propagateModel}`
                     : `Select a ${vocab.unit} with a mask on this frame first`,
             )}
 
